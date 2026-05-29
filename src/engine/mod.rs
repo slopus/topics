@@ -11,6 +11,7 @@ pub mod eviction;
 pub mod filters;
 pub mod queue;
 pub mod router;
+pub mod segwriter;
 
 use crate::clock::SharedClock;
 use crate::config::{self, ServerConfig};
@@ -293,6 +294,114 @@ impl Engine {
         self.next_box_id.fetch_add(1, Ordering::Relaxed) as u32
     }
 
+    /// Build a per-box [`segwriter::SegmentWriter`] for a durable engine, or
+    /// `None` for a pure in-memory engine (no data dir). The HOT store is a
+    /// per-box dir `<data_dir>/boxes/<box_id-hex>`; the optional COLD store
+    /// mirrors that under `<cold_dir>/boxes/<box_id-hex>` (ARCHITECTURE §6). On
+    /// any store-open error we fall back to `None` (no writer) so a box stays
+    /// fully functional via resident in-memory payloads — sealing/relocation is
+    /// derivable, never load-bearing for correctness.
+    fn build_segment_writer(&self, box_id: u32) -> Option<segwriter::SegmentWriter> {
+        use crate::storage::{BoxTier, LocalSegmentStore};
+        let data_dir = self.data_dir.as_ref()?;
+        let sub = format!("boxes/{box_id:08X}");
+        let hot = LocalSegmentStore::open(data_dir.join(&sub)).ok()?;
+        let cold: Option<Box<dyn crate::storage::SegmentStore>> = match &self.config.cold_dir {
+            Some(cd) => Some(Box::new(
+                LocalSegmentStore::open(std::path::Path::new(cd).join(&sub)).ok()?,
+            )),
+            None => None,
+        };
+        let tier = Arc::new(BoxTier::new(Box::new(hot), cold));
+        Some(segwriter::SegmentWriter::new(
+            tier,
+            self.config.segment.clone(),
+            self.clock.clone(),
+        ))
+    }
+
+    /// Relocate a box's hot-retention-exceeding sealed segments HOT → COLD,
+    /// running the (potentially slow) copy I/O **off every write/delivery-gating
+    /// lock** (the Phase-6 HARD INVARIANT). Returns the number of segments
+    /// relocated. A no-op when the box has no writer or no cold tier, or nothing
+    /// exceeds the hot-retention bound.
+    ///
+    /// State machine (crash-safe, idempotent — ARCHITECTURE §3.6):
+    ///
+    /// 1. PLAN — under the (brief) writer lock, list the candidate segment ids.
+    /// 2. COPY — for each, read the hot `.data`/`.idx` and `put` (fsync'd) into the
+    ///    cold store, **with no writer lock held**.
+    /// 3. FLIP+DROP — under the writer lock, flip the in-memory tier pointer to COLD
+    ///    and delete the hot copy (`confirm_relocated`).
+    ///
+    /// An interruption between any steps recovers cleanly: `BoxTier::resolve`
+    /// prefers the surviving HOT copy, so a half-relocated segment is still
+    /// readable and the relocator re-runs the idempotent copy/drop.
+    pub fn relocate_box_cold(&self, name: &str) -> usize {
+        let Some(b) = self.get_box(name) else {
+            return 0;
+        };
+        let Some(sw) = b.segwriter.as_ref() else {
+            return 0;
+        };
+        // 1. PLAN (brief lock) + grab a tier handle for the off-lock copy.
+        let (plan, tier) = {
+            let w = sw.lock();
+            (w.relocation_plan(), w.tier())
+        };
+        let mut relocated = 0usize;
+        for (id, _len) in plan {
+            // 2. COPY off-lock (the slow step). On failure, leave HOT intact and
+            //    move on — never a loss; the relocator re-runs next pass.
+            match segwriter::copy_segment_to_cold(&tier, id) {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!(box_name = name, segment = id, error = %e,
+                        "relocate: cold copy failed; keeping hot copy");
+                    continue;
+                }
+            }
+            // 3. FLIP the durable tier pointer + DROP the hot copy (brief lock).
+            sw.lock().confirm_relocated(id);
+            relocated += 1;
+        }
+        relocated
+    }
+
+    /// Post-recovery segment reclaim (the final recovery step, ARCHITECTURE §4).
+    /// After the snapshot + WAL replay rebuilt every box's index/floors/segment
+    /// registry, re-derive the droppable segments and reclaim them idempotently —
+    /// both registered sealed segments now fully below the live floor and any
+    /// **orphan** segment file left on disk by a pre-crash reclaim whose unlink
+    /// never completed. This makes segment reclaim crash-safe: a drop interrupted
+    /// by a crash is simply re-run on the next boot, so a reclaimed segment never
+    /// silently resurfaces and a half-deleted segment never leaks. No-op for a pure
+    /// in-memory engine.
+    pub(crate) fn reclaim_segments_on_recovery(&self) {
+        let mut orphans = 0usize;
+        for entry in self.boxes.iter() {
+            orphans += entry.value().reclaim_segments_on_recovery();
+        }
+        if orphans > 0 {
+            tracing::info!(orphan_segments = orphans, "recovery: reclaimed orphan segment files");
+        }
+    }
+
+    /// Relocate hot-retention-exceeding sealed segments for **every** box (the
+    /// background relocator pass). No-op when no cold tier is configured. Returns
+    /// the total number of segments relocated across all boxes.
+    pub fn relocate_all_due(&self) -> usize {
+        if self.config.cold_dir.is_none() {
+            return 0;
+        }
+        let names: Vec<String> = self.boxes.iter().map(|e| e.key().clone()).collect();
+        let mut total = 0usize;
+        for name in names {
+            total += self.relocate_box_cold(&name);
+        }
+        total
+    }
+
     /// Append a WAL frame for a mutating op and return `(wal_append_ms,
     /// fsync_ms)`. In pure in-memory mode (no WAL) this is a no-op returning
     /// `(0.0, 0.0)`. For a `durable` frame the call blocks until the group fsync
@@ -515,13 +624,16 @@ impl Engine {
                         }
                     }
                 }
-                e.insert(Arc::new(BoxState::new(
-                    name.to_string(),
-                    box_id,
-                    config,
-                    SEQ_BASE,
-                    forced_epoch.unwrap_or(1),
-                )));
+                let mut state =
+                    BoxState::new(name.to_string(), box_id, config, SEQ_BASE, forced_epoch.unwrap_or(1));
+                // Attach a HOT segment writer for a durable engine so committed
+                // records are materialized into segments (Phase 6 Stage 2). A
+                // pure in-memory engine attaches none → payloads stay resident and
+                // the read path is unchanged by construction.
+                if let Some(writer) = self.build_segment_writer(box_id) {
+                    state.attach_segwriter(writer);
+                }
+                e.insert(Arc::new(state));
                 (true, box_id)
             }
         }
@@ -575,6 +687,7 @@ impl Engine {
             meta: rec.meta,
             bytes,
             deleted: false,
+            payload_resident: true,
         };
         let assigned = b.append(vec![sr], rec.ts);
         debug_assert_eq!(
@@ -1202,13 +1315,19 @@ impl Engine {
         }
 
         // --- Walk records, applying the read pipeline (DESIGN §7.3). --------
-        let mut records = Vec::new();
+        // Under the index read lock we only decide deliverability and capture the
+        // light locator fields (`seq/ts/node/tag` + the resident payload if it is
+        // still in the slot). Any payload that was freed after sealing (Phase 6)
+        // is resolved from the writer's cache/segment **after** the lock is
+        // dropped, so a (potentially slow) segment read never holds the index
+        // lock or blocks a concurrent write/delivery (the HARD INVARIANT).
+        let mut deliverable: Vec<DiffSlot> = Vec::new();
         let mut scanned: u64 = 0;
         let mut next_from_seq = cursor;
         {
             let index = b.index.read();
             let mut seq = cursor.saturating_add(1);
-            while seq <= head && records.len() < limit {
+            while seq <= head && deliverable.len() < limit {
                 let Some(rec) = index.get(seq) else {
                     // Below base_seq (reclaimed) — skip; cursor still advances.
                     next_from_seq = seq;
@@ -1224,25 +1343,49 @@ impl Engine {
                     rec.deleted,
                     rec.node.as_deref(),
                 );
-                match decision {
-                    filters::ReadDecision::Deliver => {
-                        records.push(record_out(seq, rec, &req));
-                    }
-                    filters::ReadDecision::Deleted => {
-                        // Permanently deleted: silently skipped (DESIGN §7); the
-                        // cursor still advances past the dead seq.
-                    }
-                    filters::ReadDecision::NodeFiltered => {
-                        // Silently skipped; cursor advances (DESIGN §6).
-                    }
-                    filters::ReadDecision::Expired => {
-                        // Should be below the floor after enforce_retention; if a
-                        // record expires mid-walk it is simply not delivered.
-                    }
+                if decision == filters::ReadDecision::Deliver {
+                    deliverable.push(DiffSlot {
+                        seq,
+                        ts: rec.ts,
+                        node: rec.node.clone(),
+                        tag: rec.tag.clone(),
+                        resident: if rec.payload_resident {
+                            Some((rec.data.clone(), rec.meta.clone()))
+                        } else {
+                            None
+                        },
+                    });
                 }
+                // Deleted / NodeFiltered / Expired: silently skipped; the cursor
+                // still advances past the seq (DESIGN §6/§7).
                 next_from_seq = seq;
                 seq += 1;
             }
+        }
+
+        // Resolve any non-resident (sealed) payloads off the index lock and build
+        // the wire records. A resident slot is used directly (the unchanged
+        // default + the hot tail); a sealed one resolves from the recent-seal
+        // cache / cold LRU (no I/O) or, on a miss, a segment `read_range` issued
+        // with the writer lock RELEASED — so a slow cold fetch never gates a
+        // concurrent write/delivery (the HARD INVARIANT). `cold_segments_read`
+        // counts records that hit an actual cold read (a degraded historical read).
+        let mut records = Vec::with_capacity(deliverable.len());
+        let mut cold_segments_read: u64 = 0;
+        for slot in deliverable {
+            let (data, meta) = match slot.resident {
+                Some(p) => p,
+                None => resolve_sealed_off_lock(b.as_ref(), slot.seq, &mut cold_segments_read),
+            };
+            records.push(RecordOut {
+                seq: slot.seq,
+                ts: slot.ts,
+                node: slot.node,
+                tag: if req.include_tags { slot.tag } else { None },
+                type_: None,
+                data,
+                meta: if req.include_meta { meta } else { None },
+            });
         }
 
         let caught_up = next_from_seq == head;
@@ -1250,6 +1393,9 @@ impl Engine {
 
         let mut perf = Performance::with_total(elapsed_ms(start));
         perf.records_scanned = Some(scanned);
+        if cold_segments_read > 0 {
+            perf.cold_segments_read = Some(cold_segments_read);
+        }
 
         Ok(DiffResponse {
             box_name: name.to_string(),
@@ -1531,6 +1677,18 @@ impl Engine {
 // Free helpers
 // ---------------------------------------------------------------------------
 
+/// A deliverable slot captured under the diff read lock: the light locator
+/// fields plus the resident payload **if** it is still in the in-memory slot.
+/// A `None` `resident` means the payload was freed after sealing (Phase 6) and
+/// must be resolved from the segment writer's cache/segment off the lock.
+struct DiffSlot {
+    seq: u64,
+    ts: i64,
+    node: Option<String>,
+    tag: Option<String>,
+    resident: Option<(serde_json::Value, Option<serde_json::Value>)>,
+}
+
 /// A record in flight through the router fan-out. Carries the resolved
 /// `$node`/`$tag` (post-`preserve_*`) so chained forwards see the canonical
 /// values, decoupled from the `seq`/`ts` which each dest reassigns.
@@ -1540,6 +1698,40 @@ struct ForwardRecord {
     tag: Option<String>,
     node: Option<String>,
     meta: Option<serde_json::Value>,
+}
+
+/// Resolve a sealed (non-resident) record's payload for `seq` **without holding
+/// the index lock**, and increment `cold_reads` when an actual COLD-tier read was
+/// needed. The writer lock is taken only to check the in-memory caches / capture
+/// a locator and (after) to fold the result into the cold LRU; the (possibly
+/// slow) segment `read_range` runs with NO lock held — the Phase-6 HARD
+/// INVARIANT. Returns `(Null, None)` defensively if the writer cannot resolve it.
+pub(crate) fn resolve_sealed_off_lock(
+    b: &BoxState,
+    seq: u64,
+    cold_reads: &mut u64,
+) -> (serde_json::Value, Option<serde_json::Value>) {
+    use segwriter::{read_locator, SealedResolve};
+    let Some(sw) = b.segwriter.as_ref() else {
+        return (serde_json::Value::Null, None);
+    };
+    let resolve = sw.lock().resolve_sealed_fast(seq);
+    match resolve {
+        SealedResolve::Hit(p) => (p.data, p.meta),
+        SealedResolve::Read(loc) => {
+            if loc.is_cold() {
+                *cold_reads += 1;
+            }
+            match read_locator(&loc) {
+                Some(p) => {
+                    sw.lock().record_cold_read(&loc, &p);
+                    (p.data, p.meta)
+                }
+                None => (serde_json::Value::Null, None),
+            }
+        }
+        SealedResolve::NotSealed => (serde_json::Value::Null, None),
+    }
 }
 
 /// Wall-time elapsed since `start`, in fractional milliseconds.
@@ -1687,21 +1879,8 @@ fn build_stored_owned(
         meta,
         bytes,
         deleted: false,
+        payload_resident: true,
     })
-}
-
-/// Project a stored record onto the wire `RecordOut`, respecting the diff
-/// request's `include_tags`/`include_meta` flags.
-fn record_out(seq: u64, rec: &StoredRecord, req: &DiffRequest) -> RecordOut {
-    RecordOut {
-        seq,
-        ts: rec.ts,
-        node: rec.node.clone(),
-        tag: if req.include_tags { rec.tag.clone() } else { None },
-        type_: None,
-        data: rec.data.clone(),
-        meta: if req.include_meta { rec.meta.clone() } else { None },
-    }
 }
 
 /// Encode an opaque list-pagination cursor as base64url JSON `{"after": name}`.

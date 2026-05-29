@@ -549,3 +549,175 @@ the server.
   ./target/release/streams-probe queue         $U --workers 100 --jobs 20000 --json
   ./target/release/streams-probe actors        $U --actors 1000 --inferences 5 --json
   ```
+
+---
+
+# Phase 6 — tiered storage (HOT NVMe + COLD folder)
+
+These numbers were captured against the **same persistent release binary** as
+Phases 4–5, now built with the Phase-6 layered/tiered segment store: each box
+log is split into sealed, immutable **segment files** (`seg-<first_seq>.data` +
+`.idx`); the active + newest `hot_retain_segments` sealed segments stay **HOT**
+(the data dir on NVMe) and older sealed segments **relocate to a COLD tier**
+(`STREAMS_COLD_DIR`, a second folder in v1; the `SegmentStore` trait lets S3 drop
+in later). **The Phase-2/3, Phase-4, and Phase-5 numbers above are unchanged** —
+this section is purely additive.
+
+There were **no `/v0` API or semantics changes**: tiering is transparent.
+`streams-probe conformance` against a live binary booted with a cold tier
+configured (`STREAMS_COLD_DIR` set, `STREAMS_SEGMENT_MAX_EVENTS=50`,
+`STREAMS_HOT_RETAIN_SEGMENTS=2` — so seal + relocate fire under real traffic) is
+**117 / 117, exit 0**. With **no** cold dir (the default in every existing test)
+nothing relocates and behavior is identical by construction — the full workspace
+suite is **268 tests green** and clippy is clean.
+
+Same hardware/OS/toolchain as the baseline: **Apple M4 Max, 16 cores, 128 GiB,
+Darwin 25.2.0, rustc 1.92.0, `--release`**. The server ran on `127.0.0.1` over a
+fresh temp `STREAMS_DATA_DIR` (hot) + temp `STREAMS_COLD_DIR` (cold), both on the
+same local APFS/NVMe (so the cold tier here is a *different folder*, not slower
+hardware — the latency delta below is the segment-read path itself, not a slower
+disk). Latencies are wall-clock loopback HTTP, percentiles by sort.
+
+## Methodology (Phase 6 additions)
+
+- **Tiering proof.** A durable box is written 6 100 records with
+  `segment_max_events=50` and `hot_retain_segments=2`. The background relocator
+  (a 5 s tick, runs the copy on the blocking pool) drains the old sealed segments
+  to cold. The physical split is observed on disk (`ls` of the hot vs cold box
+  dir), then `getDifference` from seq 0 (spanning cold + hot + active) is verified
+  to return all 6 100 records contiguously with byte-identical payloads.
+- **Hot vs cold read latency.** A read whose payloads are still in the bounded
+  recent-seal cache (the hot tail) vs a read of records whose payloads have fallen
+  out of the cache (the in-memory `PAYLOAD_CACHE_CAP = 4096` ring) and must be
+  fetched from a segment — `data dir` (HOT) vs `cold dir` (COLD) via the
+  `SegmentStore::read_range` path. A COLD read is surfaced to the client in
+  `performance.cold_segments_read` (count of records served by an actual cold
+  fetch).
+- **Hot-path isolation.** Write-ack and SSE write→deliver latency (epoch-stamped
+  payloads, single dedicated client) measured (a) at baseline and (b) with **8
+  independent processes** continuously replaying full seq-0 `getDifference` scans
+  over the cold tier (each confirmed cold via `cold_segments_read`). Separate
+  processes so the load generator is not the client bottleneck.
+- **Durability across segments.** A durable box is loaded with data spanning many
+  sealed segments + a WAL tail, the binary is `kill -9`'d, restarted on the same
+  hot+cold dirs, and the recovered `head_seq`/payloads are checked for zero
+  acked-durable loss.
+
+## 1. Tiering: physical relocation + cross-tier read correctness
+
+6 100 records, `segment_max_events=50` ⇒ 122 segments, `hot_retain_segments=2`:
+
+| | HOT (data dir) | COLD (cold dir) |
+|---|---:|---:|
+| sealed `.data` files after relocation settled | **2** (newest sealed) | **119** (older sealed, relocated) |
+
+`getDifference(from_seq=0, limit≥6100)` returned **6 100 records, contiguous
+1..6100, all payloads byte-identical** to what was written, `caught_up=true` —
+the cross-tier stitch (cold prefix → hot tail → active segment) is transparent
+and complete. A `before_seq=3000` prefix delete then dropped **59 whole cold
+segment files** (119 → 60) — segment-granular reclaim in the cold tier — and the
+read from seq 0 silently resumed at seq 3000 (`tombstone: null`, voluntary delete
+is silent; DESIGN §5.1).
+
+## 2. Hot vs cold getDifference latency (the degradation is bounded to cold)
+
+`limit=50` window reads against the 6 100-record tiered box:
+
+| Read | p50 | p99 / max | Notes |
+|---|---:|---:|---|
+| **HOT tail** (near head, cache-served) | **0.192 ms** | 0.275 ms (p99) | served from the in-memory recent-seal cache; no segment I/O |
+| **COLD fresh** (old window, real cold I/O) | **1.147 ms** | 1.230 ms (max) | `cold_segments_read>0`; `read_range` per record from the cold folder |
+| **COLD re-read** (same window, cold-LRU hit) | **0.165 ms** | — | second scan served from the bounded cold LRU, no cold I/O |
+
+A larger cold read: `getDifference(from_seq=0, limit=200)` of records fully out of
+the payload cache returned 200 records from cold in **8.0 ms** with
+`cold_segments_read=200` — i.e. a deep historical scan pays the cold-fetch cost
+(~6× the hot tail per record on same-disk APFS; more on genuinely slower/remote
+cold storage), exactly the intended "cold reads MAY degrade historical reads"
+tradeoff. Index memory stays bounded regardless of payload volume (the index
+holds only `seq → (tier, segment, offset, len)`; payloads live in segments).
+
+## 3. HOT-PATH ISOLATION — writes + live delivery are unaffected by cold reads
+
+Write-ack + SSE write→deliver latency, baseline vs **8 concurrent full cold-tier
+replays in flight** (each replay scans all 119 cold segments; confirmed cold):
+
+| Metric | Baseline (no cold load) | Under 8× cold replay | Delta |
+|---|---:|---:|---:|
+| write-ack p50 | 0.938 ms | 0.620 ms | none (≤ noise) |
+| write-ack p90 | 1.028 ms | 0.977 ms | none |
+| write-ack p99 | 14.24 ms | 13.91 ms | none |
+| SSE deliver p50 | 0.801 ms | 0.541 ms | none (≤ noise) |
+| SSE deliver p90 | 0.886 ms | 0.920 ms | none |
+| SSE deliver p99 | 13.93 ms | 13.76 ms | none |
+
+**The HARD INVARIANT holds:** with heavy cold I/O saturating the blocking pool,
+write-ack and live SSE delivery latency are statistically identical to baseline
+(the small p50 deltas are within run-to-run loopback/GIL noise; the ~14 ms p99 is
+pre-existing client-side jitter present in *both* columns, not server
+contention). Cold I/O + the relocator run via `spawn_blocking` and never hold a
+box write lock or block an SSE push — the hot tail (active segment + in-memory
+index + recent-seal cache) is independent of cold access. This is additionally
+proven deterministically by the unit test
+`segwriter::slow_cold_read_does_not_hold_the_writer_lock` (a cold read parked on a
+barrier; a concurrent thread still takes the writer lock to append + seal).
+
+## 4. Relocation cost + recovery time with segments
+
+- **Relocation (HOT → COLD copy).** Per sealed segment (~7 KB: a 50-record
+  `.data` ≈ 6.1 KB + `.idx` ≈ 1 KB) the copy is read-hot + fsync'd `put` to cold +
+  dir fsync: **p50 0.246 ms, p99 0.376 ms per segment** on this APFS/NVMe (a
+  ~50-segment relocation pass ≈ 13 ms of copy work). The copy is fsync-bound and
+  runs entirely off the hot path on the blocking pool; the background relocator
+  tick is 5 s, and a single pass drains all due segments (37 segments relocated in
+  one observed pass). Relocation moves bytes, not records — `head_seq`,
+  `earliest_seq`, and `count` are unchanged by a relocation.
+- **Recovery time with segments.** `kill -9` of the binary then restart on the
+  same hot+cold dirs, ~8 450 live records across 60+ cold + hot sealed segments +
+  a WAL tail, recovering from a periodic snapshot + WAL tail replay:
+  **time-to-ready ≈ 847 ms** (`recover_ms=824` server-side). Recovery
+  re-derived each segment's tier (HOT-preferred), replayed the WAL tail, and
+  **idempotently reclaimed 1 orphan segment file** (a pre-crash reclaim whose
+  unlink had not completed) — the segment-aware recovery step (ARCHITECTURE §4.5).
+  A clean SIGKILL of a 350-record durable box spanning 7 sealed segments + WAL
+  tail recovered to-ready in **92 ms** with `head_seq == 350` (zero loss).
+
+## 5. Durability across segments (SIGKILL → restart, zero acked-durable loss)
+
+| Property | Result |
+|---|---|
+| Durable box (350 recs, 7 sealed segments + WAL tail) survives `kill -9` | recovered `head_seq 350`, `count 350`, every payload byte-identical — **no loss** |
+| Cross-tier box (6 100 recs, 119 cold + 2 hot segments) survives `kill -9` | full readback **contiguous 1..6100, 0 payload mismatches**; tiers re-derived |
+| Prefix-delete floor (`earliest_seq=3000`) survives restart | recovered `earliest_seq 3000`, deleted prefix stays silently gone |
+| A second hard kill + restart | all boxes intact again; orphan reclaim idempotent (re-runnable) |
+
+The WAL remains the durability boundary; segments are a derivable materialization,
+so an acked durable write (fsync-gated 2xx ⇒ on disk in the WAL) is never lost
+regardless of segment/tier state. The deterministic proofs are the release-mode
+suites `crash_recovery.rs` (3 real-SIGKILL subprocess tests) and the 33
+`integration_durability.rs` tests (segment rolling, relocation, interrupted
+relocation, cross-tier restart, segment-granular cap/TTL/delete reclaim, orphan
+reclaim) — all green.
+
+## Notes (Phase 6)
+
+- The cold tier in this run is a *different folder on the same NVMe*, so the
+  hot-vs-cold latency delta (≈ 6× per record) is the segment-read path itself
+  (`read_range` + decode), not slower hardware; a genuinely slow/remote cold
+  store (S3, future work) would widen the cold read latency further — but, per §3,
+  **not** the write or delivery latency, which is the whole point of the tiering.
+- The in-memory recent-seal cache (`PAYLOAD_CACHE_CAP = 4096`) is why a read near
+  the head never pays cold I/O even when most of the box lives cold; a read deep
+  in cold history is the degraded path and is surfaced via
+  `performance.cold_segments_read`.
+- Reproduce:
+  ```bash
+  D=$(mktemp -d); C=$(mktemp -d)
+  STREAMS_HOST=127.0.0.1 STREAMS_PORT=4090 STREAMS_DATA_DIR=$D STREAMS_COLD_DIR=$C \
+    STREAMS_SEGMENT_MAX_EVENTS=50 STREAMS_HOT_RETAIN_SEGMENTS=2 ./target/release/streams &
+  U=http://127.0.0.1:4090
+  ./target/release/streams-probe conformance $U          # 117/117, exit 0
+  # write >6000 records to one durable box, wait ~5s for the relocator, then:
+  ls $D/boxes/*/ ; ls $C/boxes/*/                        # observe hot vs cold split
+  curl -s -X POST $U/v0/boxes/<box>/diff -d '{"from_seq":0,"limit":1000}'  # cross-tier read
+  ```

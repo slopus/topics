@@ -332,6 +332,14 @@ honestly): `earliest_seq`/`count`/`bytes` are computed against the *logical* flo
 physical occupancy may transiently exceed cap by up to one segment. **Consumers always reason
 from the reported `earliest_seq`, never from cap arithmetic.**
 
+**Tiered storage (transparent).** Segments are also the unit of **tiering**: the active + recent
+sealed segments stay HOT (fast NVMe), older sealed segments may relocate to a COLD tier
+(`STREAMS_COLD_DIR`; a different folder now, an object store later). Tiering changes **nothing** about
+the `/v0` API or semantics — a cold read may be slower for `getDifference`/historical reads, but
+writes and live delivery (SSE/tail) are unaffected (the relocator and cold I/O run off the hot path).
+When no cold tier is configured, nothing relocates. Cap/TTL/delete reclaim drops a whole segment in
+either tier. See [ARCHITECTURE §3.6](ARCHITECTURE.md).
+
 ---
 
 ## 6. Node loop-prevention

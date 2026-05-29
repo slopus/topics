@@ -268,19 +268,34 @@ WAL files whose every frame's seq <= the global min checkpointed seq are now del
 
 ### 3.2 Segment format
 
-Per box, a directory of numbered pairs:
+Per box, a directory of numbered pairs (named by first seq, `seg-<first_seq>`, zero-padded so they
+sort into seq order — ARCHITECTURE §6). A segment covers a contiguous range `[start_seq, end_seq]`.
+Implemented in `src/storage/segment.rs`:
 
 ```
-seg-<first_seq>.data    append-only record frames (same framing as §2.1, Append frames only)
-seg-<first_seq>.idx     fixed-width: per record [offset:u32, len:u32, ts:u64];
+seg-<first_seq>.data    append-ordered record frames (a CLOSE VARIANT of the §2.1 WAL frame:
+                        every frame is an Append, so there is no `type` byte — just
+                        len + flags + seq/ts + node/tag/payload + XXH3-64)
+seg-<first_seq>.idx     fixed-stride 20 B/entry: [offset:u32, len:u32, ts:u64, flags:u8, pad:3];
                         entry i  <=>  seq (first_seq + i)
 ```
 
-The `.idx` is the on-disk twin of `BoxIndex`: fixed-stride (16 bytes/entry), so `seq → entry` is
-`(seq - first_seq) * 16` — a direct seek, no scan. This makes rebuilding the in-memory index on
+A `.data` frame is `frame_len:u32` (excludes itself) + `flags:u8` (`has_tag`/`has_node`) +
+`seq:u64` + `ts:u64` + `node_len:u16` + `tag_len:u16` + `data_len:u32` + `node` + `tag` +
+`data+meta` blob + `xxh3:u64` (over `[4..crc_start)` — the same crash anchor as the WAL §2.1). On a
+**sealed/immutable** segment a checksum mismatch is corruption, surfaced rather than silently
+truncated (unlike the WAL's torn tail).
+
+The `.idx` is the on-disk twin of `BoxIndex`: fixed-stride (**20 bytes/entry**), so `seq → entry` is
+`(seq - first_seq) * 20` — a direct seek, no scan. This makes rebuilding the in-memory index on
 restart a **bulk read of `.idx` files** rather than a re-parse of all data. The inline `ts` enables
-**binary search for the TTL boundary** without touching the data file. A segment is **sealed** at a
-target size (64–256 MB); the newest is "active" (still appended), older ones immutable.
+**binary search for the TTL boundary**, and the inline `flags` a cheap tag/node presence probe,
+without touching the data file. A segment is **sealed** when any of three triggers fires
+(`segment_max_events` ≈ 10k, `segment_max_bytes` ≈ 64 MB, or `segment_max_age_ms` for an idle box —
+§3.6); the newest is "active" (still appended), older ones immutable.
+
+A `SegmentBuilder` accumulates a contiguous, gapless run of records into the `(.data, .idx)` byte
+buffers; a `SegmentStore` (§3.6) persists/reads/drops them.
 
 ### 3.3 TTL / cap eviction — cheap, no rewrite
 
@@ -349,6 +364,55 @@ path. The two halves:
 
 The reclaimer never affects correctness or visibility — only when the freed bytes are returned to
 the OS.
+
+### 3.6 Tiered storage: the `SegmentStore` trait + HOT/COLD tiers (phase 6)
+
+Data outgrows RAM and the fast NVMe. Each box's segments are split across **two tiers**:
+
+- **HOT** — the active segment + recent sealed segments, on fast local NVMe (a per-box dir under the
+  data dir). Reads here are buffered/mmap-fast; the live tail (active segment + the in-memory index
+  + a bounded recent-record cache) is always hot and independent of cold access.
+- **COLD** — older sealed segments, on a slower tier. **v1's cold tier is a different configured
+  folder** (`STREAMS_COLD_DIR`); when unset (the default in every existing test), **tiering is
+  disabled — nothing relocates and behavior is unchanged by construction.**
+
+Both tiers sit behind one trait, `SegmentStore` (`src/storage/segstore.rs`), so an **object store
+(S3) drops in later as another impl without touching the engine** (S3 is explicitly future work;
+only `LocalSegmentStore` exists now):
+
+```rust
+trait SegmentStore: Send + Sync {           // synchronous ⇒ runs on a blocking/IO pool off the hot path
+    fn put(&self, id, data, idx) -> Result<()>;          // durable (fsync'd) write of both parts
+    fn read_range(&self, id, part, offset, len) -> Result<Vec<u8>>;  // one record's frame, or a bulk .idx
+    fn delete(&self, id) -> Result<()>;                  // drop a whole segment (idempotent)
+    fn list(&self) -> Result<Vec<SegmentId>>;            // ids ascending (oldest first)
+    fn exists(&self, id, part) -> bool;                  // cheap probe (relocation idempotency)
+    fn len(&self, id, part) -> Result<u64>;
+}
+```
+
+A `SegmentId` is the segment's first seq; `part` is `Data` or `Idx`. A per-box `BoxTier` bundles a
+required HOT store + an optional COLD store and `resolve(id)`s which tier holds a segment, **preferring
+the HOT copy when both exist** (the transient mid-relocation window).
+
+**The HARD INVARIANT.** Cold reads MAY degrade `getDifference`/historical reads but MUST NOT affect
+**writes** or **live delivery** (SSE/tail). Cold I/O + the relocator run on a **separate blocking/IO
+pool**; they never hold a box write lock or block an SSE push during a slow cold fetch. The trait is
+deliberately **synchronous and self-contained** so each call can be issued via `spawn_blocking`.
+
+**Memory bounding.** The in-memory index maps `seq → (tier, segment, offset, len)`; recent records
+live in a **bounded cache**, older payloads are read from segments on demand. Index memory stays
+bounded by the index entry count, not the payload volume.
+
+**Hot-retention + relocation (later stage).** Sealed segments beyond the hot-retention bound
+(`hot_retain_segments` ≈ last 4, or `hot_retain_bytes`) relocate to cold. Relocation is **crash-safe
+and idempotent**: copy the segment to cold → fsync → durably flip the tier pointer (meta/WAL) →
+delete the hot copy. If interrupted, restart prefers the surviving copy (`BoxTier::resolve` favors
+HOT) — a segment is never lost. Cap/TTL/delete reclaim drops a whole segment file/object in **either**
+tier. The WAL remains the durability boundary; segments are a derivable materialization.
+
+Stage 1 builds the trait, the segment format, the `BoxTier`, and the config knobs (§3.2, below).
+Sealing-on-the-write-path, the relocator, the bounded cache, and cold serving land in later stages.
 
 ---
 
@@ -449,22 +513,46 @@ the compact snapshot; metadata is tiny and changes rarely.
 │   ├── CURRENT                      # tiny file naming the active wal segment (atomic-renamed)
 │   ├── wal-0000000000001024.log     # preallocated, append-only, mixed-box framed records
 │   └── wal-0000000000004096.log     # active wal segment (highest first-seq)
-└── boxes/
+└── boxes/                          # HOT tier (fast NVMe)
     ├── 0000000A/                    # one dir per box, named by interned box_id (hex)
     │   ├── seg-0000000000000001.data
-    │   ├── seg-0000000000000001.idx # fixed-stride [offset,len,ts]; seq->entry by arithmetic
+    │   ├── seg-0000000000000001.idx # fixed-stride 20 B [offset,len,ts,flags,pad]; seq->entry by arithmetic
     │   ├── seg-0000000000010001.data
     │   ├── seg-0000000000010001.idx
     │   └── seg-0000000000020001.data  (active segment, newest; + .idx)
     └── 0000000B/
         └── ...
+
+<STREAMS_COLD_DIR>/                  # COLD tier (optional; absent ⇒ tiering disabled, all hot)
+└── boxes/
+    └── 0000000A/                    # relocated older sealed segments, same seg-<first_seq> naming
+        ├── seg-0000000000000001.data
+        └── seg-0000000000000001.idx
 ```
 
 WAL is **process-global** (one ordered stream → trivial group commit, matches the single sequential
 disk). Segments are **per-box** (independent eviction, per-box mmap, locality for `getDifference`).
 Segment files named by first seq sort into seq order; finding a segment for a seq is a binary search
-over first-seqs. A box delete is a control frame + a fast rename `boxes/0000000A.deleted` then
-background unlink (fast and crash-safe).
+over first-seqs. The same `seg-<first_seq>` naming is used in both tiers, so a relocated segment keeps
+its identity (§3.6); the cold tier mirrors the per-box layout under `STREAMS_COLD_DIR`. A box delete
+is a control frame + a fast rename `boxes/0000000A.deleted` then background unlink (fast and
+crash-safe).
+
+### 6.1 Storage config knobs (phase 6)
+
+| Knob (env) | Default | Meaning |
+|---|---|---|
+| `STREAMS_DATA_DIR` | `./streams-data` | Hot tier + WAL + meta root. |
+| `STREAMS_COLD_DIR` | *(unset)* | Cold tier root. **Unset ⇒ tiering disabled (all hot).** |
+| `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal a segment after this many records. |
+| `STREAMS_SEGMENT_MAX_BYTES` | `64 MiB` | Seal after this many `.data` bytes (big-payload guard). |
+| `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` | Seal an idle/partial segment after this age; `0` disables. |
+| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Keep this many newest sealed segments hot before relocating. |
+| `STREAMS_HOT_RETAIN_BYTES` | `0` | Optional hot sealed-byte bound; stricter of the two wins (`0` ⇒ off). |
+
+These live on `ServerConfig` (`cold_dir` + a `SegmentConfig`); the seal triggers are read through the
+`Clock` so the age trigger and the relocator are drivable by `TestClock` (no wall-clock sleeps in
+tests).
 
 ---
 
@@ -690,6 +778,15 @@ whole-segment drop and partial-segment rewrite, §3.5), metadata snapshots + con
 (incl. `Delete` frames), and restart recovery. Phase 4 only re-points `RecordLoc` from heap `Bytes`
 to `(location, offset, len)`, inserts the WAL on the append path, and adds background segment
 rewrite/drop — the serving and indexing logic is reused intact.
+
+**Added in phase 6 (tiered storage, §3.6):** the `SegmentStore` trait + `LocalSegmentStore` + per-box
+`BoxTier` (HOT + optional COLD), the segment file format (`src/storage/segment.rs`), and the
+seal/hot-retention/`STREAMS_COLD_DIR` config. Tiering is **additive and transparent**: with no cold
+dir, nothing relocates and the phase-4 behavior is unchanged. Cold I/O + the relocator run off the
+hot path; the HARD INVARIANT is that cold reads may degrade historical reads but never affect writes
+or live delivery. Later stages wire sealing into the write path, add the relocator + bounded recent
+cache, and serve cold reads on the blocking pool — the `RecordLoc` already carries the `(location,
+offset, len)` triple, so it grows a `tier` discriminator without reshaping the index.
 
 **The three highest-value invariants the storage layer enforces:** (1) *never silent involuntary
 loss* — `evict_floor` is always durable and cheaply queryable, so any read crossing it yields an

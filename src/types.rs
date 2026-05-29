@@ -880,6 +880,11 @@ pub struct Performance {
     pub records_scanned: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub throttle_wait_ms: Option<f64>,
+    /// Number of records in this response served by a COLD-tier read (a degraded
+    /// historical read; tiered storage, Phase 6). Omitted when zero so a
+    /// fully-hot response is byte-identical to before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cold_segments_read: Option<u64>,
 }
 
 impl Performance {

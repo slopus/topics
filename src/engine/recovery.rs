@@ -141,6 +141,14 @@ pub fn recover_and_open(
         active_valid_len = 0;
     }
 
+    // 5) Re-derive droppable/orphan segments and reclaim them idempotently
+    //    (ARCHITECTURE §4 step 5): a cap/TTL/delete reclaim interrupted by a crash
+    //    (segment registered-dead, or its unlink never completed) is re-run here,
+    //    so a reclaimed segment never resurfaces and a half-dropped one never
+    //    leaks. Runs after the full index/floors/registry are rebuilt; a no-op when
+    //    there are no segments (pure in-memory boxes carry no writer).
+    engine.reclaim_segments_on_recovery();
+
     // Open the writer positioned to append after the recovered/truncated tail.
     let cfg = WalConfig::new(data_dir);
     let wal = Wal::open_at(cfg, active_idx, active_valid_len)

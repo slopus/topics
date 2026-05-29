@@ -86,29 +86,62 @@ pub fn capture(engine: &Engine, id: u64) -> Option<Snapshot> {
 fn capture_box(b: &BoxState) -> SnapshotBox {
     let config_json = serde_json::to_vec(&*b.config.read()).unwrap_or_default();
     let floors = *b.floors.read();
-    let index = b.index.read();
 
     // The live record set: every physically-present, non-deleted record. Deleted
     // middle-holes and front-reclaimed prefixes are simply absent — the compacted
-    // form (ARCHITECTURE §3.1).
-    let mut records = Vec::with_capacity(index.records.len());
-    let base = index.base_seq;
-    for (i, rec) in index.records.iter().enumerate() {
-        if rec.deleted {
-            continue;
+    // form (ARCHITECTURE §3.1). A record whose payload was freed after sealing
+    // (Phase 6) is resolved from the segment **after** the index lock is dropped,
+    // so a snapshot never holds the index lock across a segment read and never
+    // persists a `Null` payload for a still-live record.
+    struct CapSlot {
+        seq: u64,
+        ts: i64,
+        node: Option<String>,
+        tag: Option<String>,
+        bytes: u64,
+        resident: Option<(serde_json::Value, Option<serde_json::Value>)>,
+    }
+    let (base_seq, delete_below, slots) = {
+        let index = b.index.read();
+        let base = index.base_seq;
+        let mut slots = Vec::with_capacity(index.records.len());
+        for (i, rec) in index.records.iter().enumerate() {
+            if rec.deleted {
+                continue;
+            }
+            slots.push(CapSlot {
+                seq: base + i as u64,
+                ts: rec.ts,
+                node: rec.node.clone(),
+                tag: rec.tag.clone(),
+                bytes: rec.bytes,
+                resident: if rec.payload_resident {
+                    Some((rec.data.clone(), rec.meta.clone()))
+                } else {
+                    None
+                },
+            });
         }
-        let seq = base + i as u64;
+        (base, index.delete_below, slots)
+    };
+
+    let mut records = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let (data, meta) = match slot.resident {
+            Some(p) => p,
+            None => {
+                let mut ignored = 0u64;
+                crate::engine::resolve_sealed_off_lock(b, slot.seq, &mut ignored)
+            }
+        };
         records.push(SnapshotRecord {
-            seq,
-            ts: rec.ts,
-            node: rec.node.clone(),
-            tag: rec.tag.clone(),
-            data_json: serde_json::to_vec(&rec.data).unwrap_or_default(),
-            meta_json: rec
-                .meta
-                .as_ref()
-                .map(|m| serde_json::to_vec(m).unwrap_or_default()),
-            bytes: rec.bytes,
+            seq: slot.seq,
+            ts: slot.ts,
+            node: slot.node,
+            tag: slot.tag,
+            data_json: serde_json::to_vec(&data).unwrap_or_default(),
+            meta_json: meta.as_ref().map(|m| serde_json::to_vec(m).unwrap_or_default()),
+            bytes: slot.bytes,
         });
     }
 
@@ -117,12 +150,12 @@ fn capture_box(b: &BoxState) -> SnapshotBox {
         box_id: b.box_id,
         epoch: b.epoch(),
         config_json,
-        base_seq: index.base_seq,
+        base_seq,
         head_seq: b.head_seq(),
         evict_floor: floors.evict_floor,
         expiry_floor: floors.expiry_floor,
         delete_floor: floors.delete_floor,
-        delete_below: index.delete_below,
+        delete_below,
         bytes_retained: b.bytes(),
         live_count: b.count(),
         records,
@@ -165,7 +198,17 @@ pub fn restore(engine: &Engine, snapshot: Snapshot) -> Checkpoint {
 
     for sb in snapshot.boxes {
         let config: BoxConfig = serde_json::from_slice(&sb.config_json).unwrap_or_default();
-        let bx = Arc::new(restore_box(sb, config));
+        let box_id = sb.box_id;
+        let mut state = restore_box(sb, config);
+        // Attach a HOT segment writer for a durable engine so post-restore
+        // appends materialize into segments (Phase 6 Stage 2). `attach_segwriter`
+        // pre-seeds the writer's active segment with the restored live records so
+        // its sealed/active state is consistent with the index. Idempotent `put`s
+        // make re-materializing a previously-sealed range safe.
+        if let Some(writer) = engine.build_segment_writer(box_id) {
+            state.attach_segwriter(writer);
+        }
+        let bx = Arc::new(state);
         engine.boxes.insert(bx.name.clone(), bx);
     }
 
@@ -230,6 +273,7 @@ fn restore_box(sb: SnapshotBox, config: BoxConfig) -> BoxState {
                 meta,
                 bytes: r.bytes,
                 deleted: false,
+                payload_resident: true,
             });
             next = r.seq + 1;
         }
@@ -261,5 +305,6 @@ fn deleted_hole() -> StoredRecord {
         meta: None,
         bytes: 0,
         deleted: true,
+        payload_resident: true,
     }
 }

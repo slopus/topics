@@ -200,6 +200,7 @@ impl QueueProjection {
 use crate::config;
 use crate::error::{Error, Result};
 use crate::engine::box_state::BoxState;
+use crate::engine::segwriter::SealedResolve;
 use crate::engine::Engine;
 use crate::storage::{LeaseEvent, WalRecord};
 use crate::types::*;
@@ -420,6 +421,9 @@ impl Engine {
         let mut to_dead_letter: Vec<u64> = Vec::new();
         // (claimer_idx, seq, lease_id, deliveries) for the lease frames we log.
         let mut lease_events: Vec<(usize, u64, u64, u64)> = Vec::new();
+        // (claimer_idx, job_idx_in_out, seq) for leased jobs whose payload was
+        // freed after sealing (Phase 6) — resolved from the segment off the lock.
+        let mut to_resolve: Vec<(usize, usize, u64)> = Vec::new();
 
         {
             let mut q = b.queue.as_ref().expect("queue projection").lock();
@@ -486,10 +490,22 @@ impl Engine {
                 );
 
                 let rec = index.get(seq);
-                let (ts, tag, data, meta) = match rec {
-                    Some(r) => (r.ts, r.tag.clone(), r.data.clone(), r.meta.clone()),
-                    None => (now, None, serde_json::Value::Null, None),
+                let (ts, tag, data, meta, resident) = match rec {
+                    Some(r) => (
+                        r.ts,
+                        r.tag.clone(),
+                        r.data.clone(),
+                        r.meta.clone(),
+                        r.payload_resident,
+                    ),
+                    None => (now, None, serde_json::Value::Null, None, true),
                 };
+                // A sealed job's payload is no longer resident; remember where in
+                // `out` it landed so we can resolve it from the segment AFTER the
+                // index/queue locks are released (never a segment read under lock).
+                if !resident {
+                    to_resolve.push((rr, out[rr].len(), seq));
+                }
                 out[rr].push(LeasedJob {
                     seq,
                     lease_id,
@@ -508,6 +524,28 @@ impl Engine {
             }
             drop(index);
             drop(q);
+        }
+
+        // Resolve the payloads of any sealed (non-resident) leased jobs from the
+        // segment writer, now that the index + queue locks are released (the HARD
+        // INVARIANT: never a segment read while holding a lock that gates writes).
+        // `resolve_sealed_fast` + an off-lock `read_locator` keeps even a slow COLD
+        // fetch off every write-gating lock.
+        for (rr, job_idx, seq) in &to_resolve {
+            if let Some(sw) = b.segwriter.as_ref() {
+                let resolve = sw.lock().resolve_sealed_fast(*seq);
+                let p = match resolve {
+                    SealedResolve::Hit(p) => Some(p),
+                    SealedResolve::Read(loc) => crate::engine::segwriter::read_locator(&loc)
+                        .inspect(|p| sw.lock().record_cold_read(&loc, p)),
+                    SealedResolve::NotSealed => None,
+                };
+                if let Some(p) = p {
+                    let job = &mut out[*rr][*job_idx];
+                    job.data = p.data;
+                    job.meta = p.meta;
+                }
+            }
         }
 
         // Dead-letter the diverted jobs (append to the DL box + permanent delete
@@ -777,45 +815,72 @@ impl Engine {
             return;
         };
         let src_name = src.name.clone();
-        let mut records: Vec<crate::engine::box_state::StoredRecord> = Vec::new();
-        {
+
+        // Capture each job's locator fields + resident payload (if any) under a
+        // short read lock; a sealed job's payload (`None` resident) is resolved
+        // from the segment AFTER the lock is dropped (the HARD INVARIANT).
+        struct DlSlot {
+            seq: u64,
+            node: Option<String>,
+            tag: Option<String>,
+            resident: Option<(serde_json::Value, Option<serde_json::Value>)>,
+        }
+        let slots: Vec<DlSlot> = {
             let index = src.index.read();
-            for &seq in seqs {
-                let Some(rec) = index.get(seq) else { continue };
-                if rec.deleted {
-                    continue;
+            seqs.iter()
+                .filter_map(|&seq| {
+                    index.get(seq).filter(|r| !r.deleted).map(|rec| DlSlot {
+                        seq,
+                        node: rec.node.clone(),
+                        tag: rec.tag.clone(),
+                        resident: if rec.payload_resident {
+                            Some((rec.data.clone(), rec.meta.clone()))
+                        } else {
+                            None
+                        },
+                    })
+                })
+                .collect()
+        };
+
+        let mut records: Vec<crate::engine::box_state::StoredRecord> = Vec::new();
+        for slot in slots {
+            let (data, src_meta) = match slot.resident {
+                Some(p) => p,
+                None => {
+                    let mut ignored = 0u64;
+                    crate::engine::resolve_sealed_off_lock(src, slot.seq, &mut ignored)
                 }
-                // Stamp provenance into meta.
-                let mut meta = match &rec.meta {
-                    Some(serde_json::Value::Object(m)) => m.clone(),
-                    _ => serde_json::Map::new(),
-                };
-                meta.insert(
-                    "$dead_letter_from".to_string(),
-                    serde_json::Value::String(src_name.clone()),
-                );
-                meta.insert(
-                    "$dead_letter_deliveries".to_string(),
-                    serde_json::Value::String(max_deliveries.to_string()),
-                );
-                meta.insert(
-                    "$dead_letter_src_seq".to_string(),
-                    serde_json::Value::String(seq.to_string()),
-                );
-                let meta_val = serde_json::Value::Object(meta);
-                let data = rec.data.clone();
-                let tag = rec.tag.clone();
-                let bytes = crate::engine::payload_bytes(&data, &Some(meta_val.clone()));
-                records.push(crate::engine::box_state::StoredRecord {
-                    ts: now,
-                    node: rec.node.clone(),
-                    tag,
-                    data,
-                    meta: Some(meta_val),
-                    bytes,
-                    deleted: false,
-                });
-            }
+            };
+            // Stamp provenance into meta.
+            let mut meta = match src_meta {
+                Some(serde_json::Value::Object(m)) => m,
+                _ => serde_json::Map::new(),
+            };
+            meta.insert(
+                "$dead_letter_from".to_string(),
+                serde_json::Value::String(src_name.clone()),
+            );
+            meta.insert(
+                "$dead_letter_deliveries".to_string(),
+                serde_json::Value::String(max_deliveries.to_string()),
+            );
+            meta.insert(
+                "$dead_letter_src_seq".to_string(),
+                serde_json::Value::String(slot.seq.to_string()),
+            );
+            let meta_val = serde_json::Value::Object(meta);
+            let bytes = crate::engine::payload_bytes(&data, &Some(meta_val.clone()));
+            records.push(crate::engine::box_state::StoredRecord {
+                ts: now,
+                node: slot.node,
+                tag: slot.tag,
+                data,
+                meta: Some(meta_val),
+                bytes,
+                deleted: false,
+                payload_resident: true,
+            });
         }
         if !records.is_empty() {
             dl.append(records, now);

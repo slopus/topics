@@ -15,6 +15,7 @@
 use crate::engine::broadcast::BroadcastCache;
 use crate::engine::eviction::Floors;
 use crate::engine::queue::QueueProjection;
+use crate::engine::segwriter::{read_locator, ResolvedPayload, SealedResolve, SegmentWriter};
 use crate::types::{BoxConfig, Filter};
 use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
@@ -51,6 +52,14 @@ pub struct StoredRecord {
     /// Set when this record has been deleted (permanent, silent). The slot is
     /// retained only as a hole for O(1) indexing; its payload is freed.
     pub deleted: bool,
+    /// Whether `data`/`meta` are still resident in this slot (Phase 6 memory
+    /// bounding). `true` for a fresh append and for any box without a segment
+    /// writer (the unchanged default). Once a record is durably in a *sealed*
+    /// segment, a writer-backed box frees the slot's `data`/`meta` (sets this
+    /// `false`) and the read path resolves the payload from the bounded cache or
+    /// the segment. The `bytes` accounting is unchanged (the record is still
+    /// live; only where its payload lives changed).
+    pub payload_resident: bool,
 }
 
 /// The seq→record index: a contiguous deque offset by `base_seq`
@@ -113,6 +122,24 @@ impl BoxIndex {
             Some(i) => self.records[i].deleted,
             None => seq < self.base_seq, // popped front ⇒ dead; future ⇒ alive.
         }
+    }
+
+    /// Whether **every** seq in `[start, end]` (inclusive) is dead — used by
+    /// segment-granular reclaim (ARCHITECTURE §3.3) to decide that a whole sealed
+    /// segment can be dropped: either the segment is fully below the live floor
+    /// (cap/TTL/prefix delete) or every record in it was point-deleted (an
+    /// interior segment cleared by a `match` delete). A range that runs past the
+    /// physically-present records (above `head`) is *not* fully dead (those slots
+    /// are still live), so a still-growing range is never reclaimed.
+    pub fn range_all_dead(&self, start: u64, end: u64) -> bool {
+        let mut seq = start;
+        while seq <= end {
+            if !self.is_dead(seq) {
+                return false;
+            }
+            seq += 1;
+        }
+        true
     }
 
     /// Live seqs (ascending) whose tag matches `filter`, bounded by `bound`
@@ -274,6 +301,17 @@ pub struct BoxState {
     /// enqueue; the fsync wait happens *after* the lock is released, so durable
     /// group commit still coalesces across boxes (ARCHITECTURE §2.2/§2.3).
     pub append_lock: Mutex<()>,
+
+    /// The per-box HOT segment writer + bounded payload cache (Phase 6 Stage 2).
+    /// `None` for a pure in-memory box (every existing unit test) — then payloads
+    /// stay resident and the read path is unchanged by construction. When present
+    /// (a durable, writer-backed box), committed records are materialized into
+    /// HOT segments off the commit path, and once a record is sealed its resident
+    /// payload is freed and reads resolve from the bounded cache or the segment.
+    /// Lives behind a `Mutex`: touched on the commit path (append/seal) and the
+    /// read path (segment-backed resolution) but never holding the index lock
+    /// across a slow cold fetch (the Phase-6 HARD INVARIANT).
+    pub segwriter: Option<Mutex<SegmentWriter>>,
 }
 
 /// Sentinel for a recency clock that has never fired.
@@ -309,7 +347,39 @@ impl BoxState {
             broadcast: BroadcastCache::new(),
             queue,
             append_lock: Mutex::new(()),
+            segwriter: None,
         }
+    }
+
+    /// Attach a HOT [`SegmentWriter`] to this box (durable, writer-backed mode).
+    /// Pre-seeds the writer's active segment with any records already in the
+    /// index (e.g. after recovery/snapshot load) so the materialization starts
+    /// consistent. Called by the engine at box creation/recovery; absent for a
+    /// pure in-memory box. Takes `&mut self` because it runs during construction
+    /// before the box is shared in an `Arc`.
+    pub fn attach_segwriter(&mut self, mut writer: SegmentWriter) {
+        // Materialize any pre-existing records (recovery/snapshot) into the
+        // writer so its sealed/active state is consistent with the index.
+        // Segments mirror the box's gapless append order, so a deleted middle
+        // hole is materialized too (as a tombstone frame, never served) to keep
+        // the segment seq run contiguous (a `SegmentBuilder` requires it). We do
+        // NOT free resident payloads here (recovery correctness first);
+        // steady-state eviction happens as new appends seal segments.
+        let index = self.index.read();
+        let base = index.base_seq;
+        for (i, rec) in index.records.iter().enumerate() {
+            let seq = base + i as u64;
+            writer.append_record(
+                seq,
+                rec.ts,
+                rec.node.as_deref(),
+                rec.tag.as_deref(),
+                &rec.data,
+                &rec.meta,
+            );
+        }
+        drop(index);
+        self.segwriter = Some(Mutex::new(writer));
     }
 
     /// Whether this box is a queue (carries a lease projection).
@@ -395,10 +465,137 @@ impl BoxState {
         self.bytes_retained.fetch_add(added_bytes, Ordering::Relaxed);
         self.live_count.fetch_add(n, Ordering::Relaxed);
         self.last_write_ms.store(now_ms, Ordering::Relaxed);
+
+        // Materialize the freshly-committed records into the HOT segment writer
+        // (Phase 6 Stage 2). This is a derivable materialization of records that
+        // are already in the in-memory index (and, for a durable box, the WAL);
+        // it runs after head is published so it never delays a reader observing
+        // the new records, and frees the resident payloads of any seqs the seal
+        // boundary just crossed (memory bounding). A box with no writer skips all
+        // of this — the unchanged default path.
+        self.materialize_segment(start, new_head);
+
         // Wake long-pollers (diff `wait_ms`) and SSE streams.
         self.notify.notify_waiters();
 
         (start..=new_head).collect()
+    }
+
+    /// Feed the records `[start, end]` to the HOT segment writer and free the
+    /// resident payloads of any seqs that sealing pushed into an immutable
+    /// segment. No-op for a box without a writer. The index lock is taken only
+    /// briefly to read the just-committed values and (separately) to free sealed
+    /// payloads — never held across the writer's segment `put`/`read`.
+    fn materialize_segment(&self, start: u64, end: u64) {
+        let Some(sw) = &self.segwriter else { return };
+
+        // Read the committed values out of the index (a short read lock), then
+        // feed them to the writer with the index lock released.
+        struct Pending {
+            seq: u64,
+            ts: i64,
+            node: Option<String>,
+            tag: Option<String>,
+            data: serde_json::Value,
+            meta: Option<serde_json::Value>,
+        }
+        // Capture every seq in the freshly-appended range (contiguous, gapless —
+        // the segment mirrors the box's append order). A just-appended record is
+        // always present and non-deleted, so the resident payload is exact.
+        let pending: Vec<Pending> = {
+            let index = self.index.read();
+            (start..=end)
+                .filter_map(|seq| {
+                    index.get(seq).map(|r| Pending {
+                        seq,
+                        ts: r.ts,
+                        node: r.node.clone(),
+                        tag: r.tag.clone(),
+                        data: r.data.clone(),
+                        meta: r.meta.clone(),
+                    })
+                })
+                .collect()
+        };
+
+        let mut sealed_seqs: Vec<u64> = Vec::new();
+        let evict_resident;
+        {
+            let mut writer = sw.lock();
+            evict_resident = writer.evicts_resident();
+            for p in &pending {
+                sealed_seqs.extend(writer.append_record(
+                    p.seq,
+                    p.ts,
+                    p.node.as_deref(),
+                    p.tag.as_deref(),
+                    &p.data,
+                    &p.meta,
+                ));
+            }
+        }
+
+        // Free the resident payloads of the seqs that just sealed (the cache /
+        // segment now serves them). `bytes`/`count`/floors are untouched — the
+        // records are still live; only the payload's home moved.
+        if evict_resident && !sealed_seqs.is_empty() {
+            let mut index = self.index.write();
+            let base = index.base_seq;
+            for seq in sealed_seqs {
+                if seq < base {
+                    continue;
+                }
+                let i = (seq - base) as usize;
+                if let Some(rec) = index.records.get_mut(i) {
+                    if !rec.deleted && rec.payload_resident {
+                        rec.payload_resident = false;
+                        rec.data = Value::Null;
+                        rec.meta = None;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Resolve a record's payload `(data, meta)` for serving (diff/SSE/queue),
+    /// transparently across the resident slot, the bounded cache, and a segment
+    /// read (Phase 6 memory bounding). `rec` is the in-memory slot at `seq`.
+    ///
+    /// - If the slot still holds its payload (`payload_resident`) — the common
+    ///   tail/active case and every writer-less box — clone it directly.
+    /// - Otherwise the payload was freed after sealing: resolve it from the
+    ///   writer's bounded cache (hot) or a segment `read_range` (cold-ish). This
+    ///   runs off the index write lock so a slow read never blocks writes/delivery.
+    ///
+    /// Falls back to the slot's (possibly `Null`) payload if the writer cannot
+    /// resolve it (defensive — should not happen for a sealed live record).
+    pub fn resolve_payload(&self, seq: u64, rec: &StoredRecord) -> ResolvedPayload {
+        if rec.payload_resident {
+            return ResolvedPayload {
+                data: rec.data.clone(),
+                meta: rec.meta.clone(),
+            };
+        }
+        if let Some(sw) = &self.segwriter {
+            // Capture a cache hit or a locator under the (brief) writer lock, then
+            // do any actual segment read with the lock RELEASED so a slow cold
+            // fetch never gates writes/delivery (the Phase-6 HARD INVARIANT).
+            let resolve = sw.lock().resolve_sealed_fast(seq);
+            match resolve {
+                SealedResolve::Hit(p) => return p,
+                SealedResolve::Read(loc) => {
+                    if let Some(p) = read_locator(&loc) {
+                        sw.lock().record_cold_read(&loc, &p);
+                        return p;
+                    }
+                }
+                SealedResolve::NotSealed => {}
+            }
+        }
+        ResolvedPayload {
+            data: rec.data.clone(),
+            meta: rec.meta.clone(),
+        }
     }
 
     /// Recompute eviction/expiry floors against caps + TTL at `now_ms`, drain
@@ -420,6 +617,11 @@ impl BoxState {
 
         let index = self.index.read();
         let mut floors = self.floors.write();
+        // Track whether an involuntary floor advanced this pass: only then can a
+        // whole sealed segment have newly fallen below the live floor, so segment
+        // reclaim is skipped on the (common) read where nothing was evicted — the
+        // hot read path pays nothing for boxes with no cap/TTL pressure.
+        let mut floor_advanced = false;
 
         // --- TTL: advance expiry_floor past every expired record. -----------
         // `$ts` is non-decreasing in seq, so all seqs <= X expired is a prefix
@@ -439,6 +641,7 @@ impl BoxState {
             }
             if expired_upto > floors.expiry_floor {
                 floors.expiry_floor = expired_upto;
+                floor_advanced = true;
             }
         }
 
@@ -447,6 +650,7 @@ impl BoxState {
             let want_floor = head - cap_records; // highest seq to evict.
             if want_floor > floors.evict_floor {
                 floors.evict_floor = want_floor;
+                floor_advanced = true;
             }
         }
 
@@ -477,6 +681,7 @@ impl BoxState {
                 }
                 if evict_to > floors.evict_floor {
                     floors.evict_floor = evict_to;
+                    floor_advanced = true;
                 }
             }
         }
@@ -487,6 +692,12 @@ impl BoxState {
         // physically, advancing base_seq. Deleted holes carry 0 bytes (already
         // subtracted on delete), so this never double-counts. -----------------
         self.reclaim_front(head);
+        // Segment-granular physical reclaim: drop whole sealed segment files now
+        // fully below the live floor (cap/TTL). Only when a floor advanced this
+        // pass, so a quiet read (no eviction) never touches the segment store.
+        if floor_advanced {
+            self.reclaim_segments();
+        }
     }
 
     /// Physically pop the fully-dead front prefix (below `earliest_seq` or a run
@@ -531,6 +742,81 @@ impl BoxState {
             self.live_count
                 .store(prev.saturating_sub(live_popped), Ordering::Relaxed);
         }
+    }
+
+    /// Segment-granular physical reclaim (ARCHITECTURE §3.3, §5.6): drop whole
+    /// **sealed** segment files (HOT or COLD) once every record they cover is dead
+    /// — fully evicted/expired (below the live floor) or fully point-deleted (an
+    /// interior segment cleared by a `match` delete). Cap/TTL/delete reclaim is
+    /// segment-granular: it never rewrites a segment, it just unlinks the whole
+    /// `.data`+`.idx` pair (in whichever tier holds it) and advances the watermark
+    /// the in-memory floors already carry.
+    ///
+    /// This runs **off the hot path**: the index read lock is taken only to test
+    /// segment dead-ness (a bounded scan over the candidate's seq range), and the
+    /// segwriter lock is taken only to plan + drop — never held across a (possibly
+    /// slow, cold) read, and never gating a concurrent write/delivery. A box with
+    /// no writer (pure in-memory / non-durable) skips all of this. Idempotent: a
+    /// drop of an already-dropped segment is a no-op, so it is crash-safe to
+    /// re-derive and re-run on restart.
+    pub fn reclaim_segments(&self) {
+        let Some(sw) = &self.segwriter else { return };
+
+        // The active (unsealed) segment is never dropped; only sealed ones are
+        // candidates. Snapshot the sealed registry under the (brief) writer lock.
+        let sealed = {
+            let w = sw.lock();
+            w.sealed_segments()
+        };
+        if sealed.is_empty() {
+            return;
+        }
+
+        // The live floor: the first currently-live seq. A sealed segment entirely
+        // below it (`end_seq < earliest`) is fully gone via cap/TTL/prefix delete.
+        let earliest = self.earliest_seq();
+
+        // Decide droppable segments. The common fast path is the contiguous run of
+        // oldest segments fully below `earliest` (cap/TTL/prefix delete). We also
+        // catch an interior segment all of whose records were point-deleted
+        // (`range_all_dead`), so a `match` delete that clears a whole segment
+        // reclaims it silently — but only probe the index for segments not already
+        // covered by the cheap floor test.
+        let mut to_drop: Vec<u64> = Vec::new();
+        {
+            let index = self.index.read();
+            for seg in &sealed {
+                let dead = seg.end_seq < earliest
+                    || index.range_all_dead(seg.start_seq, seg.end_seq);
+                if dead {
+                    to_drop.push(seg.start_seq);
+                }
+            }
+        }
+        if to_drop.is_empty() {
+            return;
+        }
+
+        // Drop each fully-dead segment from whichever tier holds it (idempotent).
+        let mut w = sw.lock();
+        for id in to_drop {
+            w.drop_segment(id);
+        }
+    }
+
+    /// On-restart segment reclaim (ARCHITECTURE §4 step 5): after recovery rebuilt
+    /// this box's index + floors + segment registry, drop (1) any registered sealed
+    /// segment now fully below the live set, and (2) any **orphan** segment object
+    /// left on disk (a pre-crash reclaim whose unlink never completed). Idempotent,
+    /// off the hot path; a no-op for a box without a writer. Returns the orphan
+    /// count dropped (registry drops go through the normal `reclaim_segments`).
+    pub fn reclaim_segments_on_recovery(&self) -> usize {
+        // First the normal registry reclaim (fully-dead registered segments).
+        self.reclaim_segments();
+        let Some(sw) = &self.segwriter else { return 0 };
+        // Then sweep on-disk orphans strictly below the recovered live floor.
+        let floor = self.index.read().base_seq;
+        sw.lock().reclaim_orphans_below(floor)
     }
 
     /// Current retained, **live** record count — net of deletions (DESIGN §5.6,
@@ -643,6 +929,10 @@ impl BoxState {
 
         // Lazy physical reclaim of the now-dead front prefix.
         self.reclaim_front(head);
+        // Segment-granular reclaim: drop whole sealed segments cleared by this
+        // delete — a prefix delete below the floor, or an interior segment all of
+        // whose records were point-deleted (a `match` delete). Silent (voluntary).
+        self.reclaim_segments();
         deleted
     }
 
@@ -675,6 +965,9 @@ impl BoxState {
                 .store(prev.saturating_sub(deleted), Ordering::Relaxed);
         }
         self.reclaim_front(head);
+        // Segment-granular reclaim for the queue ack / dead-letter delete path:
+        // an acked job whose whole sealed segment is now dead drops that file.
+        self.reclaim_segments();
         let _ = now_ms;
         deleted
     }

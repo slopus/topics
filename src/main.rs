@@ -68,6 +68,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Background relocator (Phase 6): when a cold tier is configured, periodically
+    // sweep boxes for sealed segments beyond the hot-retention bound and relocate
+    // them HOT → COLD. The copy is blocking I/O, so it runs on the blocking pool —
+    // off the hot path, never holding a box write lock or blocking SSE delivery
+    // (the HARD INVARIANT). Disabled (the task simply never relocates) when no
+    // cold dir is set, so the default path is unchanged.
+    let relocator = if config.cold_dir.is_some() {
+        let reloc_engine = engine.clone();
+        Some(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(
+                streams::config::RELOCATE_CHECK_INTERVAL_MS,
+            ));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let e = reloc_engine.clone();
+                match tokio::task::spawn_blocking(move || e.relocate_all_due()).await {
+                    Ok(n) if n > 0 => info!(segments = n, "relocated sealed segments hot→cold"),
+                    Ok(_) => {}
+                    Err(join) => warn!(error = %join, "relocator task panicked"),
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
     let app = http::build_router(engine.clone());
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
@@ -81,9 +108,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tuned keep-alive/HTTP-2 settings and graceful drain (streams::serve).
     streams::serve::serve(listener, app, shutdown_signal()).await?;
 
-    // Graceful shutdown: stop the background snapshotter and write a final
-    // snapshot so a clean restart starts from a current checkpoint.
+    // Graceful shutdown: stop the background snapshotter + relocator and write a
+    // final snapshot so a clean restart starts from a current checkpoint.
     snapshotter.abort();
+    if let Some(relocator) = relocator {
+        relocator.abort();
+    }
     let snap_engine = engine.clone();
     match tokio::task::spawn_blocking(move || snap_engine.write_snapshot()).await {
         Ok(Ok(true)) => info!("shutdown snapshot written"),
