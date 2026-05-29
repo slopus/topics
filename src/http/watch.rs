@@ -17,15 +17,53 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     response::{IntoResponse, Json, Response},
 };
+use crate::engine::broadcast::FrameVariant;
 use base64::Engine as _;
 use dashmap::DashMap;
 use futures::stream::Stream;
 use parking_lot::Mutex;
+use serde::Serialize;
+use serde_json::value::RawValue;
 use std::collections::{BTreeMap, HashMap};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// The `record` SSE frame envelope. Fields are declared in **sorted key order**
+/// (`box`,`from_seq`,`head_seq`,`records`,`to_seq`) so `serde_json` emits bytes
+/// byte-identical to the prior `serde_json::json!` map (which sorts keys), while
+/// `records` embeds the shared, pre-serialized [`RawValue`] frames verbatim
+/// (zero re-serialization of the record bodies).
+#[derive(Serialize)]
+struct RecordEnvelope<'a> {
+    #[serde(rename = "box")]
+    box_name: &'a str,
+    from_seq: u64,
+    head_seq: u64,
+    #[serde(serialize_with = "serialize_shared_frames")]
+    records: Vec<Arc<RawValue>>,
+    to_seq: u64,
+}
+
+/// Serialize a slice of shared `Arc<RawValue>` frames as a JSON array, embedding
+/// each pre-serialized frame verbatim (`serde_json` recognizes `&RawValue` and
+/// copies its bytes without re-parsing). Dereferencing `Arc` to `&RawValue` side-
+/// steps the missing `Serialize for Arc<RawValue>` bound.
+fn serialize_shared_frames<S>(
+    frames: &[Arc<RawValue>],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+    let mut seq = serializer.serialize_seq(Some(frames.len()))?;
+    for f in frames {
+        seq.serialize_element(f.as_ref())?;
+    }
+    seq.end()
+}
 
 /// A stored watch session: the immutable subscription definition plus the
 /// authoritative, mutable per-box cursor map (so a GET reconnect resumes
@@ -187,6 +225,13 @@ fn build_stream(
     session: Arc<Session>,
 ) -> impl Stream<Item = std::result::Result<Event, Infallible>> {
     let heartbeat_ms = session.req.heartbeat_ms;
+    // The projection variant for this session's record frames (drives which
+    // shared broadcast-cache slot every record hits).
+    let variant = FrameVariant::new(
+        session.req.include_data,
+        session.req.include_tags,
+        session.req.include_meta,
+    );
     async_stream::stream! {
         // `retry:` once at open (deliberate 2 s backoff; API §7.5).
         yield Ok(Event::default().retry(Duration::from_millis(config::SSE_RETRY_MS)));
@@ -229,7 +274,7 @@ fn build_stream(
                         .data(data.to_string()));
                     continue;
                 };
-                live.push(b);
+                live.push(b.clone());
 
                 // Drain this box up to head in `limit`-sized batches.
                 loop {
@@ -296,24 +341,34 @@ fn build_stream(
                     // Advance the authoritative cursor past everything examined.
                     let to_seq = d.next_from_seq;
                     if !d.records.is_empty() {
-                        let records: Vec<serde_json::Value> = d
+                        // Zero-copy broadcast: each record frame is serialized
+                        // ONCE per box and shared (ref-counted `Arc<RawValue>`)
+                        // across all watchers via the box's broadcast cache,
+                        // instead of re-serializing per connection. The envelope
+                        // (`box`/`from_seq`/`to_seq`/`head_seq`) and the composite
+                        // `id:` cursor are still per-connection (they depend on
+                        // this session's cursor map). The struct's field order is
+                        // sorted to stay byte-identical to the old `json!` map.
+                        let records: Vec<Arc<RawValue>> = d
                             .records
                             .iter()
-                            .map(|r| record_frame(r, session.req.include_data))
+                            .map(|r| b.broadcast.frame(r.seq, r, variant))
                             .collect();
                         session.cursors.lock().insert(name.clone(), to_seq);
                         let id = encode_session_id(&session);
-                        let payload = serde_json::json!({
-                            "box": name,
-                            "records": records,
-                            "from_seq": from_seq,
-                            "to_seq": to_seq,
-                            "head_seq": d.head_seq,
-                        });
+                        let payload = RecordEnvelope {
+                            box_name: name.as_str(),
+                            from_seq,
+                            head_seq: d.head_seq,
+                            records,
+                            to_seq,
+                        };
+                        let body = serde_json::to_string(&payload)
+                            .unwrap_or_else(|_| "{}".to_string());
                         yield Ok(Event::default()
                             .id(id)
                             .event("record")
-                            .data(payload.to_string()));
+                            .data(body));
                         was_caught_up.insert(name.clone(), false);
                     } else if d.tombstone.is_none() {
                         // No records and no tombstone, but the cursor may still
@@ -365,7 +420,12 @@ fn build_stream(
 
 /// Project a read record onto the SSE `record`-frame JSON, honoring
 /// `include_data` (lightweight metadata-only tailing; API §7.5).
-fn record_frame(r: &RecordOut, include_data: bool) -> serde_json::Value {
+///
+/// Also used by the zero-copy broadcast cache
+/// ([`crate::engine::broadcast`]) to serialize each frame **once** and share the
+/// resulting buffer across all watchers — so this MUST stay the single source of
+/// truth for a record frame's bytes.
+pub(crate) fn record_frame(r: &RecordOut, include_data: bool) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("$seq".into(), serde_json::json!(r.seq));
     obj.insert("$ts".into(), serde_json::json!(r.ts));

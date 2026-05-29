@@ -71,11 +71,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = http::build_router(engine.clone());
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
-    info!(addr = %config.bind_addr, "streams listening");
+    info!(
+        addr = %config.bind_addr,
+        "streams listening (HTTP/1.1 keep-alive + HTTP/2 cleartext prior-knowledge)"
+    );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Dual-protocol serve loop: auto-detects HTTP/1.1 vs HTTP/2-prior-knowledge
+    // per connection (hyper-util auto::Builder) over the same listener, with the
+    // tuned keep-alive/HTTP-2 settings and graceful drain (streams::serve).
+    streams::serve::serve(listener, app, shutdown_signal()).await?;
 
     // Graceful shutdown: stop the background snapshotter and write a final
     // snapshot so a clean restart starts from a current checkpoint.

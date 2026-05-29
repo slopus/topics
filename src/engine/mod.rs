@@ -6,6 +6,7 @@
 //! WAL/storage layer can slide underneath in phase 4.
 
 pub mod box_state;
+pub mod broadcast;
 pub mod eviction;
 pub mod filters;
 pub mod queue;

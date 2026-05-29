@@ -258,14 +258,8 @@ impl Engine {
         b.enforce_retention(now);
         let mut q = q.lock();
         q.sweep_expired(now);
-        let in_flight = q.in_flight(now);
+        let (ready, in_flight) = self.ready_in_flight_locked(b, &mut q, now);
         let dead_lettered = q.dead_lettered;
-        // `ready` = live jobs that are not currently leased. Count live seqs in
-        // the jobs log absent from the active lease map and not held in a delayed
-        // nack window.
-        let leased: std::collections::HashSet<u64> = q.leases.keys().copied().collect();
-        drop(q);
-        let ready = self.count_ready(b, &leased, now);
         QueueState {
             ready,
             in_flight,
@@ -273,34 +267,53 @@ impl Engine {
         }
     }
 
-    /// Count claimable jobs: live (present, non-deleted) seqs in the jobs log not
-    /// in the active lease set and not waiting out a delayed nack.
-    fn count_ready(&self, b: &BoxState, leased: &std::collections::HashSet<u64>, now: i64) -> u64 {
-        let q = b.queue.as_ref().map(|q| q.lock());
-        let delayed_pending: std::collections::HashSet<u64> = q
-            .as_ref()
-            .map(|q| {
-                q.delayed
-                    .iter()
-                    .filter(|Reverse((ready_at, _))| *ready_at > now)
-                    .map(|Reverse((_, seq))| *seq)
-                    .collect()
-            })
-            .unwrap_or_default();
-        drop(q);
+    /// Compute `(ready, in_flight)` in O(active-leases + pending-delayed) — the
+    /// queue's working set — rather than O(retained jobs). Phase-5A's
+    /// `count_ready` scanned every retained seq; this derives the same value from
+    /// the box's maintained `live_count` (records present and not deleted, net of
+    /// cap/TTL eviction and ack/dead-letter deletes):
+    ///
+    /// ```text
+    /// ready = live_count - in_flight_live - delayed_pending_live
+    /// ```
+    ///
+    /// `in_flight_live` is the count of un-expired leases whose job is still
+    /// present (a leased seq that was evicted/deleted out from under its lease no
+    /// longer counts); `delayed_pending_live` is the count of delayed-nack entries
+    /// whose `ready_at` is still in the future and whose job is still present.
+    /// Both are bounded by the active working set, never by the log length.
+    /// Must be called with `q` already swept (so every remaining lease is
+    /// un-expired and every elapsed delayed entry has been promoted to `reclaim`).
+    fn ready_in_flight_locked(
+        &self,
+        b: &BoxState,
+        q: &mut QueueProjection,
+        now: i64,
+    ) -> (u64, u64) {
         let index = b.index.read();
-        let head = b.head_seq();
-        let mut ready = 0u64;
-        let mut seq = index.base_seq;
-        while seq <= head {
-            if let Some(rec) = index.get(seq) {
-                if !rec.deleted && !leased.contains(&seq) && !delayed_pending.contains(&seq) {
-                    ready += 1;
-                }
-            }
-            seq += 1;
-        }
-        ready
+        let is_live = |seq: u64| index.get(seq).map(|r| !r.deleted).unwrap_or(false);
+
+        // In-flight = un-expired leases still backed by a live job. Post-sweep
+        // every lease is un-expired, so the `deadline` check only guards a clock
+        // that moved between sweep and here.
+        let in_flight = q
+            .leases
+            .iter()
+            .filter(|(seq, l)| now <= l.deadline_ms && is_live(**seq))
+            .count() as u64;
+        // All leases (including any whose job is gone) are excluded from ready.
+        let leased_live = q.leases.keys().copied().filter(|&s| is_live(s)).count() as u64;
+        // Delayed-nack entries still pending (ready_at in the future) and live.
+        let delayed_live = q
+            .delayed
+            .iter()
+            .filter(|Reverse((ready_at, seq))| *ready_at > now && is_live(*seq))
+            .count() as u64;
+        drop(index);
+
+        let live = b.live_count.load(std::sync::atomic::Ordering::Relaxed);
+        let ready = live.saturating_sub(leased_live).saturating_sub(delayed_live);
+        (ready, in_flight)
     }
 
     /// `POST /v0/boxes/:q/claim` — lease up to `max` claimable jobs to `node`
@@ -520,12 +533,11 @@ impl Engine {
             );
         }
 
-        // Post-pass `ready` count.
-        let leased: std::collections::HashSet<u64> = {
-            let q = b.queue.as_ref().expect("queue").lock();
-            q.leases.keys().copied().collect()
+        // Post-pass `ready` count (O(working-set), derived from `live_count`).
+        let ready = {
+            let mut q = b.queue.as_ref().expect("queue").lock();
+            self.ready_in_flight_locked(b, &mut q, now).0
         };
-        let ready = self.count_ready(b, &leased, now);
         Ok((out, ready))
     }
 
@@ -1032,6 +1044,42 @@ mod tests {
         assert_eq!(r3.ready, 0);
         let r4 = engine.claim("jobs", "w3", 100, None).unwrap();
         assert_eq!(r4.count, 0);
+    }
+
+    #[test]
+    fn ready_counter_tracks_cap_eviction_of_unleased_jobs() {
+        // The O(1) `ready` counter is derived from `live_count` minus the live
+        // working set (leases + pending delayed). When cap/TTL eviction removes
+        // an unleased (ready) job, `live_count` drops and `ready` must follow
+        // exactly — without rescanning the log.
+        let (engine, _clock) = engine_with_clock();
+        let cfg = BoxConfig {
+            cap_records: 5,
+            discard: Discard::Old,
+            ..queue_cfg()
+        };
+        engine.put_box("jobs", cfg).unwrap();
+        produce(&engine, "jobs", 5);
+        // All 5 ready, none leased.
+        let st = engine.box_state("jobs", false).unwrap();
+        assert_eq!(st.queue.as_ref().unwrap().ready, 5);
+        assert_eq!(st.queue.as_ref().unwrap().in_flight, 0);
+
+        // Lease 2 ⇒ ready=3, in_flight=2.
+        let r = engine.claim("jobs", "w1", 2, None).unwrap();
+        assert_eq!(r.ready, 3);
+
+        // Append 3 more: cap=5 evicts the 3 oldest. Two of the evicted were
+        // leased (seqs 1,2) and one was a ready job (seq 3). After eviction the
+        // log holds seqs 4..=8 (5 live); seqs 4,5 are still ready, 6,7,8 new ⇒
+        // 5 ready, and the 2 leases whose jobs were evicted no longer count as
+        // in-flight.
+        produce(&engine, "jobs", 3);
+        let st = engine.box_state("jobs", false).unwrap();
+        let q = st.queue.as_ref().unwrap();
+        // 5 live, 0 live leases (the 2 leases' jobs were evicted) ⇒ ready=5.
+        assert_eq!(q.ready, 5);
+        assert_eq!(q.in_flight, 0);
     }
 
     #[test]

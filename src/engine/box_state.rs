@@ -12,6 +12,7 @@
 //! preserve O(1) seq→slot indexing; only fully-dead *front* slots are
 //! physically popped (lazy reclaim), advancing `base_seq`.
 
+use crate::engine::broadcast::BroadcastCache;
 use crate::engine::eviction::Floors;
 use crate::engine::queue::QueueProjection;
 use crate::types::{BoxConfig, Filter};
@@ -251,6 +252,12 @@ pub struct BoxState {
     /// Wakes SSE/diff long-pollers on append (ARCHITECTURE §1.2).
     pub notify: Notify,
 
+    /// Zero-copy SSE broadcast cache (ARCHITECTURE §8.4): each delivered record
+    /// frame is serialized once and shared (ref-counted) across all watchers, so
+    /// a 1→N broadcast pays serialization once, not N times. Bounded; populated
+    /// lazily on the read path only (boxes with no watchers pay nothing).
+    pub broadcast: BroadcastCache,
+
     /// The materialized lease projection for a queue box (DESIGN §10,
     /// ARCHITECTURE §12). `None` on a plain `"log"` box. Lives under its own
     /// mutex (queue lifecycle transitions are rare relative to the read path);
@@ -299,6 +306,7 @@ impl BoxState {
             last_read_ms: AtomicI64::new(TS_NEVER),
             last_consumed_ms: AtomicI64::new(TS_NEVER),
             notify: Notify::new(),
+            broadcast: BroadcastCache::new(),
             queue,
             append_lock: Mutex::new(()),
         }

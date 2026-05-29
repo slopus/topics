@@ -374,3 +374,178 @@ queue/lease/workload features.
   ./target/release/streams-probe bench-durable  http://localhost:4090 --json
   # recovery-time: see the SIGKILL-load-restart harness in tests/crash_recovery.rs
   ```
+
+---
+
+# Phase 5 — workloads & fan-out
+
+These numbers were captured against the **same persistent (WAL + group-commit +
+snapshot) release binary** as Phase 4, now with the Phase-5A lease queue and the
+Phase-5B workload features (HTTP/2 cleartext / h2c, the broadcast/distribution/
+queue/actor patterns). **The Phase-2/3 baseline and the Phase-4 numbers above are
+unchanged** — this section is purely additive. There were **no `/v0` API or
+semantics changes**: `streams-probe conformance` against the live binary used here
+is **117 / 117, exit 0** (the count grew from Phase-4's 89 as the h2c + queue
+checks were added in earlier Phase-5 stages; all are additive).
+
+Same hardware/OS/toolchain as the baseline: **Apple M4 Max, 16 cores, 128 GiB,
+Darwin 25.2.0, rustc 1.92.0, `--release`**. The server ran on `127.0.0.1` on an
+ephemeral port over a fresh temp `STREAMS_DATA_DIR` on local NVMe (APFS); every
+workload is a live end-to-end HTTP run (reqwest h1/h2, loopback, keep-alive) from
+a single client process. Boxes use the default (`durable:false`) class, so these
+exercise the engine + HTTP + SSE + scheduler path, not the fsync floor.
+
+## Methodology (Phase 5 additions)
+
+Four `streams-probe` subcommands drive a LIVE server; each prints a table and a
+`--json` summary. Wall-clock latencies; percentiles by sort + linear
+interpolation. The SSE write→deliver latency uses a shared monotonic `epoch`
+stamped into each pulse payload (writer and watchers share one process clock), so
+it is a true end-to-end write-to-delivery interval with no clock skew.
+
+- `broadcast <url> --watchers 1,10,100,1000` — one source box, N concurrent SSE
+  watchers all tailing it, one writer emitting timed single-record pulses. This is
+  the **shared zero-copy fan-out**: a pulse is serialized into ONE frame and
+  ref-counted to every watcher (never copied into N boxes). The headline metric is
+  the **per-watcher write→deliver latency** and how flat it stays as watchers grow
+  100×. NOTE: the pulse loop is deliberately *paced* (a fixed inter-pulse gap to
+  measure delivery latency cleanly), so the reported `deliveries/sec` is a
+  latency-paced aggregate (`≈ watchers × pulse-rate`), **not** a saturation
+  throughput figure — the saturation story is the latency headroom (see the
+  millions/sec discussion below).
+- `distribution <url> --boxes N --batch B --writers W` — round-robins batched
+  appends across many boxes via W concurrent writer tasks; aggregate appends/sec.
+- `queue <url> --workers N --jobs J --claim-max K [--jitter ms]` — producers
+  batch-fill the Phase-5A lease queue, then N worker nodes claim→ack in a loop;
+  jobs/sec, claim latency, and per-worker distribution evenness.
+- `actors <url> --actors K --inferences N --tool-results T --snapshot-every S` —
+  each actor is a box; per inference appends a chain (model-answer + tool-call + T
+  tool-results) as one batch, then snapshot-compacts via `delete {before_seq}`
+  every S inferences; events/sec + box-count scaling.
+
+## 1. BROADCAST — 1 source → many SSE watchers (shared zero-copy frame)
+
+Write→deliver latency (ms), all pulses delivered to all connected watchers. Two
+runs: a clean sweep (1/10/100, 500 pulses) and the heavy tiers (100 @ 100 pulses,
+1000 @ 300 pulses).
+
+| Watchers | Connected | Deliveries | p50 | p99 | p999 | max | deliveries/s (paced) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1    | 1    | 500     | 0.143 ms | 0.257 ms | 2.48 ms | 4.25 ms | ~261 |
+| 10   | 10   | 5 000   | 0.192 ms | 0.381 ms | 0.498 ms | 0.518 ms | ~2 564 |
+| 100  | 100  | 50 000  | 0.698 ms | 1.284 ms | 1.93 ms | 2.38 ms | ~21 980 |
+| 100  | 100  | 10 000  | 0.893 ms | 1.94 ms  | 3.01 ms | 3.26 ms | ~11 854 |
+| 1000 | 1000 | 300 000 | 2.218 ms | 4.88 ms  | 7.37 ms | 2694 ms* | ~111 389 |
+
+\* The 1000-watcher `max` (2.69 s) is the **client-side connect storm** — standing
+up 1000 SSE connections from one process over loopback before the first pulse.
+Once all connections are warm the steady-state delivery is **p50 2.2 ms / p99
+4.9 ms**, at the top of the 1–5 ms target. The writer-append latency at 1000
+watchers is p50 3.9 ms / p99 6.1 ms (the source box's drain wakes 1000 watchers
+per write).
+
+**Fan-out scaling is the key result:** per-watcher delivery latency stays sub-2 ms
+p99 from 1 → 100 watchers (a 100× fan-out) and only reaches ~5 ms p99 at 1000.
+Because each pulse is serialized **once** and ref-counted, the marginal cost of an
+extra watcher is a bounded-channel send (tens to hundreds of ns), which is exactly
+why the per-delivery latency does not blow up with N. The aggregate `deliveries/s`
+columns are latency-paced, not saturated (see §5 on millions/sec).
+
+## 2. DISTRIBUTION — 1 source → many boxes (batched, sharded fan-out)
+
+5000 destination boxes, batch 100, 32 concurrent writer tasks, 500 000 records.
+
+| Boxes | Batch | Writers | Records | Elapsed | Appends/s | req p50 | req p99 | req max |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5 000 | 100 | 32 | 500 000 | 1.426 s | **~350 737 /s** | 7.73 ms | 18.55 ms | 19.90 ms |
+
+500 000 small appends spread across 5000 boxes at ~351 K appends/s. The per-box
+write path is lock-free across distinct boxes (sharded), so this is bounded by the
+**single client process's HTTP request rate over loopback** (32 in-flight batched
+requests), not the engine — the per-request latency (p50 7.7 ms with 32 writers in
+flight) is the HTTP round-trip + queueing, not append cost (the micro-bench append
+is sub-µs/record). See §5.
+
+## 3. QUEUE — Phase-5A lease queue, N workers claim/ack
+
+100 worker nodes, 20 000 jobs, claim-max 8, greedy (`jitter=0`).
+
+| Workers | Jobs | claim_max | jitter | Jobs/s | claim p50 | claim p99 | Distribution (min/mean/max, cv) |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 100 | 20 000 | 8 | 0 ms | **~203 948 /s** | 1.18 ms | 6.68 ms | 136 / 200 / 248, **cv 0.116** |
+
+Produce phase alone hit **~1.11 M jobs/s** (batched fills). All 20 000 jobs were
+acked (`jobs_acked == jobs_produced`); evenness across 100 workers is good
+(coefficient of variation 0.116, mean exactly 200 jobs/worker) even in greedy mode.
+With `--jitter > 0` the coalescing claim pass (DESIGN §10.3) trades a little claim
+latency for near-perfect evenness — the documented §10.2 tradeoff.
+
+## 4. ACTORS / INFERENCE — per-actor box, event chains + snapshot compaction
+
+1000 actor boxes, 5 inferences each, chain length 5 (model-answer + tool-call + 3
+tool-results), snapshot-compact (`delete before_seq=head`) every 2 inferences, 32
+concurrent drivers.
+
+| Actors | Infs/actor | chain_len | Events | Elapsed | Events/s | Inferences/s | Snapshots | chain append p50 / p99 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 1 000 | 5 | 5 | 25 000 | 0.801 s | **~31 214 /s** | ~6 243 /s | 2 000 | 0.787 ms / 11.34 ms |
+
+Each inference is one batched append of the 5-event chain; 2000 `delete before_seq`
+snapshot-compactions ran inline without stalling the append path (logical delete is
+immediate, physical reclaim is the background reclaimer, ARCHITECTURE §3.5). Per-box
+scaling holds across 1000 simultaneously-active actor boxes.
+
+## 5. h2c effect, and are the millions/sec + 1–5 ms targets met?
+
+**h2c (HTTP/2 cleartext, prior-knowledge).** The server auto-detects h1 vs h2 per
+connection on the same port. Verified live: an `--http2-prior-knowledge` client
+negotiates HTTP/2 (`version=2`) and gets `200`, while an `--http1.1` client still
+gets `200` on the same port; the three conformance h2c checks (health, write, diff
+over h2) pass. As called out in the brief, **h2c helps connection/stream
+multiplexing, not raw throughput** — it lets one connection carry many concurrent
+SSE streams / requests (fewer sockets, fewer handshakes for the broadcast and
+queue-worker fan-in cases), but per-request CPU cost is unchanged, so it does not
+by itself move the appends/sec or deliveries/sec ceiling.
+
+**1–5 ms delivery target: MET** for broadcast up to ~100 watchers (p99 ≤ ~1.9 ms)
+and **at the edge** at 1000 watchers (steady-state p99 ~4.9 ms; the 2.7 s outlier
+is one-time client connection setup, not server fan-out). The fan-out design holds:
+serialize-once + ref-count keeps per-watcher latency flat as N grows 100×.
+
+**Millions/sec: not reached by this single-process HTTP probe; the ceiling is the
+client, not the engine.** Distribution hit ~351 K appends/s and the queue ~204 K
+jobs/s (produce alone ~1.11 M jobs/s) — bounded by one client process's loopback
+HTTP request rate (per-request overhead dominates), exactly the lever the brief
+identifies: **batching is what gets to millions/sec.** The evidence is on-box: the
+Phase-2/3 micro-benches append at ~4 M records/s at 64 B batch-100 in-process, and
+the produce phase here (large batched fills) already exceeds 1 M jobs/s end-to-end.
+The route to millions of deliveries/sec is the same batching + the shared zero-copy
+frame: at 1000 watchers a single serialized frame yields 1000 deliveries, so the
+~111 K *paced* deliveries/s seen here corresponds to a far higher saturated
+ceiling (each delivery is a sub-µs ref-counted channel send) — the broadcast probe
+is paced for clean latency measurement, not run to saturation. In short: the
+engine + fan-out path has the headroom; reaching millions/sec in a benchmark needs
+multi-connection / multi-process load generation + batched writes, not a change to
+the server.
+
+## Notes (Phase 5)
+
+- All Phase-5 numbers are single representative live runs over loopback HTTP from
+  one client process; expect run-to-run variance. They were captured against the
+  release binary on a temp data dir; boxes are torn down by each workload, so the
+  server's box gauge returns to 0 afterward (~44 MB of WAL was written across the
+  runs, confirming the durable path was exercised).
+- The `broadcast` `deliveries/sec` figure is latency-paced (fixed inter-pulse gap),
+  not a saturation throughput; the headline broadcast result is the per-watcher
+  write→deliver latency and its flat scaling with watcher count.
+- Reproduce:
+  ```bash
+  D=$(mktemp -d); STREAMS_HOST=127.0.0.1 STREAMS_PORT=4090 STREAMS_DATA_DIR=$D \
+    ./target/release/streams &
+  U=http://127.0.0.1:4090
+  ./target/release/streams-probe conformance  $U                 # 117/117, exit 0
+  ./target/release/streams-probe broadcast     $U --watchers 100,1000 --json
+  ./target/release/streams-probe distribution  $U --boxes 5000 --batch 100 --writers 32 --json
+  ./target/release/streams-probe queue         $U --workers 100 --jobs 20000 --json
+  ./target/release/streams-probe actors        $U --actors 1000 --inferences 5 --json
+  ```

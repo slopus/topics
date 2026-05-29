@@ -36,6 +36,10 @@ enum Subcommand {
     Conformance(ConformanceCmd),
     Bench(BenchCmd),
     BenchDurable(BenchDurableCmd),
+    Broadcast(BroadcastCmd),
+    Distribution(DistributionCmd),
+    Queue(QueueCmd),
+    Actors(ActorsCmd),
 }
 
 /// Assert the documented /v0 contract against a live server.
@@ -102,6 +106,146 @@ struct BenchDurableCmd {
     json: bool,
 }
 
+/// BROADCAST workload (Phase-5B): one source box, N concurrent SSE watchers, one
+/// writer appending. Measures aggregate deliveries/sec and per-watcher
+/// write->deliver p50/p99 — demonstrates the shared zero-copy frame fan-out
+/// scaling (serialize once, ref-count to all watchers).
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "broadcast")]
+struct BroadcastCmd {
+    /// base URL of the live server, e.g. http://127.0.0.1:4000
+    #[argh(positional)]
+    base_url: String,
+
+    /// bearer token to send on every request (optional)
+    #[argh(option)]
+    token: Option<String>,
+
+    /// comma-separated watcher counts to sweep (default 1,10,100,1000)
+    #[argh(option, default = "String::from(\"1,10,100,1000\")")]
+    watchers: String,
+
+    /// timed write pulses per watcher tier (default 100)
+    #[argh(option, default = "100")]
+    pulses: usize,
+
+    /// gap between timed pulses in ms (default 5)
+    #[argh(option, default = "5")]
+    pulse_gap_ms: u64,
+
+    /// emit a machine-readable JSON summary to stdout (for BENCHMARKS.md)
+    #[argh(switch)]
+    json: bool,
+}
+
+/// DISTRIBUTION workload (Phase-5B): fan a source stream into many boxes via
+/// batched, sharded, concurrent appends. Measures aggregate appends/sec and
+/// per-box append latency — pushes toward the millions-of-small-appends/sec
+/// target.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "distribution")]
+struct DistributionCmd {
+    /// base URL of the live server, e.g. http://127.0.0.1:4000
+    #[argh(positional)]
+    base_url: String,
+
+    /// bearer token to send on every request (optional)
+    #[argh(option)]
+    token: Option<String>,
+
+    /// number of destination boxes to fan into (default 5000)
+    #[argh(option, default = "5_000")]
+    boxes: u64,
+
+    /// records per append request — boxes are sharded across batched requests
+    /// (default 100)
+    #[argh(option, default = "100")]
+    batch: u64,
+
+    /// number of concurrent writer tasks (default 32)
+    #[argh(option, default = "32")]
+    writers: usize,
+
+    /// emit a machine-readable JSON summary to stdout (for BENCHMARKS.md)
+    #[argh(switch)]
+    json: bool,
+}
+
+/// QUEUE workload (Phase-5B / Phase-5A lease queue): producers fill a queue, N
+/// worker nodes claim/ack in a loop. Measures jobs/sec end-to-end, claim
+/// latency, and per-worker distribution evenness.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "queue")]
+struct QueueCmd {
+    /// base URL of the live server, e.g. http://127.0.0.1:4000
+    #[argh(positional)]
+    base_url: String,
+
+    /// bearer token to send on every request (optional)
+    #[argh(option)]
+    token: Option<String>,
+
+    /// number of worker nodes claiming/acking concurrently (default 50)
+    #[argh(option, default = "50")]
+    workers: usize,
+
+    /// total jobs to produce + process (default 20000)
+    #[argh(option, default = "20_000")]
+    jobs: u64,
+
+    /// claim batch size (max jobs per claim call) (default 8)
+    #[argh(option, default = "8")]
+    claim_max: u32,
+
+    /// claim_jitter_ms on the queue (coalescing window, default 0 = greedy)
+    #[argh(option, default = "0")]
+    jitter: u64,
+
+    /// emit a machine-readable JSON summary to stdout (for BENCHMARKS.md)
+    #[argh(switch)]
+    json: bool,
+}
+
+/// ACTORS / INFERENCE workload (Phase-5B): each actor is a box; per "inference"
+/// append a chain (model-answer + tool-call + several tool-result events), then
+/// periodically snapshot-compact via delete before_seq. Measures events/sec and
+/// box-count scaling.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "actors")]
+struct ActorsCmd {
+    /// base URL of the live server, e.g. http://127.0.0.1:4000
+    #[argh(positional)]
+    base_url: String,
+
+    /// bearer token to send on every request (optional)
+    #[argh(option)]
+    token: Option<String>,
+
+    /// number of actor boxes (default 1000)
+    #[argh(option, default = "1_000")]
+    actors: u64,
+
+    /// inferences (event chains) per actor (default 5)
+    #[argh(option, default = "5")]
+    inferences: u64,
+
+    /// tool-result events per inference chain (default 3)
+    #[argh(option, default = "3")]
+    tool_results: u64,
+
+    /// snapshot-compact (delete before head) every N inferences (default 2)
+    #[argh(option, default = "2")]
+    snapshot_every: u64,
+
+    /// number of concurrent actor-driver tasks (default 32)
+    #[argh(option, default = "32")]
+    concurrency: usize,
+
+    /// emit a machine-readable JSON summary to stdout (for BENCHMARKS.md)
+    #[argh(switch)]
+    json: bool,
+}
+
 fn main() -> ExitCode {
     let top: TopLevel = argh::from_env();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -113,6 +257,10 @@ fn main() -> ExitCode {
         Subcommand::Conformance(c) => rt.block_on(run_conformance(c)),
         Subcommand::Bench(b) => rt.block_on(run_bench(b)),
         Subcommand::BenchDurable(b) => rt.block_on(run_bench_durable(b)),
+        Subcommand::Broadcast(b) => rt.block_on(run_broadcast(b)),
+        Subcommand::Distribution(d) => rt.block_on(run_distribution(d)),
+        Subcommand::Queue(q) => rt.block_on(run_queue(q)),
+        Subcommand::Actors(a) => rt.block_on(run_actors(a)),
     }
 }
 
@@ -334,6 +482,7 @@ async fn run_conformance(cmd: ConformanceCmd) -> ExitCode {
     );
 
     conformance_health(&c, &mut rep).await;
+    conformance_http2(&cmd.base_url, cmd.token.clone(), &mut rep, &ns).await;
     conformance_box_lifecycle(&c, &mut rep, &ns).await;
     conformance_write_and_diff(&c, &mut rep, &ns).await;
     conformance_idempotency(&c, &mut rep, &ns).await;
@@ -398,6 +547,118 @@ async fn conformance_health(c: &Client, rep: &mut Report) {
 
     let m = c.get("/v0/metrics").await;
     rep.status("GET /v0/metrics -> 200", &m, 200);
+}
+
+/// HTTP/2 cleartext "prior-knowledge" support (Phase-5B Stage 1). The server
+/// serves BOTH HTTP/1.1 and h2c on the same port, auto-detecting per connection.
+/// An `http2_prior_knowledge()` client must negotiate HTTP/2, get a 200 from
+/// `/v0/health`, and be able to write + diff over h2; a plain HTTP/1.1 client
+/// must still be served (and observably over HTTP/1.1). The default `Client`
+/// (used by every other conformance check) is an h1 client, so this proves the
+/// dual-protocol listener serves both.
+async fn conformance_http2(base_url: &str, token: Option<String>, rep: &mut Report, ns: &str) {
+    // A client pinned to HTTP/2 prior knowledge (h2c, no TLS).
+    let h2 = match reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            rep.check("h2c: build prior-knowledge client", false, || format!("build failed: {e}"));
+            return;
+        }
+    };
+    let base = base_url.trim_end_matches('/').to_string();
+    let auth = |rb: reqwest::RequestBuilder| match &token {
+        Some(t) => rb.header("authorization", format!("Bearer {t}")),
+        None => rb,
+    };
+
+    // GET /v0/health over h2c -> 200 AND negotiated version is HTTP/2.
+    match auth(h2.get(format!("{base}/v0/health"))).send().await {
+        Ok(resp) => {
+            let ver = resp.version();
+            let status = resp.status().as_u16();
+            let ok_status = status == 200;
+            let is_h2 = ver == reqwest::Version::HTTP_2;
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            rep.check(
+                "h2c prior-knowledge: GET /v0/health -> 200 over HTTP/2 (negotiated version is h2)",
+                ok_status && is_h2 && body.get("status").and_then(|v| v.as_str()) == Some("ok"),
+                || format!("status={status} version={ver:?} body={body}"),
+            );
+        }
+        Err(e) => rep.check("h2c prior-knowledge: GET /v0/health", false, || format!("request failed: {e}")),
+    }
+
+    // Write + diff over h2c.
+    let b = format!("{ns}-h2c");
+    let path = format!("{base}/v0/boxes/{b}");
+    let wrote_ok = match auth(
+        h2.post(&path)
+            .header("content-type", "application/json")
+            .body(json!({ "records": [{ "data": { "v": 1 } }, { "data": { "v": 2 } }] }).to_string()),
+    )
+    .send()
+    .await
+    {
+        Ok(resp) => {
+            let is_h2 = resp.version() == reqwest::Version::HTTP_2;
+            let status = resp.status().as_u16();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            let ok = is_h2 && (status == 200 || status == 201) && seqs_of(&body) == vec![1, 2];
+            rep.check(
+                "h2c prior-knowledge: write over HTTP/2 returns seqs [1,2]",
+                ok,
+                || format!("status={status} version_h2={is_h2} body={body}"),
+            );
+            ok
+        }
+        Err(e) => {
+            rep.check("h2c prior-knowledge: write", false, || format!("request failed: {e}"));
+            false
+        }
+    };
+    if wrote_ok {
+        match auth(
+            h2.post(format!("{path}/diff"))
+                .header("content-type", "application/json")
+                .body(json!({ "from_seq": 0 }).to_string()),
+        )
+        .send()
+        .await
+        {
+            Ok(resp) => {
+                let is_h2 = resp.version() == reqwest::Version::HTTP_2;
+                let body: Value = resp.json().await.unwrap_or(Value::Null);
+                rep.check(
+                    "h2c prior-knowledge: diff over HTTP/2 returns both records",
+                    is_h2 && diff_seqs(&body) == vec![1, 2] && bool_of(&body, "caught_up") == Some(true),
+                    || format!("version_h2={is_h2} body={body}"),
+                );
+            }
+            Err(e) => rep.check("h2c prior-knowledge: diff", false, || format!("request failed: {e}")),
+        }
+    }
+
+    // A plain HTTP/1.1 client must still be served over the SAME port (the
+    // default conformance `Client` is h1, but make the version assertion explicit).
+    match reqwest::Client::builder().http1_only().timeout(Duration::from_secs(30)).build() {
+        Ok(h1) => match auth(h1.get(format!("{base}/v0/health"))).send().await {
+            Ok(resp) => {
+                let ver = resp.version();
+                let status = resp.status().as_u16();
+                rep.check(
+                    "h1 client still served on the dual-protocol listener (HTTP/1.1, 200)",
+                    status == 200 && ver == reqwest::Version::HTTP_11,
+                    || format!("status={status} version={ver:?}"),
+                );
+            }
+            Err(e) => rep.check("h1 client on dual-protocol listener", false, || format!("request failed: {e}")),
+        },
+        Err(e) => rep.check("h1: build http1-only client", false, || format!("build failed: {e}")),
+    }
 }
 
 async fn conformance_box_lifecycle(c: &Client, rep: &mut Report, ns: &str) {
@@ -2275,4 +2536,617 @@ fn print_bench_table(s: &Value) {
         );
     }
     println!();
+}
+
+// ===========================================================================
+// Phase-5B workload emulators
+// ===========================================================================
+
+/// Confirm the server answers `/v0/health` 200 before a workload run; otherwise
+/// print an error and signal the caller to bail with a nonzero exit.
+async fn preflight(c: &Client, base_url: &str) -> bool {
+    if c.get("/v0/health").await.map(|r| r.status != 200).unwrap_or(true) {
+        eprintln!("error: server at {base_url} did not return 200 on /v0/health");
+        return false;
+    }
+    true
+}
+
+/// Summary stats for a set of per-unit counts (jobs-per-worker, etc.): the
+/// distribution-evenness block. `cv` (coefficient of variation = stddev/mean)
+/// is the headline evenness metric — lower is more even (0 = perfect).
+fn distribution_stats(counts: &[u64]) -> Value {
+    if counts.is_empty() {
+        return json!({ "n": 0, "min": 0, "max": 0, "mean": 0.0, "stddev": 0.0, "cv": 0.0 });
+    }
+    let n = counts.len() as f64;
+    let sum: u64 = counts.iter().sum();
+    let mean = sum as f64 / n;
+    let var = counts.iter().map(|&x| (x as f64 - mean).powi(2)).sum::<f64>() / n;
+    let stddev = var.sqrt();
+    let cv = if mean > 0.0 { stddev / mean } else { 0.0 };
+    json!({
+        "n": counts.len(),
+        "min": counts.iter().copied().min().unwrap_or(0),
+        "max": counts.iter().copied().max().unwrap_or(0),
+        "mean": round3(mean),
+        "stddev": round3(stddev),
+        "cv": round3(cv),
+    })
+}
+
+/// Render a latency-summary `Value` (from [`summarize`]) as a compact one-liner.
+fn fmt_latency(v: &Value) -> String {
+    let g = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    format!(
+        "p50={:.3}ms p99={:.3}ms p999={:.3}ms max={:.3}ms (n={})",
+        g("p50_ms"),
+        g("p99_ms"),
+        g("p999_ms"),
+        g("max_ms"),
+        v.get("count").and_then(|c| c.as_u64()).unwrap_or(0),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// 1. BROADCAST — 1 source box -> N SSE watchers over shared zero-copy frames
+// ---------------------------------------------------------------------------
+
+/// Emit-side of a broadcast pulse measurement: a per-watcher write->deliver
+/// latency sample (ms) computed against the shared process `epoch`.
+async fn run_broadcast(cmd: BroadcastCmd) -> ExitCode {
+    let c = Client::new(&cmd.base_url, cmd.token.clone());
+    if !preflight(&c, &cmd.base_url).await {
+        return ExitCode::FAILURE;
+    }
+    let ns = format!("bcast{}", std::process::id());
+    let counts: Vec<usize> = cmd
+        .watchers
+        .split(',')
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .collect();
+    eprintln!(
+        "broadcast {} (watchers={:?}, pulses={})",
+        cmd.base_url, counts, cmd.pulses
+    );
+
+    let epoch = Arc::new(Instant::now());
+    let mut tiers = serde_json::Map::new();
+
+    for &n in &counts {
+        let b = format!("{ns}-w{n}");
+        let path = format!("/v0/boxes/{b}");
+        // Create + seed so the box exists; watchers then tail the head.
+        let _ = c.post(&path, &json!({ "records": [{ "data": "seed" }] })).await;
+
+        // Per-watcher delivery latencies arrive on this channel.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<f64>();
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            // One shared session per watcher, tailing the box (records after subscribe).
+            let watch = c
+                .post("/v0/watch", &json!({ "boxes": { b.clone(): { "tail": true } }, "heartbeat_ms": 2000 }))
+                .await;
+            let Some(stream_url) =
+                watch.ok().and_then(|r| r.body.get("stream_url").and_then(|v| v.as_str()).map(String::from))
+            else {
+                continue;
+            };
+            let cc = c.clone();
+            let tx = tx.clone();
+            let epoch = epoch.clone();
+            let pulses = cmd.pulses;
+            handles.push(tokio::spawn(async move {
+                watcher_loop(cc, stream_url, pulses, tx, epoch).await;
+            }));
+        }
+        let connected = handles.len();
+        drop(tx);
+
+        // Let every watcher establish + reach the tailing (caught-up) state.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        // The writer appends ONE record per pulse; the read layer serializes that
+        // record's frame ONCE and ref-counts it to all `connected` watchers.
+        let mut write_lat = Vec::with_capacity(cmd.pulses);
+        let send_start = Instant::now();
+        for i in 0..cmd.pulses {
+            let stamp = epoch.elapsed().as_nanos() as u64;
+            let wt = Instant::now();
+            let _ = c
+                .post(&path, &json!({ "records": [{ "data": { "pulse": i, "t": stamp } }] }))
+                .await;
+            write_lat.push(wt.elapsed().as_secs_f64() * 1000.0);
+            if cmd.pulse_gap_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(cmd.pulse_gap_ms)).await;
+            }
+        }
+        let send_elapsed = send_start.elapsed().as_secs_f64();
+
+        // Collect per-watcher per-pulse delivery samples (short grace to flush).
+        let mut samples = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(latency_ms) = rx.recv().await {
+                samples.push(latency_ms);
+            }
+        })
+        .await;
+        for h in handles {
+            h.abort();
+        }
+
+        let deliveries = samples.len() as u64;
+        // Aggregate deliveries/sec: total deliveries observed across all watchers
+        // over the send window (the fan-out rate the read layer sustained).
+        let deliveries_per_s = if send_elapsed > 0.0 { deliveries as f64 / send_elapsed } else { 0.0 };
+        tiers.insert(
+            format!("watchers_{n}"),
+            json!({
+                "watchers_requested": n,
+                "watchers_connected": connected,
+                "pulses": cmd.pulses,
+                "deliveries_measured": deliveries,
+                "deliveries_per_s": round3(deliveries_per_s),
+                "write_to_deliver_latency": summarize(samples),
+                "writer_append_latency": summarize(write_lat),
+            }),
+        );
+        let _ = c.delete(&path).await;
+    }
+
+    cleanup(&c, &ns).await;
+    let summary = json!({ "base_url": cmd.base_url, "workload": "broadcast", "tiers": Value::Object(tiers.clone()) });
+
+    if cmd.json {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("\n=== streams-probe broadcast: {} ===", cmd.base_url);
+        println!("one source box -> N SSE watchers (shared zero-copy frame fan-out):");
+        let mut keys: Vec<&String> = tiers.keys().collect();
+        keys.sort_by_key(|k| k.trim_start_matches("watchers_").parse::<usize>().unwrap_or(0));
+        for k in keys {
+            let v = &tiers[k];
+            println!(
+                "  {:>5} watcher(s) [{} connected]: {:.0} deliveries/s | write->deliver {}",
+                v["watchers_requested"].as_u64().unwrap_or(0),
+                v["watchers_connected"].as_u64().unwrap_or(0),
+                v["deliveries_per_s"].as_f64().unwrap_or(0.0),
+                fmt_latency(&v["write_to_deliver_latency"]),
+            );
+        }
+        println!();
+    }
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// 2. DISTRIBUTION — 1 source -> many boxes via batched, sharded fan-out
+// ---------------------------------------------------------------------------
+
+async fn run_distribution(cmd: DistributionCmd) -> ExitCode {
+    let c = Client::new(&cmd.base_url, cmd.token.clone());
+    if !preflight(&c, &cmd.base_url).await {
+        return ExitCode::FAILURE;
+    }
+    let ns = format!("dist{}", std::process::id());
+    let n_boxes = cmd.boxes.max(1);
+    let batch = cmd.batch.max(1);
+    let writers = cmd.writers.max(1);
+    eprintln!(
+        "distribution {} (boxes={}, batch={}, writers={})",
+        cmd.base_url, n_boxes, batch, writers
+    );
+
+    // Each request appends `batch` records to ONE destination box (a small,
+    // sharded append). We round-robin boxes across `total_batches` requests so
+    // the fan-out spreads evenly. total appends == total_batches * batch.
+    let total_batches = n_boxes; // one batch per box: every box gets `batch` records.
+    let total_records = total_batches * batch;
+
+    // Pre-build a reusable batch payload (return_seqs=false to keep responses tiny).
+    let payload = {
+        let recs: Vec<Value> = (0..batch).map(|i| json!({ "data": { "i": i, "p": "evt" } })).collect();
+        Arc::new(json!({ "records": recs, "return_seqs": false }))
+    };
+
+    let next = Arc::new(AtomicU64::new(0));
+    let done_records = Arc::new(AtomicU64::new(0));
+    let done_batches = Arc::new(AtomicU64::new(0));
+    // Per-box append latency samples (a sampled subset to bound memory).
+    let lat = Arc::new(std::sync::Mutex::new(Vec::<f64>::with_capacity(20_000)));
+
+    let base = Arc::new(format!("{ns}-b"));
+    let start = Instant::now();
+    let mut handles = Vec::with_capacity(writers);
+    for _ in 0..writers {
+        let cc = c.clone();
+        let pl = payload.clone();
+        let next = next.clone();
+        let done_records = done_records.clone();
+        let done_batches = done_batches.clone();
+        let lat = lat.clone();
+        let base = base.clone();
+        handles.push(tokio::spawn(async move {
+            let mut local_lat: Vec<f64> = Vec::new();
+            loop {
+                let idx = next.fetch_add(1, Ordering::Relaxed);
+                if idx >= total_batches {
+                    break;
+                }
+                let path = format!("/v0/boxes/{base}{idx}?return_seqs=false");
+                let t = Instant::now();
+                let ok = cc
+                    .post(&path, &pl)
+                    .await
+                    .map(|r| r.status == 200 || r.status == 201)
+                    .unwrap_or(false);
+                if ok {
+                    done_records.fetch_add(batch, Ordering::Relaxed);
+                    done_batches.fetch_add(1, Ordering::Relaxed);
+                    // Sample ~1 in 4 to keep the latency vector bounded.
+                    if idx.is_multiple_of(4) {
+                        local_lat.push(t.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+            }
+            if !local_lat.is_empty() {
+                lat.lock().unwrap().extend(local_lat);
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let recs = done_records.load(Ordering::Relaxed);
+    let batches_ok = done_batches.load(Ordering::Relaxed);
+    let appends_per_s = if elapsed > 0.0 { recs as f64 / elapsed } else { 0.0 };
+    let lat_summary = summarize(Arc::try_unwrap(lat).ok().and_then(|m| m.into_inner().ok()).unwrap_or_default());
+
+    cleanup(&c, &ns).await;
+
+    let summary = json!({
+        "base_url": cmd.base_url,
+        "workload": "distribution",
+        "boxes": n_boxes,
+        "batch_size": batch,
+        "writers": writers,
+        "records_target": total_records,
+        "records_appended": recs,
+        "batches_ok": batches_ok,
+        "elapsed_s": round3(elapsed),
+        "appends_per_s": round3(appends_per_s),
+        "per_request_latency": lat_summary,
+    });
+
+    if cmd.json {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("\n=== streams-probe distribution: {} ===", cmd.base_url);
+        println!(
+            "1 source -> {} boxes via {} batched writers (batch={}):",
+            n_boxes, writers, batch
+        );
+        println!(
+            "  {:.0} appends/s  ({} records into {} boxes in {:.3}s)",
+            appends_per_s, recs, batches_ok, elapsed
+        );
+        println!("  per-request append latency: {}", fmt_latency(&lat_summary));
+        if appends_per_s < 1_000_000.0 {
+            println!(
+                "  NOTE: {:.0} appends/s is below the 1M/s target. Single-process HTTP probe is\n        the ceiling here — per-request overhead (TCP/HTTP/JSON parse) dominates over\n        a localhost loopback. Raise --batch and --writers, and run the probe on a\n        separate host/core set, to push closer; the write path itself is sharded\n        and lock-free per box (ARCHITECTURE §8).",
+                appends_per_s
+            );
+        }
+        println!();
+    }
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// 3. QUEUE — producers fill a queue; N workers claim/ack in a loop
+// ---------------------------------------------------------------------------
+
+async fn run_queue(cmd: QueueCmd) -> ExitCode {
+    let c = Client::new(&cmd.base_url, cmd.token.clone());
+    if !preflight(&c, &cmd.base_url).await {
+        return ExitCode::FAILURE;
+    }
+    let ns = format!("queue{}", std::process::id());
+    let workers = cmd.workers.max(1);
+    let jobs = cmd.jobs.max(1);
+    eprintln!(
+        "queue {} (workers={}, jobs={}, claim_max={}, jitter={}ms)",
+        cmd.base_url, workers, jobs, cmd.claim_max, cmd.jitter
+    );
+
+    let q = format!("{ns}-q");
+    let path = format!("/v0/boxes/{q}");
+    // Create the queue. lease_ms generous so workers never lose a lease mid-run.
+    let _ = c
+        .put(
+            &path,
+            &json!({ "type": "queue", "lease_ms": 60000, "claim_jitter_ms": cmd.jitter }),
+        )
+        .await;
+
+    // Produce `jobs` jobs via batched appends (the produce path is a normal append).
+    let produce_batch = 500u64;
+    let prod_start = Instant::now();
+    {
+        let mut produced = 0u64;
+        while produced < jobs {
+            let n = produce_batch.min(jobs - produced);
+            let recs: Vec<Value> = (0..n).map(|i| json!({ "data": { "j": produced + i } })).collect();
+            let _ = c
+                .post(&format!("{path}?return_seqs=false"), &json!({ "records": recs, "return_seqs": false }))
+                .await;
+            produced += n;
+        }
+    }
+    let produce_elapsed = prod_start.elapsed().as_secs_f64();
+
+    // N workers: each loops claim -> ack until the queue is drained. A worker
+    // stops after a few consecutive empty claims (the count<max "near-empty"
+    // signal from §10.2).
+    let claim_lat = Arc::new(std::sync::Mutex::new(Vec::<f64>::with_capacity(20_000)));
+    let per_worker = Arc::new((0..workers).map(|_| AtomicU64::new(0)).collect::<Vec<_>>());
+    let total_acked = Arc::new(AtomicU64::new(0));
+    let target = jobs;
+
+    let work_start = Instant::now();
+    let mut handles = Vec::with_capacity(workers);
+    for wid in 0..workers {
+        let cc = c.clone();
+        let path = path.clone();
+        let claim_lat = claim_lat.clone();
+        let per_worker = per_worker.clone();
+        let total_acked = total_acked.clone();
+        let claim_max = cmd.claim_max;
+        handles.push(tokio::spawn(async move {
+            let node = format!("w{wid}");
+            let mut local_lat: Vec<f64> = Vec::new();
+            let mut empty_streak = 0u32;
+            loop {
+                if total_acked.load(Ordering::Relaxed) >= target {
+                    break;
+                }
+                let t = Instant::now();
+                let claim = cc
+                    .post(&format!("{path}/claim"), &json!({ "node": node, "max": claim_max }))
+                    .await;
+                local_lat.push(t.elapsed().as_secs_f64() * 1000.0);
+                let seqs: Vec<u64> = match &claim {
+                    Ok(r) => r
+                        .body
+                        .get("claimed")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|j| j.get("$seq").and_then(|s| s.as_u64())).collect())
+                        .unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                if seqs.is_empty() {
+                    empty_streak += 1;
+                    // Drained (or contended): a few empty claims in a row ends the worker.
+                    if empty_streak >= 5 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    continue;
+                }
+                empty_streak = 0;
+                let n = seqs.len() as u64;
+                let ack = cc
+                    .post(&format!("{path}/ack"), &json!({ "node": node, "seqs": seqs }))
+                    .await;
+                let acked = ack.ok().and_then(|r| u64_of(&r.body, "acked")).unwrap_or(0);
+                if acked > 0 {
+                    per_worker[wid].fetch_add(acked, Ordering::Relaxed);
+                    total_acked.fetch_add(acked, Ordering::Relaxed);
+                } else {
+                    // Claimed but acked 0 (lease lost / raced) — count claim work anyway.
+                    let _ = n;
+                }
+            }
+            if !local_lat.is_empty() {
+                claim_lat.lock().unwrap().extend(local_lat);
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+    let work_elapsed = work_start.elapsed().as_secs_f64();
+
+    let acked = total_acked.load(Ordering::Relaxed);
+    let jobs_per_s = if work_elapsed > 0.0 { acked as f64 / work_elapsed } else { 0.0 };
+    let counts: Vec<u64> = per_worker.iter().map(|a| a.load(Ordering::Relaxed)).collect();
+    let dist = distribution_stats(&counts);
+    let claim_summary = summarize(Arc::try_unwrap(claim_lat).ok().and_then(|m| m.into_inner().ok()).unwrap_or_default());
+
+    // Leftover (if any) for transparency.
+    let leftover = c.get(&path).await.ok().and_then(|r| {
+        r.body.get("queue").and_then(|x| x.get("ready")).and_then(|v| v.as_u64())
+    });
+
+    cleanup(&c, &ns).await;
+
+    let summary = json!({
+        "base_url": cmd.base_url,
+        "workload": "queue",
+        "workers": workers,
+        "jobs_produced": jobs,
+        "jobs_acked": acked,
+        "claim_max": cmd.claim_max,
+        "claim_jitter_ms": cmd.jitter,
+        "produce_elapsed_s": round3(produce_elapsed),
+        "produce_per_s": round3(if produce_elapsed > 0.0 { jobs as f64 / produce_elapsed } else { 0.0 }),
+        "process_elapsed_s": round3(work_elapsed),
+        "jobs_per_s": round3(jobs_per_s),
+        "claim_latency": claim_summary,
+        "per_worker_distribution": dist,
+        "ready_left": leftover,
+    });
+
+    if cmd.json {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("\n=== streams-probe queue: {} ===", cmd.base_url);
+        println!(
+            "{} workers claim/ack {} jobs (claim_max={}, jitter={}ms):",
+            workers, jobs, cmd.claim_max, cmd.jitter
+        );
+        println!(
+            "  produce: {:.0} jobs/s ({:.3}s) | process: {:.0} jobs/s ({} acked in {:.3}s)",
+            summary["produce_per_s"].as_f64().unwrap_or(0.0),
+            produce_elapsed,
+            jobs_per_s,
+            acked,
+            work_elapsed,
+        );
+        println!("  claim latency: {}", fmt_latency(&claim_summary));
+        println!(
+            "  per-worker evenness: min={} max={} mean={:.1} stddev={:.1} cv={:.3} (lower cv = more even)",
+            dist["min"].as_u64().unwrap_or(0),
+            dist["max"].as_u64().unwrap_or(0),
+            dist["mean"].as_f64().unwrap_or(0.0),
+            dist["stddev"].as_f64().unwrap_or(0.0),
+            dist["cv"].as_f64().unwrap_or(0.0),
+        );
+        println!();
+    }
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// 4. ACTORS / INFERENCE — per-actor box, event chains, snapshot compaction
+// ---------------------------------------------------------------------------
+
+async fn run_actors(cmd: ActorsCmd) -> ExitCode {
+    let c = Client::new(&cmd.base_url, cmd.token.clone());
+    if !preflight(&c, &cmd.base_url).await {
+        return ExitCode::FAILURE;
+    }
+    let ns = format!("actors{}", std::process::id());
+    let actors = cmd.actors.max(1);
+    let inferences = cmd.inferences.max(1);
+    let tool_results = cmd.tool_results;
+    let concurrency = cmd.concurrency.max(1);
+    // Chain length per inference: 1 model-answer + 1 tool-call + T tool-results.
+    let chain_len = 2 + tool_results;
+    eprintln!(
+        "actors {} (actors={}, inferences={}/actor, chain_len={}, snapshot_every={})",
+        cmd.base_url, actors, inferences, chain_len, cmd.snapshot_every
+    );
+
+    let next = Arc::new(AtomicU64::new(0));
+    let events_done = Arc::new(AtomicU64::new(0));
+    let snapshots_done = Arc::new(AtomicU64::new(0));
+    let append_lat = Arc::new(std::sync::Mutex::new(Vec::<f64>::with_capacity(20_000)));
+    let base = Arc::new(format!("{ns}-actor"));
+
+    let start = Instant::now();
+    let mut handles = Vec::with_capacity(concurrency);
+    for _ in 0..concurrency {
+        let cc = c.clone();
+        let next = next.clone();
+        let events_done = events_done.clone();
+        let snapshots_done = snapshots_done.clone();
+        let append_lat = append_lat.clone();
+        let base = base.clone();
+        let snapshot_every = cmd.snapshot_every.max(1);
+        handles.push(tokio::spawn(async move {
+            let mut local_lat: Vec<f64> = Vec::new();
+            loop {
+                let a = next.fetch_add(1, Ordering::Relaxed);
+                if a >= actors {
+                    break;
+                }
+                let path = format!("/v0/boxes/{base}{a}");
+                for inf in 0..inferences {
+                    // One inference = one chain appended as a single batch:
+                    //   model-answer + tool-call + N tool-result events.
+                    let mut recs: Vec<Value> = Vec::with_capacity(chain_len as usize);
+                    recs.push(json!({ "data": { "role": "assistant", "kind": "model-answer", "inf": inf } }));
+                    recs.push(json!({ "data": { "role": "assistant", "kind": "tool-call", "tool": "search", "inf": inf } }));
+                    for tr in 0..tool_results {
+                        recs.push(json!({ "data": { "role": "tool", "kind": "tool-result", "tr": tr, "inf": inf } }));
+                    }
+                    let t = Instant::now();
+                    let resp = cc
+                        .post(&format!("{path}?return_seqs=false"), &json!({ "records": recs, "return_seqs": false }))
+                        .await;
+                    if resp.as_ref().map(|r| r.status == 200 || r.status == 201).unwrap_or(false) {
+                        events_done.fetch_add(chain_len, Ordering::Relaxed);
+                        if a.is_multiple_of(8) {
+                            local_lat.push(t.elapsed().as_secs_f64() * 1000.0);
+                        }
+                    }
+                    // Periodic snapshot compaction: delete everything before the
+                    // current head (drop old inference chains, keep the latest).
+                    if (inf + 1) % snapshot_every == 0 {
+                        if let Ok(st) = cc.get(&path).await {
+                            if let Some(head) = u64_of(&st.body, "head_seq") {
+                                // before_seq = head keeps the most recent record (seq==head).
+                                let _ = cc
+                                    .post(&format!("{path}/delete"), &json!({ "before_seq": head }))
+                                    .await;
+                                snapshots_done.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
+            if !local_lat.is_empty() {
+                append_lat.lock().unwrap().extend(local_lat);
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+
+    let events = events_done.load(Ordering::Relaxed);
+    let snaps = snapshots_done.load(Ordering::Relaxed);
+    let events_per_s = if elapsed > 0.0 { events as f64 / elapsed } else { 0.0 };
+    let inferences_per_s = if elapsed > 0.0 { (actors * inferences) as f64 / elapsed } else { 0.0 };
+    let lat_summary = summarize(Arc::try_unwrap(append_lat).ok().and_then(|m| m.into_inner().ok()).unwrap_or_default());
+
+    cleanup(&c, &ns).await;
+
+    let summary = json!({
+        "base_url": cmd.base_url,
+        "workload": "actors",
+        "actors": actors,
+        "inferences_per_actor": inferences,
+        "chain_len": chain_len,
+        "tool_results_per_inference": tool_results,
+        "snapshot_every": cmd.snapshot_every,
+        "events_appended": events,
+        "snapshots_compacted": snaps,
+        "elapsed_s": round3(elapsed),
+        "events_per_s": round3(events_per_s),
+        "inferences_per_s": round3(inferences_per_s),
+        "chain_append_latency": lat_summary,
+    });
+
+    if cmd.json {
+        println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+    } else {
+        println!("\n=== streams-probe actors: {} ===", cmd.base_url);
+        println!(
+            "{} actor boxes x {} inferences (chain_len={}, snapshot every {}):",
+            actors, inferences, chain_len, cmd.snapshot_every
+        );
+        println!(
+            "  {:.0} events/s ({} events, {} chains, {} snapshot-compactions in {:.3}s)",
+            events_per_s, events, actors * inferences, snaps, elapsed
+        );
+        println!("  {:.0} inferences/s", inferences_per_s);
+        println!("  per-chain append latency: {}", fmt_latency(&lat_summary));
+        println!();
+    }
+    ExitCode::SUCCESS
 }

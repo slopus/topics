@@ -170,10 +170,13 @@ impl Harness {
                         .await
                         .expect("rebind ephemeral port");
                     let _ = ready_tx.send(());
-                    let server = axum::serve(listener, app).with_graceful_shutdown(async {
+                    // Same dual-protocol (HTTP/1.1 keep-alive + h2c prior-knowledge)
+                    // serve loop the binary uses, so the harness exercises the exact
+                    // production path under both protocols.
+                    let _ = streams::serve::serve(listener, app, async {
                         let _ = shutdown_rx.await;
-                    });
-                    let _ = server.await;
+                    })
+                    .await;
                 });
             })
             .expect("spawn harness thread");
