@@ -126,6 +126,15 @@ impl RouterGraph {
             .collect()
     }
 
+    /// Whether ANY router has `box_name` as its source — a cheap existence check
+    /// for the write fast path. The common case (no routers) lets the writer skip
+    /// snapshotting/cloning every record purely for forwarding (codex P0 #2): a
+    /// no-router write never deep-clones its payloads. Short-circuits on the first
+    /// match instead of collecting owned `Router`s.
+    pub fn has_routers_for_source(&self, box_name: &str) -> bool {
+        self.routers.values().any(|r| r.source == box_name)
+    }
+
     /// Record that `count` records were forwarded by `router` up through source
     /// seq `src_head` (advances the per-router cursor + `forwarded_total`).
     pub fn note_forwarded(&mut self, router: &str, src_head: u64, count: u64) {

@@ -60,11 +60,13 @@ pub fn capture(engine: &Engine, id: u64) -> Option<Snapshot> {
     // 3) Materialize every box's live state + the router set. Each box is captured
     //    under its own `append_lock` (codex P0): a durable write may have its WAL
     //    frame *before* the checkpoint offset yet still be staged-but-unpublished
-    //    when we read the index. Holding the lock serializes against the write
-    //    path's stage→enqueue→fsync→publish critical section, so we observe a
-    //    consistent `(head_seq, index)` and never exclude a frame the checkpoint
-    //    already covers. `capture_box` additionally snapshots only `seq <=
-    //    head_seq`, so a concurrently-staged (invisible) tail is never persisted.
+    //    when we read the index. Holding the lock blocks any NEW stage; we then
+    //    `quiesce_publishes()` to drain every already-ticketed in-flight write
+    //    (its fsync now waits OFF the lock, codex P0 #1) so `head_seq` covers
+    //    every frame the checkpoint offset already includes. After that we observe
+    //    a consistent `(head_seq, index)` and never exclude a covered frame.
+    //    `capture_box` additionally snapshots only `seq <= head_seq`, so a
+    //    concurrently-staged (invisible) tail is never persisted.
     let mut boxes = Vec::with_capacity(engine.boxes.len());
     let mut max_seq = 0u64;
     for entry in engine.boxes.iter() {
@@ -72,6 +74,9 @@ pub fn capture(engine: &Engine, id: u64) -> Option<Snapshot> {
         // Enforce retention so the captured floors/records are current.
         b.enforce_retention(engine.clock.now_ms());
         let _append_guard = b.append_lock.lock();
+        // Drain in-flight (ticketed-but-unpublished) durable writes so head_seq
+        // covers every frame at/before the checkpoint offset captured above.
+        b.quiesce_publishes();
         let snap_box = capture_box(b);
         max_seq = max_seq.max(snap_box.head_seq);
         boxes.push(snap_box);

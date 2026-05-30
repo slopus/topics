@@ -646,30 +646,50 @@ impl Engine {
         let durable = class == Durability::Fsync;
         let box_id = dest.box_id;
         let snapshot = records.clone();
-        let _guard = dest.append_lock.lock();
-        let staged = dest.stage_append(records);
-        let seqs = staged.seqs();
-        // A `memory`-class destination NEVER writes to the WAL: forwarded /
-        // dead-lettered copies into it are RAM-only and lost on restart, exactly
-        // like a direct write. Skip the enqueue + fsync entirely.
-        if class != Durability::Memory {
-            let (_wal_ms, token) = match self.wal_enqueue_batch(box_id, &seqs, &snapshot, now, durable) {
-                Ok(v) => v,
-                Err(e) => {
-                    dest.rollback_staged(staged);
-                    return Err(e);
-                }
-            };
-            if durable {
-                if let Some(token) = token {
-                    if let Err(e) = token.wait() {
+        // Stage + enqueue + ticket UNDER the append lock (seq-order critical
+        // section); fsync `wait()` then runs OFF the lock so concurrent durable
+        // appends to `dest` coalesce into one group commit, and publish is gated
+        // back into strict seq order (codex P0 #1) — identical to the user write
+        // path so the durability/ordering contract is the same.
+        let (staged, seqs, ticket, token) = {
+            let _guard = dest.append_lock.lock();
+            let staged = dest.stage_append(records);
+            let seqs = staged.seqs();
+            // A `memory`-class destination NEVER writes to the WAL: forwarded /
+            // dead-lettered copies into it are RAM-only and lost on restart,
+            // exactly like a direct write. Skip the enqueue + fsync entirely.
+            let token = if class != Durability::Memory {
+                match self.wal_enqueue_batch(box_id, &seqs, &snapshot, now, durable) {
+                    Ok((_wal_ms, token)) => token,
+                    Err(e) => {
+                        // No ticket taken yet: tail truncation is still safe.
                         dest.rollback_staged(staged);
-                        return Err(Error::internal(format!("WAL fsync failed: {e}")));
+                        return Err(e);
                     }
+                }
+            } else {
+                None
+            };
+            let ticket = dest.next_publish_ticket();
+            (staged, seqs, ticket, token)
+        };
+
+        let mut fsync_failed: Option<String> = None;
+        if durable {
+            if let Some(token) = token {
+                if let Err(e) = token.wait() {
+                    fsync_failed = Some(format!("WAL fsync failed: {e}"));
                 }
             }
         }
+        dest.publish_wait_turn(ticket);
+        if let Some(msg) = fsync_failed {
+            dest.rollback_staged_by_seqs(&staged);
+            dest.publish_done(ticket);
+            return Err(Error::internal(msg));
+        }
         dest.publish_staged(staged, now);
+        dest.publish_done(ticket);
         Ok(seqs)
     }
 
@@ -1264,23 +1284,34 @@ impl Engine {
         }
 
         // --- WAL-FIRST append (ARCHITECTURE §2.2). -------------------------
-        // Snapshot the resolved records for router forwarding before staging
-        // consumes the vec (forwarding reads the canonical $node/$tag).
-        let stored_snapshot = stored.clone();
+        // The resolved records are needed in two places AFTER `stage_append`
+        // consumes the input vec: (a) WAL frame encoding, which only happens for
+        // a non-`memory` box when a WAL actually exists, and (b) router
+        // forwarding when this box is a router source. A write that needs
+        // NEITHER (no WAL, no routers — e.g. a `memory` box, or any box on an
+        // in-memory engine) skips the deep clone of every `serde_json::Value`
+        // entirely on that hot path (codex P0 #2). The router check is a cheap
+        // existence scan (no owned `Router` clones) under the graph lock.
+        let need_forward = self.routers.lock().has_routers_for_source(name);
+        let need_wal = self.wal.is_some() && class != Durability::Memory;
+        let stored_snapshot = if need_wal || need_forward {
+            stored.clone()
+        } else {
+            Vec::new()
+        };
 
-        // The per-box append lock spans the WHOLE reservation: stage seqs →
-        // enqueue the WAL frame → fsync (durable) → publish/rollback. Staged
-        // records sit in the index deque but are INVISIBLE (head_seq unchanged)
-        // until the WAL frame is durably committed, so a reader never observes a
-        // record that has not (yet) become durable, and a crash after a failed
-        // fsync loses nothing that was acknowledged (not acked ⇒ not committed).
-        //
-        // Holding the lock across the fsync serializes a single box's durable
-        // writes, but the single ordered WAL writer still coalesces frames from
-        // *other* boxes into the same group commit, so cross-box durable
-        // throughput is unchanged. Within one box, durable writes already
-        // serialize on the index lock + seq assignment.
-        let (seqs, head, wal_append_ms, fsync_ms) = {
+        // The per-box append lock spans only the SEQ-ORDER critical section:
+        // stage seqs → enqueue the WAL frame → take a publish ticket. The fsync
+        // `wait()` then happens OFF the lock (codex P0 #1), so many concurrent
+        // durable writers to THIS box coalesce into ONE group-commit fsync instead
+        // of serializing one-fsync-per-write. Staged records sit in the index
+        // deque but are INVISIBLE (head_seq unchanged) until published; publish is
+        // gated to strict seq order by the ticket, so the single ordered WAL
+        // writer's prefix-commit guarantee holds — when this writer's frames are
+        // fsynced, every earlier writer's lower-seq frames are fsynced too, so
+        // ordered publish never exposes a non-durable record (not acked ⇒ not
+        // committed; a reader never observes a not-yet-durable record).
+        let (staged, seqs, ticket, wal_append_ms, commit_token) = {
             let _guard = b.append_lock.lock();
             let staged = b.stage_append(stored);
             let seqs = staged.seqs();
@@ -1295,41 +1326,66 @@ impl Engine {
                 match self.wal_enqueue_batch(box_id, &seqs, &stored_snapshot, now, durable) {
                     Ok(v) => v,
                     Err(e) => {
-                        // WAL append failed before commit: publish nothing.
+                        // WAL append failed before commit: publish nothing. No
+                        // ticket was taken yet, so a tail truncation is still safe
+                        // (no later writer staged past us under the held lock).
                         b.rollback_staged(staged);
                         return Err(e);
                     }
                 }
             };
+            // Take the publish ticket UNDER the lock, in enqueue order. From here
+            // on a later writer may stage past us once we drop the lock, so any
+            // rollback below must target THIS batch's seqs (not a tail truncation).
+            let ticket = b.next_publish_ticket();
+            (staged, seqs, ticket, wal_append_ms, commit_token)
+        };
 
-            // Durability gate: for a `durable` box block on the last frame's commit
-            // token (the single ordered writer guarantees every prior frame in the
-            // batch is fsynced by then) BEFORE publishing — so the response is
-            // fsync-gated and nothing visible is non-durable. A non-durable write's
-            // frames are buffered and group-committed shortly after; we don't wait.
+        let (head, fsync_ms) = {
+            // Durability gate (OFF the append lock): for a `durable` box block on
+            // the last frame's commit token (the single ordered writer guarantees
+            // every prior frame in the batch is fsynced by then) — so the response
+            // is fsync-gated and nothing visible is non-durable. A non-durable
+            // write's frames are buffered and group-committed shortly after; we
+            // don't wait. Multiple writers' waits overlap and group-commit
+            // together (the throughput win).
+            let mut fsync_failed: Option<String> = None;
             let fsync_ms = if durable {
                 if let Some(token) = commit_token {
                     let t1 = Instant::now();
                     if let Err(e) = token.wait() {
-                        // fsync FAILED: roll the staged records back (they were
-                        // never visible) and return an error. Not acked ⇒ not
-                        // committed; no visible-but-not-durable state remains.
-                        b.rollback_staged(staged);
-                        return Err(Error::internal(format!("WAL fsync failed: {e}")));
+                        fsync_failed = Some(format!("WAL fsync failed: {e}"));
                     }
                     elapsed_ms(t1)
                 } else {
                     0.0
                 }
             } else {
+                // A non-durable write still drops its token (fire-and-forget); the
+                // group commit hardens it shortly after.
                 0.0
             };
 
+            // Wait for our turn to publish, in strict seq order (codex P0 #1).
+            // Even though fsyncs overlapped above, publish/rollback is serialized
+            // so head advances monotonically and prefix-durability holds.
+            b.publish_wait_turn(ticket);
+            if let Some(msg) = fsync_failed {
+                // fsync FAILED: mark THIS batch's seqs deleted in place (a later
+                // writer may already have staged past them, so we cannot truncate),
+                // advance the gate, and return an error. The records were never
+                // published by us; if a later writer advances head past them they
+                // read as a silent deleted gap. Not acked ⇒ not committed.
+                b.rollback_staged_by_seqs(&staged);
+                b.publish_done(ticket);
+                return Err(Error::internal(msg));
+            }
             // Durably committed (or non-durable buffered write): NOW publish the
             // staged records, making them visible + notifying waiters.
             b.publish_staged(staged, now);
             let head = b.head_seq();
-            (seqs, head, wal_append_ms, fsync_ms)
+            b.publish_done(ticket);
+            (head, fsync_ms)
         };
 
         // Post-append eviction for discard:"old" (may surface as a tombstone to
@@ -1365,17 +1421,21 @@ impl Engine {
 
         // --- Router forwarding (at-least-once, per-source FIFO). -----------
         // Forward off the freshly-stored records (carrying resolved $node/$tag),
-        // recursing through chained routers with a bounded hop counter.
-        let forwarded: Vec<ForwardRecord> = stored_snapshot
-            .into_iter()
-            .map(|sr| ForwardRecord {
-                data: sr.data,
-                tag: sr.tag,
-                node: sr.node,
-                meta: sr.meta,
-            })
-            .collect();
-        self.forward_from(name, &forwarded, now, 0);
+        // recursing through chained routers with a bounded hop counter. Skipped
+        // entirely when this box is not a router source (the common case): the
+        // snapshot was never even cloned above, so there is nothing to forward.
+        if need_forward {
+            let forwarded: Vec<ForwardRecord> = stored_snapshot
+                .into_iter()
+                .map(|sr| ForwardRecord {
+                    data: sr.data,
+                    tag: sr.tag,
+                    node: sr.node,
+                    meta: sr.meta,
+                })
+                .collect();
+            self.forward_from(name, &forwarded, now, 0);
+        }
 
         // Mark the box dirty in the scheduler (advisory in phase 2).
         self.scheduler
@@ -1593,19 +1653,24 @@ impl Engine {
         }
 
         // --- Walk records, applying the read pipeline (DESIGN §7.3). --------
-        // Under the index read lock we only decide deliverability and capture the
-        // light locator fields (`seq/ts/node/tag` + the resident payload if it is
-        // still in the slot). Any payload that was freed after sealing (Phase 6)
-        // is resolved from the writer's cache/segment **after** the lock is
-        // dropped, so a (potentially slow) segment read never holds the index
-        // lock or blocks a concurrent write/delivery (the HARD INVARIANT).
-        let mut deliverable: Vec<DiffSlot> = Vec::new();
+        // Under the index read lock we build the wire `RecordOut`s for every
+        // deliverable record whose payload is RESIDENT (the unchanged default +
+        // the hot tail) directly — no intermediate per-slot struct/Vec. A record
+        // whose payload was freed after sealing (Phase 6) is pushed as a
+        // placeholder (`Null` data) and its `(records[i], seq)` remembered; its
+        // payload is resolved from the writer's cache/segment **after** the lock
+        // is dropped, so a (potentially slow) segment read never holds the index
+        // lock or blocks a concurrent write/delivery (the HARD INVARIANT). The
+        // common all-resident diff therefore makes a single pass with one
+        // allocation instead of building then re-walking a `Vec<DiffSlot>`.
+        let mut records: Vec<RecordOut> = Vec::with_capacity(limit.min(64));
+        let mut sealed_pending: Vec<(usize, u64)> = Vec::new();
         let mut scanned: u64 = 0;
         let mut next_from_seq = cursor;
         {
             let index = b.index.read();
             let mut seq = cursor.saturating_add(1);
-            while seq <= head && deliverable.len() < limit {
+            while seq <= head && records.len() < limit {
                 let Some(rec) = index.get(seq) else {
                     // Below base_seq (reclaimed) — skip; cursor still advances.
                     next_from_seq = seq;
@@ -1622,16 +1687,21 @@ impl Engine {
                     rec.node.as_deref(),
                 );
                 if decision == filters::ReadDecision::Deliver {
-                    deliverable.push(DiffSlot {
+                    let (data, meta) = if rec.payload_resident {
+                        (rec.data.clone(), if req.include_meta { rec.meta.clone() } else { None })
+                    } else {
+                        // Resolved off-lock below; remember this slot's index.
+                        sealed_pending.push((records.len(), seq));
+                        (serde_json::Value::Null, None)
+                    };
+                    records.push(RecordOut {
                         seq,
                         ts: rec.ts,
                         node: rec.node.clone(),
-                        tag: rec.tag.clone(),
-                        resident: if rec.payload_resident {
-                            Some((rec.data.clone(), rec.meta.clone()))
-                        } else {
-                            None
-                        },
+                        tag: if req.include_tags { rec.tag.clone() } else { None },
+                        type_: None,
+                        data,
+                        meta,
                     });
                 }
                 // Deleted / NodeFiltered / Expired: silently skipped; the cursor
@@ -1641,29 +1711,19 @@ impl Engine {
             }
         }
 
-        // Resolve any non-resident (sealed) payloads off the index lock and build
-        // the wire records. A resident slot is used directly (the unchanged
-        // default + the hot tail); a sealed one resolves from the recent-seal
-        // cache / cold LRU (no I/O) or, on a miss, a segment `read_range` issued
-        // with the writer lock RELEASED — so a slow cold fetch never gates a
-        // concurrent write/delivery (the HARD INVARIANT). `cold_segments_read`
-        // counts records that hit an actual cold read (a degraded historical read).
-        let mut records = Vec::with_capacity(deliverable.len());
+        // Resolve any non-resident (sealed) payloads off the index lock and patch
+        // them into their placeholder slots. A sealed record resolves from the
+        // recent-seal cache / cold LRU (no I/O) or, on a miss, a segment
+        // `read_range` issued with the writer lock RELEASED — so a slow cold fetch
+        // never gates a concurrent write/delivery (the HARD INVARIANT).
+        // `cold_segments_read` counts records that hit an actual cold read (a
+        // degraded historical read). The common all-resident diff skips this loop
+        // entirely.
         let mut cold_segments_read: u64 = 0;
-        for slot in deliverable {
-            let (data, meta) = match slot.resident {
-                Some(p) => p,
-                None => resolve_sealed_off_lock(b.as_ref(), slot.seq, &mut cold_segments_read),
-            };
-            records.push(RecordOut {
-                seq: slot.seq,
-                ts: slot.ts,
-                node: slot.node,
-                tag: if req.include_tags { slot.tag } else { None },
-                type_: None,
-                data,
-                meta: if req.include_meta { meta } else { None },
-            });
+        for (idx, seq) in sealed_pending {
+            let (data, meta) = resolve_sealed_off_lock(b.as_ref(), seq, &mut cold_segments_read);
+            records[idx].data = data;
+            records[idx].meta = if req.include_meta { meta } else { None };
         }
 
         let caught_up = next_from_seq == head;
@@ -1974,18 +2034,6 @@ impl Engine {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
-
-/// A deliverable slot captured under the diff read lock: the light locator
-/// fields plus the resident payload **if** it is still in the in-memory slot.
-/// A `None` `resident` means the payload was freed after sealing (Phase 6) and
-/// must be resolved from the segment writer's cache/segment off the lock.
-struct DiffSlot {
-    seq: u64,
-    ts: i64,
-    node: Option<String>,
-    tag: Option<String>,
-    resident: Option<(serde_json::Value, Option<serde_json::Value>)>,
-}
 
 /// A record in flight through the router fan-out. Carries the resolved
 /// `$node`/`$tag` (post-`preserve_*`) so chained forwards see the canonical

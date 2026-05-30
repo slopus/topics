@@ -354,8 +354,25 @@ pub struct BoxState {
     /// `seq <= head`) would then drop the lower-seq frame — a silent loss of an
     /// acked durable write. Held only across the (fast, non-blocking) channel
     /// enqueue; the fsync wait happens *after* the lock is released, so durable
-    /// group commit still coalesces across boxes (ARCHITECTURE §2.2/§2.3).
+    /// group commit still coalesces across boxes AND across writers of THIS box
+    /// (ARCHITECTURE §2.2/§2.3, codex P0 #1).
     pub append_lock: Mutex<()>,
+
+    /// Per-box commit sequencer enabling concurrent same-box durable writers to
+    /// coalesce into ONE group-commit fsync (codex P0 #1). The `append_lock`
+    /// covers only stage+enqueue; the fsync `wait()` then happens OFF the lock so
+    /// many writers' frames batch into a single fsync. But publish (and rollback)
+    /// must still happen in strict seq order, so each writer takes a monotonically
+    /// increasing `publish_ticket` while holding `append_lock`, then blocks on
+    /// this gate until `publish_next` reaches its ticket before
+    /// publishing/rolling back, finally bumping `publish_next` and waking the next
+    /// writer. Ordered publish makes the single ordered WAL writer's prefix-commit
+    /// guarantee hold: when writer B's token fires, every lower-seq frame
+    /// (writer A's) is already fsynced, so publishing in order never exposes a
+    /// non-durable record.
+    pub publish_ticket: AtomicU64,
+    pub publish_gate: std::sync::Mutex<u64>,
+    pub publish_cv: std::sync::Condvar,
 
     /// The per-box HOT segment writer + bounded payload cache (Phase 6 Stage 2).
     /// `None` for a pure in-memory box (every existing unit test) — then payloads
@@ -403,6 +420,9 @@ impl BoxState {
             broadcast: BroadcastCache::new(),
             queue,
             append_lock: Mutex::new(()),
+            publish_ticket: AtomicU64::new(0),
+            publish_gate: std::sync::Mutex::new(0),
+            publish_cv: std::sync::Condvar::new(),
             segwriter: None,
         }
     }
@@ -568,7 +588,15 @@ impl BoxState {
         let n = records.len() as u64;
         let mut index = self.index.write();
         let pre_len = index.records.len();
-        let start = self.head_seq().saturating_add(1);
+        // Reserve seqs from the DEQUE TAIL (`base_seq + len`), NOT `head_seq + 1`:
+        // with the fsync now waiting off the `append_lock` (codex P0 #1), a later
+        // writer can stage while an earlier writer has staged-but-not-yet-published
+        // (head_seq not yet advanced). The deque tail already accounts for those
+        // unpublished stages (they were pushed under this same index write lock),
+        // so it yields contiguous, gapless seqs across concurrent stagers. In the
+        // serial case this equals `head_seq + 1` exactly (head == base + len - 1
+        // right after a publish), so single-writer behavior is unchanged.
+        let start = index.base_seq + index.records.len() as u64;
         let mut added_bytes: u64 = 0;
         let mut seq = start;
         for rec in records {
@@ -642,6 +670,80 @@ impl BoxState {
             if let Some(tag) = tag {
                 index.unindex_tag(&tag, seq);
             }
+        }
+    }
+
+    /// Reserve the next commit ticket for this writer. MUST be called while
+    /// holding `append_lock` (immediately after `stage_append`), so tickets are
+    /// handed out in exactly the same order seqs were assigned + WAL frames
+    /// enqueued. The returned ticket is later passed to [`Self::publish_wait_turn`]
+    /// to enforce in-order publish off the lock (codex P0 #1).
+    pub fn next_publish_ticket(&self) -> u64 {
+        self.publish_ticket.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Block until it is this writer's turn to publish/rollback (its `ticket`
+    /// equals `publish_next`). Called AFTER the off-lock fsync `wait()`, so many
+    /// writers' fsyncs overlap (one group commit) yet publish strictly in seq
+    /// order. The single ordered WAL writer's prefix-commit guarantee then makes
+    /// ordered publish durable: when this writer's frames are committed, every
+    /// earlier writer's lower-seq frames are committed too.
+    pub fn publish_wait_turn(&self, ticket: u64) {
+        let mut next = self.publish_gate.lock().unwrap();
+        while *next != ticket {
+            next = self.publish_cv.wait(next).unwrap();
+        }
+    }
+
+    /// Advance the publish gate past `ticket`, waking the next writer in line.
+    /// MUST be called exactly once after this writer finished publishing or
+    /// rolling back, by the writer that owns `ticket` (after its
+    /// [`Self::publish_wait_turn`] returned).
+    pub fn publish_done(&self, ticket: u64) {
+        let mut next = self.publish_gate.lock().unwrap();
+        debug_assert_eq!(*next, ticket, "publish gate advanced out of order");
+        *next = ticket.wrapping_add(1);
+        self.publish_cv.notify_all();
+    }
+
+    /// Block until every ALREADY-TICKETED write has finished publishing/rolling
+    /// back (`publish_next == publish_ticket`). The caller MUST hold
+    /// `append_lock`, so no NEW ticket can be issued while we wait — the in-flight
+    /// set only shrinks, so this always terminates. Used by snapshot capture: with
+    /// the fsync now waiting off the `append_lock` (codex P0 #1), holding the lock
+    /// alone no longer means the box is quiescent (a writer may be mid-fsync,
+    /// staged-but-unpublished, with its WAL frame already before the checkpoint
+    /// offset). Quiescing the publish gate guarantees `head_seq` covers every such
+    /// in-flight frame, so the snapshot never excludes an acked write the
+    /// checkpoint position already covers.
+    pub fn quiesce_publishes(&self) {
+        let target = self.publish_ticket.load(Ordering::Relaxed);
+        let mut next = self.publish_gate.lock().unwrap();
+        while *next != target {
+            next = self.publish_cv.wait(next).unwrap();
+        }
+    }
+
+    /// **Roll back** a staged batch whose WAL append/fsync FAILED, robust to
+    /// concurrent same-box staging (codex P0 #1): because the fsync now waits off
+    /// the `append_lock`, a *later* writer may have staged records past this batch
+    /// in the deque, so a tail truncation would wrongly drop the later writer's
+    /// records. Instead mark each of THIS batch's seqs deleted in place (freeing
+    /// its payload + tag posting, just like [`Self::rollback_staged`] does for the
+    /// tail), leaving any later-staged records untouched. `head_seq` was never
+    /// advanced to include these seqs by this (failed) writer, and ordered publish
+    /// guarantees no later writer published before this rollback ran, so the
+    /// records were never visible. When a later writer subsequently advances head
+    /// past them, they read silently as a deleted gap (DESIGN §6/§7) — exactly
+    /// like any other deleted record. Not acknowledged ⇒ not committed.
+    pub fn rollback_staged_by_seqs(&self, staged: &StagedAppend) {
+        if staged.is_empty() {
+            return;
+        }
+        let mut index = self.index.write();
+        for i in 0..staged.count {
+            let seq = staged.start + i;
+            index.mark_deleted_pub(seq);
         }
     }
 
@@ -777,6 +879,17 @@ impl BoxState {
         let head = self.head_seq();
         if head == 0 {
             return; // empty box, nothing retained.
+        }
+
+        // Hot read-path fast path (codex P2 #11): a box with NO TTL and NO caps
+        // has no involuntary floor that this call could advance, and every delete
+        // already reclaims its own dead front (`delete_*`/`delete_seqs` call
+        // `reclaim_front` directly), so there is no pending front prefix for this
+        // call to drain either. Skip the index read + floors write lock entirely.
+        // This makes `diff()`/SSE on an uncapped, non-expiring box pay nothing for
+        // retention maintenance instead of taking two more locks on every pass.
+        if ttl_ms == 0 && cap_records == 0 && cap_bytes == 0 {
+            return;
         }
 
         let index = self.index.read();

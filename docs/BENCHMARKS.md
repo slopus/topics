@@ -721,3 +721,258 @@ reclaim) — all green.
   ls $D/boxes/*/ ; ls $C/boxes/*/                        # observe hot vs cold split
   curl -s -X POST $U/v0/boxes/<box>/diff -d '{"from_seq":0,"limit":1000}'  # cross-tier read
   ```
+
+---
+
+# Phase-6 PERFORMANCE iteration (hot-path optimization, 2026-05-30)
+
+Same machine/env as above (Apple M4 Max, 16 cores, 128 GiB, Darwin 25.2.0,
+`--release`). After the correctness work that added per-box append locking, a
+measurement pass found the locking serialized a single box's durable writers at
+one-fsync-per-write (durable throughput collapsed to ~17.9 K rec/s) and added
+per-call overhead to append/diff. This iteration restores throughput and trims
+the hot paths WITHOUT changing the `/v0` contract or weakening the
+durability/ordering guarantees (acked ⇒ committed). All gates green after every
+change: `cargo test` 310, `cargo test --features test-fs` 455, `streams-probe
+conformance` 117/117.
+
+## Optimizations applied
+
+1. **Off-lock fsync + per-box commit sequencer** (`engine/mod.rs` write +
+   `durable_append`, `engine/box_state.rs`). The `append_lock` now covers only
+   the seq-order critical section (stage + WAL-enqueue + take a publish ticket);
+   the fsync `wait()` happens OFF the lock, so concurrent durable writers to the
+   SAME box coalesce into ONE group-commit fsync. Publish/rollback are gated back
+   into strict seq order by a per-box ticket gate, so the single ordered WAL
+   writer's prefix-commit guarantee holds (when a writer's frames are fsynced,
+   every earlier writer's lower-seq frames are fsynced too) — ordered publish
+   never exposes a non-durable record. Seqs are reserved from the index deque
+   tail (not `head_seq`), so concurrent stagers stay contiguous. Rollback on
+   fsync failure marks the failed batch's own seqs deleted in place (robust to a
+   later writer having staged past them). Snapshot capture now `quiesce`s the
+   publish gate under the append lock so an in-flight (ticketed-but-unpublished)
+   durable write whose frame precedes the checkpoint offset is never excluded.
+2. **Skip the router-forward clone on the no-router fast path**
+   (`engine/mod.rs`, `engine/router.rs`). A write only deep-clones its records
+   for forwarding when the box is actually a router source (cheap
+   `has_routers_for_source` existence scan) and only clones for the WAL when a
+   WAL exists on a non-`memory` box. A plain write with no routers no longer
+   clones every `serde_json::Value`.
+3. **Single-pass diff projection** (`engine/mod.rs::diff`). The deliverable walk
+   builds `RecordOut` directly under the index read lock for resident payloads
+   (the common case); only sealed (non-resident) payloads are deferred and
+   patched off-lock. Removes the intermediate `Vec<DiffSlot>` + second pass.
+4. **Read-path retention fast path** (`engine/box_state.rs::enforce_retention`).
+   A box with no TTL and no caps returns immediately, skipping the index-read +
+   floors-write locks that every `diff`/SSE pass used to take (deletes already
+   reclaim their own front).
+
+## Criterion micro-benchmarks — baseline (this iteration's start) vs after
+
+| Bench | Start | After | Delta |
+|---|---:|---:|---:|
+| append/64B/1 | 1.272 µs | 1.208 µs | −5% |
+| append/64B/10 | 3.45 µs | 2.73 µs | −21% |
+| append/64B/100 | 25.7 µs | 17.5 µs | −32% |
+| append/64B/1000 | 260.8 µs | 169 µs | −35% |
+| append/1KiB/1 | 1.737 µs | 1.616 µs | −7% |
+| diff/1 | 207.8 ns | 165.5 ns | −20% |
+| diff/256 | 22.82 µs | 18.79 µs | −18% |
+| diff/1000 | 84.44 µs | 76.29 µs | −10% |
+
+(Batched-append wins come from the cheaper seq reservation + fast paths; the
+batch=1 ticket/gate adds a few ns of fixed cost, more than offset by the
+router/WAL-snapshot skip. Diff wins are the single-pass projection + retention
+fast path.)
+
+## Durable write throughput (`bench-durable`, 16 writers × batch 100, one box)
+
+| Class | Single-write ack p50 / p99 | Throughput |
+|---|---:|---:|
+| durable (regressed, pre-iteration) | 5.20 / 6.37 ms | **~17.9 K rec/s** |
+| **durable (after off-lock fsync)** | 5.19 / 6.20 ms | **~150 K rec/s** |
+| non-durable | 0.061 / 0.103 ms | ~558 K rec/s |
+
+**~8.4× durable-throughput recovery** with single-write durable latency
+unchanged (still the ~5 ms APFS fdatasync floor) — the fix lets many writers'
+frames join one group-commit fsync instead of serializing one-fsync-per-write,
+while every acked durable write is still fsync-gated and survives restart
+(`concurrent_durable_writers_no_loss_across_restart` +
+`f_snap_race_write_during_capture` green).
+
+## Queue / live HTTP
+
+Queue workload (100 workers, 20 k jobs, claim-max 8): ~115 K jobs/s, produce
+~524 K rec/s — stable vs the pre-iteration measurement (these queue boxes are
+non-durable, so they are unaffected by the durable-fsync coalescing; the
+remaining per-job ack-delete fsync on a *durable* lease queue is a separate,
+larger change not taken this pass). SSE fan-out and router forwarding overhead
+are within prior variance.
+
+# Performance iteration (post-reliability) — FINAL VERIFIED numbers (2026-05-30)
+
+This is the **STAGE-3 VERIFY+RECORD** pass for the performance iteration: a full
+clean `--release --workspace` rebuild, all gates re-run green, the live release
+server re-booted, conformance re-asserted, and the **entire benchmark suite
+re-measured end-to-end** to lock in the final post-optimization numbers. It does
+not change code — the optimizations are those documented in the "Phase-6
+PERFORMANCE iteration" section directly above; this section records the verified
+final state and the honest target assessment.
+
+Machine / env: **Apple M4 Max, 16 cores, 128 GiB RAM, Darwin 25.2.0**, Rust
+edition 2021, `cargo build --release`. Live server on `127.0.0.1` (loopback HTTP,
+single-tenant dev mode), fresh temp `STREAMS_DATA_DIR` on local NVMe (APFS).
+
+## Gate status (all green)
+
+| Gate | Result |
+|---|---|
+| `cargo build --release --workspace` | clean |
+| `cargo clippy --workspace --all-targets` | clean (0 warnings) |
+| `cargo clippy --workspace --all-targets --features test-fs` | clean (0 warnings) |
+| `cargo test --workspace` | **310 passed, 0 failed** |
+| `cargo test --features test-fs` | **455 passed, 0 failed** |
+| `streams-probe conformance` (live release server) | **117 / 117, exit 0** |
+
+## 1. Criterion micro-benchmarks — final absolutes (engine, in-process)
+
+Median of the criterion 100-sample estimate, isolated run on the release engine.
+
+| Bench | Final time | Throughput |
+|---|---:|---:|
+| append/64B/1 | 1.239 µs | 807 Kelem/s |
+| append/64B/10 | 2.744 µs | 3.64 Melem/s |
+| append/64B/100 | 17.81 µs | 5.62 Melem/s |
+| append/64B/1000 | 170.4 µs | 5.87 Melem/s |
+| append/1KiB/1 | 1.648 µs | 607 Kelem/s |
+| append/1KiB/1000 | 591.6 µs | 1.69 Melem/s |
+| diff/1 | 153.4 ns | 6.52 Melem/s |
+| diff/256 | 20.51 µs | 12.48 Melem/s |
+| diff/1000 | 76.45 µs | 13.08 Melem/s |
+| tag_match/exact | 267.5 ns | 374 Melem/s |
+| tag_match/prefix | 67.81 µs | 147 Melem/s |
+| cap_evict/1 | 410.1 ns | 2.44 Melem/s |
+| cap_evict/100 | 19.20 µs | 5.21 Melem/s |
+| delete/before_seq_all | 2.624 ms | 3.81 Melem/s |
+| delete/match_exact | 1.594 ms | 3.14 Melem/s |
+
+The pure in-process engine append hits **5.6–5.9 M records/s** at 64 B batch-100/1000
+and diff projects at **12–13 M records/s** — i.e. the engine core is comfortably
+above the 1 M events/s bar; the live ceiling is the HTTP/serialization path and
+the durability class, not the engine (see §4). Run-to-run variance of ±10–15 %
+was observed on `append/64B/1` under background load; the isolated-run medians
+are reported here.
+
+## 2. Per-durability-class write-ack + throughput (the headline table)
+
+Three commit classes (API §0.10): `memory` (RAM-only, no WAL), `disk` (WAL,
+group-committed, no per-write fsync), `fsync` (fsync-gated ack). Single-write ack
+and throughput were measured against the live release server.
+
+**Single-record write-ack latency (Rust client, `streams-probe`, n=5000):**
+
+| Class | p50 | p99 | p999 | max | Throughput (16 writers × batch 100) |
+|---|---:|---:|---:|---:|---:|
+| memory | ≤ disk (skips WAL append) | — | — | — | ~614 K rec/s |
+| disk (`durable:false`) | **0.062 ms** | 0.102 ms | 0.148 ms | 0.265 ms | **566 K rec/s** |
+| fsync (`durable:true`) | **5.21 ms** | 6.76 ms | 10.48 ms | 13.14 ms | **143 K rec/s** |
+
+`fsync` server-reported group-commit `fsync_ms`: p50 4.91 / p99 6.21 / p999 10.13 /
+max 12.87 ms — i.e. the ack latency is dominated by the single APFS `fdatasync`
+floor (~5 ms), as expected; the engine adds well under 1 ms on top.
+
+**Same-client (Python urllib) apples-to-apples throughput ranking** (one HTTP
+client across all three classes, so the *ratios* are honest even though the
+absolute numbers are below the Rust-client figures above due to client overhead):
+
+| Class | Throughput (batch 100, 16 writers, same client) |
+|---|---:|
+| memory | 614 K rec/s |
+| disk | 364 K rec/s |
+| fsync | 121 K rec/s |
+
+Ordering memory > disk > fsync holds; memory ≈ 1.7× disk ≈ 5× fsync.
+
+## 3. Live HTTP macro + workloads — final numbers
+
+**Core (`streams-probe bench`, writes=50000, watchers=1,10,100):**
+
+| Metric | Value |
+|---|---:|
+| Write-ack single record (disk) p50 / p99 / p999 | 0.062 / 0.101 / 0.157 ms |
+| Write throughput (16 writers × batch 100) | **525 K rec/s** |
+| getDifference limit=1 (calls/s) | 13.4 K (p50 0.071 ms) |
+| getDifference limit=256 (records/s) | 48.9 K (p50 5.00 ms) |
+| getDifference limit=1000 (records/s) | 51.6 K (p50 19.15 ms) |
+| tail caught-up latency p50 / p99 | 0.047 / 0.095 ms |
+| SSE fan-out write→deliver p50, 1 / 10 / 100 watchers | 0.34 / 0.43 / 0.85 ms |
+| Router forwarding added p50 | ~0.003 ms |
+
+**Workloads:**
+
+| Workload | Config | Result |
+|---|---|---:|
+| BROADCAST | 1 src → N SSE watchers, 100 pulses | 1 w: deliver p50 0.29 ms · 100 w: 12.5 K deliv/s, p50 1.06 ms · 1000 w: 92.3 K deliv/s, p50 2.21 ms (one straggler tail at max 1083 ms) |
+| DISTRIBUTION | 5000 boxes, batch 100, 32 writers | **285 K appends/s**, 500 K records, per-req p50 11.2 ms |
+| QUEUE | 50 workers, 20 k jobs, claim-max 8 | **126 K jobs/s** (produce 481 K rec/s), claim p50 1.18 ms, even (CV 0.075) |
+| ACTORS | 1000 actor boxes, 5 inferences, chain 5, snapshot every 2 | **31.5 K events/s**, 6.3 K inferences/s, 2000 snapshot-compactions, chain-append p50 0.77 ms |
+
+## 4. Are the ~1 M events/s + ~1 ms targets met? (honest assessment)
+
+**Latency target (~1 ms delivery/response):** **MET for the non-durable path.**
+Disk-class single-record write-ack is **p50 0.062 ms / p99 0.10 ms**; SSE
+write→deliver is **p50 0.34–0.85 ms** out to 100 watchers; tail/caught-up is
+**0.05 ms**. All comfortably under 1 ms. **NOT met for the fsync class** by
+design: an fsync-gated ack is **~5 ms p50**, which is the hardware APFS
+`fdatasync` floor on this NVMe, not engine cost — no amount of engine work moves
+it without weakening the acked⇒durable guarantee. Group-commit already amortizes
+it across concurrent writers (143 K fsync-class rec/s aggregate).
+
+**Throughput target (~1 M events/s batched):**
+- **Engine core: MET** — in-process append is **5.6–5.9 M records/s** and diff
+  projection **12–13 M records/s** (criterion §1).
+- **Live single-box HTTP: PARTIALLY MET** — **525–566 K rec/s** disk-class over
+  loopback HTTP through one box (16 writers × batch 100). The ~1 M/s bar is
+  reachable in aggregate across boxes/connections (memory class hits 614 K
+  through one box on a slower client; the engine has 5×+ headroom) but a single
+  box over a single loopback HTTP origin lands at ~0.5 M/s. **The ceiling here is
+  the HTTP request/`serde_json` serialization path and per-request lock acquisition,
+  not the engine** — the engine-side append fast path is now 5.6 M/s.
+
+**Where the ceiling is, by class:**
+- `memory`: HTTP + JSON parse/serialize cost. Engine append is essentially free.
+- `disk`: same HTTP/serialization ceiling plus the WAL buffered-write + the
+  single ordered WAL-writer's per-batch work; ~525–566 K rec/s through one box.
+- `fsync`: the **physical NVMe `fdatasync` (~5 ms)** is the floor for *latency*;
+  for *throughput* the group-commit coalescing (this iteration's headline fix,
+  17.9 K → 143 K rec/s, ~8×) lifts the ceiling to how many writers' frames fit in
+  one fsync window.
+
+## 5. Optimizations applied this iteration — before / after (verified)
+
+All preserve the `/v0` contract and the acked⇒committed durability/ordering
+guarantee. "Before" = the post-reliability-locking regression baseline at the
+start of the iteration; "After" = these final verified numbers.
+
+| # | Optimization | Site | Before → After |
+|---|---|---|---|
+| 1 | **Off-lock fsync + per-box commit sequencer** (group-commit; `append_lock` covers only stage+enqueue+ticket, fsync `wait()` off-lock, publish gated back into strict seq order) | `engine/mod.rs` write + `durable_append`; `engine/box_state.rs` ticket gate; `engine/snapshot.rs` quiesce | **durable throughput 17.9 K → 143 K rec/s (~8×)**; durable single-write p50 unchanged (~5.2 ms, the fsync floor). Surfaced + fixed two real races (staged-but-unpublished seq; snapshot-capture-vs-in-flight-write) — both green. |
+| 2 | **No-router / no-WAL write fast path** (skip the per-record `serde_json::Value` deep clone when the box has no routers and no WAL frame is needed) | `engine/mod.rs`; `engine/router.rs::has_routers_for_source` | append/64B/1 1.272 → 1.239 µs; append/1KiB/1 1.737 → 1.648 µs |
+| 3 | **Single-pass diff projection** (build `RecordOut` directly under the read lock for resident payloads; defer only sealed; removed `DiffSlot`) | `engine/mod.rs::diff` | diff/256 22.82 → 20.51 µs (−10%); diff/1000 84.44 → 76.45 µs (−9%) |
+| 4 | **Read-path retention fast path** (no-TTL/no-cap box returns immediately, skipping two locks per diff/SSE) | `engine/box_state.rs::enforce_retention` | diff/1 207.8 → 153.4 ns (−26%); cap_evict/1 −18%, cap_evict/100 −28% |
+
+## 6. Remaining performance gaps (not closed this iteration, out of safe scope)
+
+- **Deep getDifference over HTTP** (limit 256/1000 → ~5 / 19 ms p50) is dominated
+  by the HTTP response serialization of the large body, not engine diff cost (the
+  engine-side diff is 12–13 M records/s). Closing it needs a streaming/chunked
+  response encoder, a larger change.
+- **Single-box single-origin HTTP write throughput** tops out at ~0.5 M rec/s
+  (disk) vs the 5.6 M/s engine core — the gap is the HTTP/`serde_json` path.
+  Reaching ~1 M/s through one box would need a leaner request decode (e.g.
+  borrowed/zero-copy JSON or a binary ingress), not taken here.
+- **Durable lease-queue per-job ack-delete fsync** (a fsync per ack on a *durable*
+  queue) is a separate, larger change; the queue workload here is non-durable
+  (~126 K jobs/s) and was unaffected.
+- **fsync-class latency (~5 ms)** is the physical NVMe `fdatasync` floor and is
+  not an engine bug — it is the cost of the acked⇒durable guarantee.
