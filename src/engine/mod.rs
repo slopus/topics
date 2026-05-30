@@ -1119,7 +1119,22 @@ impl Engine {
         };
 
         // --- Idempotency dedupe (API §0.8). --------------------------------
+        // For a keyed write, hold the per-key in-flight gate across the WHOLE
+        // reservation (check → stage → fsync → publish → record). This closes the
+        // check-then-act race (model invariant 13): two concurrent same-key writes
+        // serialize on the gate, so the loser, on acquiring it, re-checks the
+        // dedupe map (now carrying the winner's entry) and returns the winner's
+        // seqs instead of publishing a second distinct live batch. Different keys
+        // (or none) never contend. The gate is kept alive in `_dedupe_gate` for the
+        // rest of this function; `_dedupe_gate_guard` is the held inner lock.
         let window_ms = b.config.read().idempotency_window_ms as i64;
+        // `dedupe_gate` (the per-key `Arc<Mutex<()>>`) is declared before the
+        // guard so it outlives the borrow; `_dedupe_gate_guard` is the held lock.
+        let dedupe_gate = req
+            .idempotency_key
+            .as_ref()
+            .map(|key| b.dedupe_gate_for(key));
+        let _dedupe_gate_guard = dedupe_gate.as_ref().map(|g| g.lock());
         if let Some(key) = &req.idempotency_key {
             let mut dedupe = b.dedupe.write();
             // Prune stale entries lazily.
@@ -1128,6 +1143,12 @@ impl Engine {
                 let seqs = entry.seqs.clone();
                 let head = entry.head_seq;
                 drop(dedupe);
+                // Drop the gate before returning (the registry entry is reclaimed
+                // when no other same-key writer is parked on it).
+                drop(_dedupe_gate_guard);
+                if let Some(g) = dedupe_gate {
+                    b.release_dedupe_gate(key, &g);
+                }
                 return Ok(WriteResponse {
                     box_name: name.to_string(),
                     first_seq: *seqs.first().unwrap_or(&0),
@@ -1261,7 +1282,8 @@ impl Engine {
         // lagging consumers later).
         b.enforce_retention(now);
 
-        // Record dedupe state for retries.
+        // Record dedupe state for retries, then release the per-key gate (a
+        // parked same-key writer wakes and dedupes to the entry just inserted).
         if let Some(key) = &req.idempotency_key {
             b.dedupe.write().insert(
                 key.clone(),
@@ -1271,6 +1293,10 @@ impl Engine {
                     created_ms: now,
                 },
             );
+            drop(_dedupe_gate_guard);
+            if let Some(g) = &dedupe_gate {
+                b.release_dedupe_gate(key, g);
+            }
         }
 
         // --- Router forwarding (at-least-once, per-source FIFO). -----------

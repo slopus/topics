@@ -261,7 +261,22 @@ fn replay_frame(engine: &Engine, record: WalRecord) {
             });
             // Idempotent overlap: a frame whose seq is already covered by the
             // snapshot (<= head) was materialized — skip it (ARCHITECTURE §4).
-            if seq <= b.head_seq() {
+            //
+            // Contiguity guard: replay assigns the next contiguous seq
+            // (`head + 1`). A *misdirected* frame whose logged seq jumps ahead
+            // (`seq > head + 1`) would either open a phantom gap or (caught by the
+            // debug_assert in `apply_append_for_recovery`) abort recovery. Such a
+            // frame is not a record this box legitimately produced at this point in
+            // the log, so treat it as torn and ignore it: never panic, never adopt
+            // a future seq as head, never punch a non-contiguous gap. The single
+            // ordered WAL writer only ever appends dense per-box seqs, so under
+            // normal operation `seq == head + 1` always holds; this guard only
+            // fires on a corrupted/misdirected frame.
+            let head = b.head_seq();
+            if seq <= head {
+                return;
+            }
+            if seq != head + 1 {
                 return;
             }
             let (rdata, meta) = decode_record_payload(&data);

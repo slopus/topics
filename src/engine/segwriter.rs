@@ -696,12 +696,16 @@ impl SegmentWriter {
     pub fn reclaim_orphans_below(&mut self, live_floor: u64) -> usize {
         let registered: std::collections::HashSet<u64> =
             self.sealed.iter().map(|s| s.start_seq).collect();
+        // Enumerate by EITHER part (`list_all_ids`), so a stray `.idx` with no
+        // `.data` — the remnant a crash between `delete()`'s two unlinks leaves —
+        // is also a reclaim candidate (it is below floor and unregistered ⇒ dead).
+        // Plain `list()` keys on `.data` only and would leak the lone `.idx`.
         let mut ids: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-        if let Ok(hot_ids) = self.tier.hot().list() {
+        if let Ok(hot_ids) = self.tier.hot().list_all_ids() {
             ids.extend(hot_ids);
         }
         if let Some(cold) = self.tier.cold() {
-            if let Ok(cold_ids) = cold.list() {
+            if let Ok(cold_ids) = cold.list_all_ids() {
                 ids.extend(cold_ids);
             }
         }
@@ -1103,6 +1107,9 @@ mod tests {
         }
         fn list(&self) -> Result<Vec<SegmentId>, StoreError> {
             self.inner.list()
+        }
+        fn list_all_ids(&self) -> Result<Vec<SegmentId>, StoreError> {
+            self.inner.list_all_ids()
         }
         fn exists(&self, id: SegmentId, part: SegmentPart) -> bool {
             self.inner.exists(id, part)

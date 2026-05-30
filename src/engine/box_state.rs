@@ -21,6 +21,7 @@ use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::Notify;
 
 /// A remembered idempotent write: the seqs it assigned and when it landed, so a
@@ -301,6 +302,16 @@ pub struct BoxState {
     /// `(idempotency_key → assigned seqs)` dedupe state (API §0.8). Entries are
     /// reclaimed lazily once older than the box's `idempotency_window_ms`.
     pub dedupe: RwLock<HashMap<String, DedupeEntry>>,
+    /// Per-key in-flight gates for idempotent writes. A write carrying an
+    /// `idempotency_key` holds that key's gate across its WHOLE reservation
+    /// (check dedupe → stage → WAL fsync → publish → record dedupe). This closes
+    /// the check-then-act race (API §0.8 / model invariant 13): two concurrent
+    /// writes with the same key serialize on the gate, so the loser re-checks
+    /// the dedupe map under the gate, finds the winner's entry, and returns the
+    /// winner's seqs instead of publishing a second distinct live batch. Writes
+    /// with *different* keys (or none) take different gates and never contend.
+    /// The registry is pruned lazily (a gate is removed once no writer holds it).
+    pub dedupe_gates: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 
     /// Highest assigned seq (`0` for a fresh empty box).
     pub head_seq: AtomicU64,
@@ -379,6 +390,7 @@ impl BoxState {
             index: RwLock::new(BoxIndex::new(seq_base)),
             floors: RwLock::new(Floors::default()),
             dedupe: RwLock::new(HashMap::new()),
+            dedupe_gates: Mutex::new(HashMap::new()),
             head_seq: AtomicU64::new(seq_base.saturating_sub(1)),
             seq_base,
             epoch: AtomicU64::new(epoch),
@@ -433,6 +445,37 @@ impl BoxState {
 
     pub fn head_seq(&self) -> u64 {
         self.head_seq.load(Ordering::Acquire)
+    }
+
+    /// Acquire the in-flight gate for an idempotency `key`, serializing all
+    /// concurrent writes carrying the *same* key for the whole reservation (API
+    /// §0.8). The returned guard must be held until the write has published and
+    /// recorded its dedupe entry; while held, a second same-key writer blocks,
+    /// then on acquiring sees the winner's dedupe entry. Different keys never
+    /// contend. Returns an `Arc<Mutex<()>>` whose lock is taken (then the inner
+    /// guard released) by the caller; the registry entry is dropped lazily by
+    /// the last releaser (`release_dedupe_gate`).
+    pub fn dedupe_gate_for(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut gates = self.dedupe_gates.lock();
+        gates
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Drop a per-key gate from the registry once the holder releases it, if no
+    /// other writer is still waiting on it (strong_count would be > 1). Keeps the
+    /// registry from growing unbounded across distinct keys.
+    pub fn release_dedupe_gate(&self, key: &str, gate: &Arc<Mutex<()>>) {
+        let mut gates = self.dedupe_gates.lock();
+        // The registry holds one ref; the caller holds one. If those are the
+        // only two, no concurrent same-key writer is parked on it, so we can
+        // safely forget it. (A new same-key write would just re-create it.)
+        if let Some(existing) = gates.get(key) {
+            if Arc::ptr_eq(existing, gate) && Arc::strong_count(gate) <= 2 {
+                gates.remove(key);
+            }
+        }
     }
 
     pub fn epoch(&self) -> u64 {

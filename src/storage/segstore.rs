@@ -98,8 +98,22 @@ pub trait SegmentStore: Send + Sync {
     /// between the two unlinks must be safe to repeat).
     fn delete(&self, id: SegmentId) -> Result<(), StoreError>;
 
-    /// List the ids of all segments in this store, ascending (oldest first).
+    /// List the ids of all *complete* segments in this store, ascending (oldest
+    /// first). "Complete" requires the `.data` part — a stray/torn `.idx` alone is
+    /// not a resolvable segment, so it is **not** reported here (resolve/serve
+    /// semantics).
     fn list(&self) -> Result<Vec<SegmentId>, StoreError>;
+
+    /// List the ids of every segment with *any* part on disk (`.data` OR a stray
+    /// `.idx`), ascending. Unlike [`Self::list`], this also reports an orphaned
+    /// `.idx` with no `.data` — the remnant a crash between `delete()`'s two
+    /// unlinks leaves behind. Used only by on-restart orphan reclaim so a half-
+    /// unlinked segment is enumerated and dropped rather than leaked forever; it
+    /// must never feed resolve/serve (a lone `.idx` is not a complete segment).
+    /// Defaults to [`Self::list`] for stores whose objects are inseparable.
+    fn list_all_ids(&self) -> Result<Vec<SegmentId>, StoreError> {
+        self.list()
+    }
 
     /// Whether a segment's part exists — a cheap probe used by relocation
     /// idempotency ("which copy survived a crash?").
@@ -263,6 +277,26 @@ impl SegmentStore for LocalSegmentStore {
                 if let Ok(id) = rest.parse::<SegmentId>() {
                     ids.insert(id);
                 }
+            }
+        }
+        Ok(ids.into_iter().collect())
+    }
+
+    fn list_all_ids(&self) -> Result<Vec<SegmentId>, StoreError> {
+        // Enumerate by EITHER part so a stray `.idx` (no `.data`) — the remnant a
+        // crash between `delete()`'s two unlinks leaves — is reported and can be
+        // reclaimed (orphan sweep only; never resolve/serve).
+        let mut ids: BTreeSet<SegmentId> = BTreeSet::new();
+        for path in self.fs.read_dir(&self.root)? {
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let id = name
+                .strip_prefix("seg-")
+                .and_then(|s| s.strip_suffix(".data").or_else(|| s.strip_suffix(".idx")))
+                .and_then(|rest| rest.parse::<SegmentId>().ok());
+            if let Some(id) = id {
+                ids.insert(id);
             }
         }
         Ok(ids.into_iter().collect())

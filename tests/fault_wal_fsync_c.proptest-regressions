@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 58b696bd438cc3f6d7806897e108087c9ef964336aa299f3b2f78c8ee334321e # shrinks to ops = [PutBox { bi: 2, durable: true }, Append { bi: 2, data: "a" }], crash_frac = 0

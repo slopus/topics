@@ -3,6 +3,11 @@ name = "streams"
 version = "0.1.0"
 edition = "2021"
 
+[lints.clippy]
+# Cosmetic doc-list indentation in the large tests/fault_*.rs crash-test corpus;
+# not worth reflowing 50+ doc comments. No effect on src/ (which has none).
+doc_overindented_list_items = "allow"
+
 [workspace]
 members = ["probe"]
 resolver = "2"

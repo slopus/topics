@@ -824,6 +824,18 @@ struct MonitorState {
     durable: BTreeMap<PathBuf, ()>,
 }
 
+/// If `path` is a segment `.data` object (`seg-<id>.data`), return its segment id.
+/// Used by the cold-relocation ordering guard to count durable copies of the same
+/// segment across tier directories (a segment id is identified by its basename, so
+/// a hot and cold copy of the same id share the same `<id>`). Only `.data` is
+/// guarded — it carries the records; a stray `.idx` alone is never a copy.
+fn segment_data_id(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?;
+    name.strip_prefix("seg-")
+        .and_then(|s| s.strip_suffix(".data"))
+        .and_then(|rest| rest.parse::<u64>().ok())
+}
+
 /// A passive [`Fs`] wrapper that asserts persistence-ordering invariants live
 /// during **all** tests and **panics** on a violation. It changes no behavior —
 /// every call forwards to the inner `Fs`; it only observes the order of writes,
@@ -960,6 +972,33 @@ impl Fs for MonitorFs {
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
+        // INVARIANT (FAULT_TESTING.md §MonitorFS(d) / model invariant #9, COLD
+        // RELOCATION ALL-OR-NOTHING): a sealed segment's `.data` must never be the
+        // last durable copy on the device when it is deleted — the hot copy is
+        // dropped only AFTER a durable cold copy exists (relocation), so at least
+        // one readable `.data` of that segment always survives. Deleting the only
+        // durable `seg-<id>.data` (e.g. hot().delete before a durable cold.put)
+        // drops the segment's last copy and must panic immediately.
+        if let Some(seg) = segment_data_id(path) {
+            let st = self.state.lock().unwrap();
+            let surviving = st
+                .durable
+                .keys()
+                .filter(|p| p.as_path() != path && segment_data_id(p) == Some(seg))
+                .count();
+            // Only guard when the path being removed is itself a durable copy
+            // (an un-fsynced / already-gone path is not a "last durable copy").
+            let removing_durable = st.durable.contains_key(path);
+            if removing_durable && surviving == 0 {
+                drop(st);
+                panic!(
+                    "MonitorFs ordering violation: deleting the last durable copy of \
+                     segment {seg} ({path:?}) — a sealed segment's hot `.data` must \
+                     not be dropped before a durable cold copy exists (cold-relocation \
+                     order: cold.put durable BEFORE hot().delete)"
+                );
+            }
+        }
         let r = self.inner.remove_file(path);
         let mut st = self.state.lock().unwrap();
         st.dirty.remove(path);
