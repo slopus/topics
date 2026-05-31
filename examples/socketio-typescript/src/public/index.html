@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>streams Socket.IO chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>streams Socket.IO chat</h1>
+          <p id="subtitle">Connecting to a durable stream...</p>
+        </div>
+        <div class="status-grid" aria-label="Connection status">
+          <span id="socket-status" class="status status-pending">Socket.IO</span>
+          <span id="stream-status" class="status status-pending">streams</span>
+        </div>
+      </header>
+
+      <section class="meta-row" aria-label="Server details">
+        <div>
+          <span>Server</span>
+          <strong id="server-id">unknown</strong>
+        </div>
+        <div>
+          <span>Client box</span>
+          <strong id="client-box">pending</strong>
+        </div>
+        <div>
+          <span>Cursor</span>
+          <strong id="cursor">0</strong>
+        </div>
+      </section>
+
+      <section id="messages" class="messages" aria-live="polite" aria-label="Chat messages">
+        <div class="empty">No messages yet</div>
+      </section>
+
+      <form id="chat-form" class="composer" autocomplete="off">
+        <label>
+          Name
+          <input id="user" name="user" maxlength="48" />
+        </label>
+        <label class="message-field">
+          Message
+          <input id="message" name="message" maxlength="1000" placeholder="Write a message" />
+        </label>
+        <button type="submit">Send</button>
+      </form>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js" type="module"></script>
+  </body>
+</html>
