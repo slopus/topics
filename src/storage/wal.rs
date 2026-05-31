@@ -160,9 +160,11 @@ pub enum WalRecord {
         tag: Option<String>,
         data: Vec<u8>,
     },
-    /// A permanent, point-in-time delete. Replayed deterministically: the deleted
-    /// seqs are re-derived from the rebuilt index + tag index, not stored
-    /// individually (ARCHITECTURE §2.1).
+    /// A permanent, point-in-time delete. Replayed deterministically: a
+    /// selector-based delete re-derives the matched seqs from the rebuilt index +
+    /// tag index (bounded by `bound_head` so a record appended AFTER the original
+    /// delete is never swept), while an explicit `seqs` set deletes exactly those
+    /// seqs (ARCHITECTURE §2.1).
     Delete {
         box_id: u32,
         /// `before_seq` selector (every live seq `< before_seq`), if supplied.
@@ -173,6 +175,16 @@ pub enum WalRecord {
         /// delete exactly these seqs. Empty for the API §5 selector-based delete.
         /// Replays deterministically (the exact seqs are logged, not re-derived).
         seqs: Vec<u64>,
+        /// Point-in-time UPPER BOUND for a selector-based delete: the box's
+        /// `head + 1` captured (under the append lock) at the moment the delete was
+        /// logged, so replay only ever sweeps seqs strictly below it. A
+        /// CONCURRENT/later append that landed after the delete frame carries a seq
+        /// `>= bound_head` and is therefore NEVER deleted on replay, preserving the
+        /// API §5 point-in-time guarantee across a crash. `None` for an explicit
+        /// `seqs`-set delete (the seqs are themselves the bound) and for legacy
+        /// frames predating this field (replay then falls back to the recovered
+        /// head, the pre-fix behavior).
+        bound_head: Option<u64>,
         ts: u64,
     },
     /// Box created or its config updated. `tombstone == false` for create/update;
@@ -420,11 +432,16 @@ pub fn encode_frame(out: &mut Vec<u8>, record: &WalRecord, durable: bool) {
             before_seq,
             match_,
             seqs,
+            bound_head,
             ts: rts,
             ..
         } => {
             ts = *rts;
             // body: [has_before:u8][before:u64?] [match] [n_seqs:u32][seq:u64 ...]
+            //       [has_bound:u8][bound:u64?]
+            // The trailing `bound_head` is appended AFTER the (always-present) seqs
+            // section so a legacy reader stops cleanly after the seqs and a new
+            // reader picks the bound up when present (backward/forward compatible).
             match before_seq {
                 Some(b) => {
                     data_buf.push(1);
@@ -436,6 +453,13 @@ pub fn encode_frame(out: &mut Vec<u8>, record: &WalRecord, durable: bool) {
             data_buf.extend_from_slice(&(seqs.len() as u32).to_le_bytes());
             for s in seqs {
                 data_buf.extend_from_slice(&s.to_le_bytes());
+            }
+            match bound_head {
+                Some(b) => {
+                    data_buf.push(1);
+                    data_buf.extend_from_slice(&b.to_le_bytes());
+                }
+                None => data_buf.push(0),
             }
             data = &data_buf;
         }
@@ -645,11 +669,27 @@ fn decode_one(buf: &[u8]) -> DecodeStep {
             } else {
                 Vec::new()
             };
+            // Trailing point-in-time bound (this-version frames write it right
+            // after the seqs section). A legacy frame ends after the seqs ⇒
+            // `bound_head = None` (replay falls back to the recovered head).
+            let bound_head = if pos < data.len() {
+                match read_u8(data, &mut pos) {
+                    Some(1) => match read_u64(data, &mut pos) {
+                        Some(v) => Some(v),
+                        None => return DecodeStep::Torn,
+                    },
+                    Some(0) => None,
+                    _ => return DecodeStep::Torn,
+                }
+            } else {
+                None
+            };
             WalRecord::Delete {
                 box_id,
                 before_seq,
                 match_,
                 seqs,
+                bound_head,
                 ts,
             }
         }
@@ -1520,6 +1560,7 @@ mod tests {
                 before_seq: Some(50),
                 match_: None,
                 seqs: Vec::new(),
+                bound_head: Some(50),
                 ts: 123,
             },
             true,
@@ -1534,6 +1575,7 @@ mod tests {
                 before_seq: None,
                 match_: None,
                 seqs: vec![480101, 480104, 480200],
+                bound_head: None,
                 ts: 7,
             },
             true,
@@ -1578,6 +1620,7 @@ mod tests {
                 before_seq: None,
                 match_: Some(MatchSel::Eq("exact-tag".into())),
                 seqs: Vec::new(),
+                bound_head: Some(99),
                 ts: 1,
             },
             false,
@@ -1588,9 +1631,56 @@ mod tests {
                 before_seq: Some(10),
                 match_: Some(MatchSel::Glob("tenant:".into())),
                 seqs: Vec::new(),
+                bound_head: Some(42),
                 ts: 2,
             },
             true,
+        );
+    }
+
+    /// A LEGACY Delete frame (selectors only, written before the `seqs` and
+    /// `bound_head` fields existed) must still decode: `seqs` empty and
+    /// `bound_head: None` (replay then falls back to the recovered head). This
+    /// pins the backward-compatible body layout so an old on-disk WAL keeps
+    /// replaying after this change.
+    #[test]
+    fn legacy_delete_frame_decodes_without_seqs_or_bound() {
+        // Hand-assemble the legacy body: [has_before=1][before:u64] [match=none].
+        // No `n_seqs` field and no `bound` field — exactly what the old encoder
+        // wrote.
+        let mut body = Vec::new();
+        body.push(1u8);
+        body.extend_from_slice(&50u64.to_le_bytes());
+        body.push(0u8); // match: none
+
+        // Frame the body like `encode_frame` does, with the Delete type tag.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0u8; FRAME_LEN_PREFIX]);
+        frame.push(T_DELETE);
+        frame.push(0u8); // flags (not durable)
+        frame.extend_from_slice(&9u32.to_le_bytes()); // box_id
+        frame.extend_from_slice(&0u64.to_le_bytes()); // seq
+        frame.extend_from_slice(&123u64.to_le_bytes()); // ts
+        frame.extend_from_slice(&0u16.to_le_bytes()); // node_len
+        frame.extend_from_slice(&0u16.to_le_bytes()); // tag_len
+        frame.extend_from_slice(&(body.len() as u32).to_le_bytes()); // data_len
+        frame.extend_from_slice(&body);
+        let crc_val = crc(&frame[FRAME_LEN_PREFIX..]);
+        frame.extend_from_slice(&crc_val.to_le_bytes());
+        let frame_len = (frame.len() - FRAME_LEN_PREFIX) as u32;
+        frame[0..FRAME_LEN_PREFIX].copy_from_slice(&frame_len.to_le_bytes());
+
+        let got = WalReader::new(frame).next().expect("legacy frame decodes");
+        assert_eq!(
+            got.record,
+            WalRecord::Delete {
+                box_id: 9,
+                before_seq: Some(50),
+                match_: None,
+                seqs: Vec::new(),
+                bound_head: None,
+                ts: 123,
+            }
         );
     }
 
@@ -1681,6 +1771,7 @@ mod tests {
                 before_seq: Some(2),
                 match_: None,
                 seqs: Vec::new(),
+                bound_head: Some(2),
                 ts: 3,
             },
         ];

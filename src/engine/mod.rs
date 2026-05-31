@@ -656,6 +656,9 @@ impl Engine {
                 before_seq: None,
                 match_: None,
                 seqs,
+                // Explicit-seq delete: the seqs ARE the bound (an exact set), so no
+                // point-in-time head bound is needed.
+                bound_head: None,
                 ts: now.max(0) as u64,
             },
             durable,
@@ -755,9 +758,13 @@ impl Engine {
     /// CONSTRUCTION and recovers naturally via WAL replay (ARCHITECTURE §2.2;
     /// fixes the silent loss of routed copies on restart).
     ///
-    /// Holds `dest.append_lock` across stage → enqueue → fsync → publish so the
-    /// box's WAL frames are enqueued in seq order and nothing visible is
-    /// non-durable. Returns the assigned seqs. On a WAL/fsync failure the staged
+    /// Holds `dest.append_lock` only across the SEQ-ORDER critical section —
+    /// stage → enqueue the WAL frame(s) → take a publish ticket — exactly like the
+    /// user write path. The fsync `wait()` then runs OFF the lock (so concurrent
+    /// durable appends to `dest` coalesce into one group commit), and publish is
+    /// gated back into strict seq order by the publish ticket (`publish_wait_turn`
+    /// / `publish_done`), so a forwarded copy is never visible before its frame is
+    /// durable. Returns the assigned seqs. On a WAL/fsync failure the staged
     /// records are rolled back (nothing published) and the error is returned, so
     /// a failed durable forward is never acknowledged as forwarded.
     fn durable_append(&self, dest: &BoxState, records: Vec<StoredRecord>, now: i64) -> Result<Vec<u64>> {
@@ -915,13 +922,53 @@ impl Engine {
             }
         }
 
+        // A control frame for a box config mutation, encoded once.
+        let frame = |box_id: u32| WalRecord::BoxConfig {
+            box_id,
+            op: crate::storage::BoxConfigOp {
+                name: name.to_string(),
+                config: serde_json::to_vec(&config).unwrap_or_default(),
+            },
+            tombstone: false,
+            ts: self.clock.now_ms().max(0) as u64,
+        };
+
+        // --- In-place UPDATE of an existing box (bug #2). ------------------
+        // The old path was APPLY-FIRST: it swapped the config in memory and only
+        // THEN logged the BoxConfig frame, so a WAL failure left the in-memory
+        // config ahead of the durable log (a relaxed/tightened durability/cap/ttl
+        // that a restart would silently revert — "applied but not committed").
+        //
+        // The fix is WAL-FIRST and serialized against this box's appends/deletes:
+        // under `append_lock` (so a durability/cap change orders correctly vs
+        // concurrent writes and the WAL order matches the applied behavior) we LOG
+        // the BoxConfig frame FIRST, and only after it commits do we swap the
+        // config in memory + enforce the (possibly tighter) retention. On a WAL
+        // failure we apply NOTHING and return an error, so memory never diverges
+        // from the durable log. Crucially the tighter config is never even
+        // transiently live before the commit — `enforce_retention` is an
+        // IRREVERSIBLE eviction (it can drop records past a tightened cap/ttl), so
+        // exposing the new cap before the durable commit could silently evict a
+        // record that the (failed) update was supposed to leave untouched.
+        if let Some(existing) = self.get_box(name) {
+            let box_id = existing.box_id;
+            let _guard = existing.append_lock.lock();
+            self.wal_log(frame(box_id), true)?;
+            // Durably logged: NOW apply the config swap + enforce retention.
+            *existing.config.write() = config.clone();
+            existing.enforce_retention(self.clock.now_ms());
+            return Ok((false, config));
+        }
+
+        // --- Fresh CREATE. -------------------------------------------------
         // Resource limit: cap the number of boxes (DoS hardening; [`crate::limits`]).
-        // Only a *new* box counts against the cap — an idempotent re-PUT of an
-        // existing box is an update and always proceeds. `0` ⇒ unlimited. The cap is
+        // Only a *new* box counts against the cap. `0` ⇒ unlimited. The cap is
         // enforced INSIDE `apply_put_box` as an atomic reserve-then-insert (codex P2
         // #10): the reserve CAS happens-before the registry insert and only on the
         // vacant-create path, so the surviving count can never exceed the cap under a
-        // concurrent create race. A refused reservation returns `429 throttled`.
+        // concurrent create race. A refused reservation returns `429 throttled`. A
+        // racing create that lost the `apply_put_box` entry race resolves as an
+        // update (`created == false`); we then log + return as an update too.
         let cap = self.config.limits.max_boxes;
         let (created, box_id) = match self.apply_put_box(name, config.clone(), None, None, cap) {
             Some(v) => v,
@@ -941,29 +988,14 @@ impl Engine {
             }
         };
 
-        // Log the config mutation (create or update). Box config is durable as a
-        // matter of policy (control frames share the WAL's durability boundary).
-        // PROPAGATE a WAL failure so a control-plane mutation a crash would lose is
-        // never reported as success (bug #1: the result was previously swallowed).
-        if let Err(e) = self.wal_log(
-            WalRecord::BoxConfig {
-                box_id,
-                op: crate::storage::BoxConfigOp {
-                    name: name.to_string(),
-                    config: serde_json::to_vec(&config).unwrap_or_default(),
-                },
-                tombstone: false,
-                ts: self.clock.now_ms().max(0) as u64,
-            },
-            true,
-        ) {
+        // Log the config mutation (create). Box config is durable as a matter of
+        // policy (control frames share the WAL's durability boundary). PROPAGATE a
+        // WAL failure so a control-plane mutation a crash would lose is never
+        // reported as success (bug #1: the result was previously swallowed).
+        if let Err(e) = self.wal_log(frame(box_id), true) {
             // A fresh CREATE that failed to durably log is rolled back so no
             // phantom box survives the error (it would otherwise be a box the
-            // client was told did NOT get created). A config UPDATE leaves the
-            // in-memory config ahead of the WAL; the client got an error and must
-            // retry — the divergence is bounded to this box and self-corrects on
-            // the next durable PUT (documented tradeoff: rolling back an in-place
-            // config replace would need the prior config saved).
+            // client was told did NOT get created).
             if created && self.boxes.remove(name).is_some() {
                 // Release the box-count reservation taken by the (now rolled-back)
                 // create so the cap accounting stays exact.
@@ -2070,25 +2102,112 @@ impl Engine {
         let b = self.get_box(name).ok_or_else(|| Error::box_not_found(name))?;
         let now = self.clock.now_ms();
         let box_id = b.box_id;
+        let class = b.config.read().durability_class();
+        let durable = class == Durability::Fsync;
 
-        let deleted = b.apply_delete(req.before_seq, req.match_.as_ref(), now);
+        // WAL-FIRST, append-ORDERED delete (bug #1). The old path applied the
+        // delete to memory BEFORE logging, which had two defects:
+        //   (a) a WAL failure left memory deleted but returned an error ⇒ the next
+        //       restart would *resurrect* the records (memory rolled back to the
+        //       last durable point, the delete frame never landed);
+        //   (b) a POINT-IN-TIME violation: a concurrent append could land between
+        //       the memory delete and the WAL Delete frame, and because the frame
+        //       stored only the SELECTOR, replay would re-derive matches against
+        //       the recovered head and sweep that NEWER record too.
+        //
+        // The fix pins the delete to its point-in-time head and orders its WAL
+        // frame relative to appends, applying NOTHING until the frame is durable:
+        //   1. Under `append_lock` (the per-box append-order critical section),
+        //      capture `bound_head = head + 1`. Any append that interleaves after
+        //      this is assigned a seq >= bound_head, so the bound excludes it.
+        //   2. ENQUEUE the Delete frame (carrying `bound_head`) to the single
+        //      ordered WAL writer while still holding the lock, so it is ordered
+        //      relative to this box's appends, and take a PUBLISH TICKET in that
+        //      same critical section (codex P0 #1 — snapshot interaction). The
+        //      ticket threads the delete's in-memory apply through the SAME publish
+        //      gate appends use, so a concurrent snapshot's `quiesce_publishes()`
+        //      drains this in-flight delete before capturing memory — otherwise a
+        //      checkpoint could land after the (already-durable) Delete frame yet
+        //      snapshot still-undeleted memory, resurrecting the deletion on
+        //      restart (the frame is before the checkpoint offset, so replay skips
+        //      it).
+        //   3. Release the lock and WAIT on the commit token off-lock (for a
+        //      durable box this is the group fsync; for disk/memory it resolves at
+        //      the buffered write / immediately) so concurrent durable ops still
+        //      coalesce.
+        //   4. ONLY on a durable commit, apply the delete in memory (under the
+        //      publish gate, in WAL order) bounded by the same `bound_head`. On a
+        //      WAL failure apply NOTHING and return an error (not acked ⇒ not
+        //      committed), so a retry re-derives the identical deletion and a crash
+        //      can never resurrect or over-delete.
+        let bound_head;
+        let commit_token;
+        let ticket;
+        {
+            let _guard = b.append_lock.lock();
+            // Sync floors so `head` reflects current logical state, then pin the
+            // point-in-time bound under the lock.
+            b.enforce_retention(now);
+            bound_head = b.head_seq().saturating_add(1);
+            commit_token = match &self.wal {
+                Some(w) => {
+                    match w.submit(
+                        WalRecord::Delete {
+                            box_id,
+                            before_seq: req.before_seq,
+                            match_: req.match_.as_ref().map(filter_to_matchsel),
+                            seqs: Vec::new(),
+                            bound_head: Some(bound_head),
+                            ts: now.max(0) as u64,
+                        },
+                        durable,
+                    ) {
+                        Ok(token) => Some(token),
+                        Err(e) => {
+                            return Err(Error::internal(format!("WAL append failed: {e}")));
+                        }
+                    }
+                }
+                // Pure in-memory engine: no WAL to wait on.
+                None => None,
+            };
+            // Reserve the publish ticket in the same seq-order critical section so
+            // the delete's memory-apply is ordered relative to in-flight appends
+            // AND is drained by snapshot's `quiesce_publishes()`.
+            ticket = b.next_publish_ticket();
+        }
+        // Wait for the WAL commit OFF the append lock (group-commit coalescing).
+        let commit_err = match commit_token {
+            Some(token) => token
+                .wait()
+                .err()
+                .map(|e| format!("WAL commit failed: {e}")),
+            None => None,
+        };
 
-        // Log the delete so it replays deterministically on recovery (the deleted
-        // seqs are re-derived from the rebuilt index + tag index, not stored;
-        // ARCHITECTURE §2.1). Durable so a crash after the response can't revive
-        // deleted records. PROPAGATE a WAL failure so a delete a crash would undo is
-        // never reported as success (bug #1). The selector replays deterministically,
-        // so a client retry after an error re-derives exactly the same deletion.
-        self.wal_log(
-            WalRecord::Delete {
-                box_id,
-                before_seq: req.before_seq,
-                match_: req.match_.as_ref().map(filter_to_matchsel),
-                seqs: Vec::new(),
-                ts: now.max(0) as u64,
-            },
-            true,
-        )?;
+        // Crash/race seam (failpoints only; no-op in production and under plain
+        // `test-fs`): the delete's WAL `Delete` frame is now durable but the
+        // in-memory apply has NOT run, and this writer still holds publish
+        // `ticket`. A test pauses here to drive the snapshot ↔ WAL-first-delete
+        // race deterministically (codex P0 #1): a concurrent snapshot whose
+        // checkpoint covers this already-durable frame MUST block on
+        // `quiesce_publishes()` (it cannot capture the still-undeleted memory),
+        // because the ticket is outstanding until `publish_done` below.
+        fail::fail_point!("delete::after_commit_before_apply");
+
+        // Take our turn at the publish gate (off-lock, strict WAL order) so the
+        // in-memory apply happens in the same order the frames committed and a
+        // concurrent snapshot quiescing the gate observes it.
+        b.publish_wait_turn(ticket);
+        if let Some(msg) = commit_err {
+            // WAL failure: apply NOTHING, release the gate, surface the error.
+            b.publish_done(ticket);
+            return Err(Error::internal(msg));
+        }
+        // Durably logged (or pure in-memory): NOW apply the delete in memory,
+        // bounded by the same point-in-time head so it matches replay exactly.
+        let deleted = b.apply_delete(req.before_seq, req.match_.as_ref(), Some(bound_head), now);
+        b.publish_done(ticket);
 
         Ok(DeleteResponse {
             box_name: name.to_string(),

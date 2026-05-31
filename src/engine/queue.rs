@@ -859,6 +859,8 @@ impl Engine {
                     before_seq: None,
                     match_: None,
                     seqs: vec![seq],
+                    // Explicit-seq delete: the seqs are the exact set; no bound.
+                    bound_head: None,
                     ts: now.max(0) as u64,
                 },
                 true,

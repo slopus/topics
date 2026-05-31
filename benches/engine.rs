@@ -296,7 +296,7 @@ fn bench_delete(c: &mut Criterion) {
     g.bench_function("before_seq_all", |b| {
         b.iter_batched(
             || warm_box(N),
-            |bx| bx.apply_delete(Some(SEQ_BASE + N as u64), None, now),
+            |bx| bx.apply_delete(Some(SEQ_BASE + N as u64), None, None, now),
             BatchSize::SmallInput,
         );
     });
@@ -310,7 +310,7 @@ fn bench_delete(c: &mut Criterion) {
     g.bench_function("match_exact", |b| {
         b.iter_batched(
             || warm_box(N),
-            |bx| bx.apply_delete(None, Some(&hot), now),
+            |bx| bx.apply_delete(None, Some(&hot), None, now),
             BatchSize::SmallInput,
         );
     });

@@ -297,6 +297,7 @@ fn replay_frame(engine: &Engine, record: WalRecord) {
             before_seq,
             match_,
             seqs,
+            bound_head,
             ts,
         } => {
             if let Some(b) = engine.get_box_by_id(box_id) {
@@ -305,8 +306,14 @@ fn replay_frame(engine: &Engine, record: WalRecord) {
                     // exactly these seqs (deterministic replay, DESIGN §10.4).
                     b.delete_seqs(&seqs, ts as i64);
                 } else {
+                    // Selector-based delete: re-derive the matched seqs, HONORING the
+                    // point-in-time `bound_head` logged with the frame so a record
+                    // appended AFTER the original delete (seq >= bound_head) is never
+                    // swept on replay (the point-in-time guarantee survives a crash).
+                    // A legacy frame carries `bound_head = None` ⇒ fall back to the
+                    // recovered head (pre-fix behavior).
                     let filter = match_.map(|m| matchsel_to_filter(&m));
-                    b.apply_delete(before_seq, filter.as_ref(), ts as i64);
+                    b.apply_delete(before_seq, filter.as_ref(), bound_head, ts as i64);
                 }
             }
         }

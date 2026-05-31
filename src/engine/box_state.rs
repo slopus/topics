@@ -250,7 +250,9 @@ impl BoxIndex {
 /// (`head_seq` unchanged) until published.
 #[derive(Debug)]
 pub struct StagedAppend {
-    /// First seq assigned to the batch (`head_seq + 1` at stage time).
+    /// First seq assigned to the batch — the index deque tail at stage time
+    /// (`base_seq + len`), which equals `head_seq + 1` only when no earlier batch
+    /// is still staged-but-unpublished (see [`BoxState::stage_append`]).
     start: u64,
     /// Number of records in the batch.
     count: u64,
@@ -569,18 +571,29 @@ impl BoxState {
     }
 
     /// **Stage** `records` into the index without publishing them: contiguous
-    /// seqs are assigned starting at `head_seq + 1` and the records are pushed
-    /// into the index deque + tag index, but `head_seq` is **not** advanced and
-    /// no waiter is notified — so a concurrent reader (which gates on `head_seq`)
-    /// observes NOTHING yet (the WAL-first reservation rule, ARCHITECTURE §2.2).
+    /// seqs are assigned starting at the DEQUE TAIL (`base_seq + records.len()`),
+    /// which equals `head_seq + 1` only when no earlier batch is staged-but-
+    /// unpublished — `head_seq` excludes unpublished stages, so the tail (not
+    /// head) is the correct reservation point under concurrent stagers (see the
+    /// body comment). The records are pushed into the index deque + tag index, but
+    /// `head_seq` is **not** advanced and no waiter is notified — so a concurrent
+    /// reader (which gates on `head_seq`) observes NOTHING yet (the WAL-first
+    /// reservation rule, ARCHITECTURE §2.2).
     ///
-    /// The caller MUST hold the box's `append_lock` across stage → WAL append →
-    /// fsync → publish/rollback, so the staged records are always the contiguous
-    /// tail of the deque (making [`Self::rollback_staged`] a tail truncation) and
-    /// WAL frames are enqueued in seq order. On a durable write: stage, enqueue +
-    /// fsync the WAL frame, then [`Self::publish_staged`] on success or
-    /// [`Self::rollback_staged`] on a WAL/fsync failure (publish nothing visible,
-    /// not acknowledged ⇒ not committed).
+    /// The caller MUST hold the box's `append_lock` across the SEQ-ORDER critical
+    /// section only — stage → enqueue the WAL frame(s) → take a publish ticket
+    /// ([`Self::next_publish_ticket`]) — so a box's WAL frames are enqueued in seq
+    /// order. The fsync `wait()` then happens OFF the lock (codex P0 #1, so
+    /// concurrent durable writers coalesce into one group commit), and publish /
+    /// rollback is gated back into strict seq order by the ticket
+    /// ([`Self::publish_wait_turn`] then [`Self::publish_staged`] on success, or
+    /// [`Self::rollback_staged_by_seqs`] on a WAL/fsync failure). Because a LATER
+    /// writer may stage past this batch once the lock is dropped (before this batch
+    /// publishes), a post-lock rollback must target THIS batch's seqs in place
+    /// (`rollback_staged_by_seqs`), not a tail truncation; [`Self::rollback_staged`]
+    /// (the tail truncation) is only valid while the lock is still held and no
+    /// ticket was taken (an enqueue failure inside the critical section). Either
+    /// way nothing visible is non-durable: not acknowledged ⇒ not committed.
     pub fn stage_append(&self, records: Vec<StoredRecord>) -> StagedAppend {
         if records.is_empty() {
             return StagedAppend::empty();
@@ -1123,17 +1136,31 @@ impl BoxState {
     ///   `before_seq` — this advances `earliest_seq` but **never** `evict_floor`
     ///   (silent, no tombstone).
     /// - Triggers lazy front reclaim of the now-dead prefix.
-    pub fn apply_delete(&self, before_seq: Option<u64>, match_: Option<&Filter>, now_ms: i64) -> u64 {
+    pub fn apply_delete(
+        &self,
+        before_seq: Option<u64>,
+        match_: Option<&Filter>,
+        bound_head: Option<u64>,
+        now_ms: i64,
+    ) -> u64 {
         // Sync floors first so we operate on the current logical state.
         self.enforce_retention(now_ms);
 
         let head = self.head_seq();
         let earliest = self.earliest_seq();
-        // Point-in-time bound: a bare `match` is bounded by the head at call
-        // time (head + 1); combined with `before_seq` we take the tighter bound.
+        // Point-in-time bound: a bare `match` is bounded by the head at call time
+        // (`head + 1`); combined with `before_seq` we take the tighter bound. On
+        // the live API path the engine passes `bound_head = Some(head + 1)` captured
+        // under the append lock BEFORE this call, so the bound is pinned to the
+        // delete's point-in-time even though a concurrent append may have advanced
+        // the head by the time we take the index lock. On replay the engine passes
+        // the WAL-logged `bound_head`, so a record appended AFTER the original
+        // delete (seq >= bound_head) is never swept. `None` (legacy frame / no
+        // recorded bound) falls back to the current head.
+        let pit = bound_head.unwrap_or_else(|| head.saturating_add(1));
         let bound = match before_seq {
-            Some(b) => b.min(head.saturating_add(1)),
-            None => head.saturating_add(1),
+            Some(b) => b.min(pit),
+            None => pit,
         };
 
         let mut freed_bytes: u64 = 0;
@@ -1176,7 +1203,7 @@ impl BoxState {
         // must not advance (those non-matching priors stay live).
         if match_.is_none() {
             if let Some(b) = before_seq {
-                let effective = b.min(head.saturating_add(1));
+                let effective = b.min(pit);
                 if effective > index.delete_below {
                     index.delete_below = effective; // every seq < effective dead.
                 }
