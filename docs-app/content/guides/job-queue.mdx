@@ -218,7 +218,7 @@ curl -X POST localhost:4000/v0/boxes/jobs/claim \
 
 ### Process and ack
 
-Ack the seqs you completed. **The ack is the delete** — the server records the completion and permanently removes the job from the jobs log. Ack is idempotent: seqs not currently leased to `node` are silently skipped and reported in `skipped`.
+Ack the seqs you completed. **The ack is the delete** — the server records the completion and permanently removes the job from the jobs log. Ack is idempotent: seqs not currently leased to `node` are silently skipped and reported in `skipped`. To fence a stale worker, optionally echo the claim's `lease_id` tokens in a `lease_ids` array (validate-when-supplied — a superseded token's seq is skipped); omit it for the plain `node` + `seqs` match.
 
 ```bash
 curl -X POST localhost:4000/v0/boxes/jobs/ack \

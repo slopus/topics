@@ -140,9 +140,11 @@ monotonic across restarts. A gap left by a lost-but-acked non-durable write look
 consumer exactly like eviction: a hole that, if it crosses the cursor below `evict_floor`,
 tombstones. See [Durability Classes](/guarantees/durability).
 
-A `memory` box is a special case: on restart it reappears **empty**, `head_seq` resets to
-`0`, but the box config persists — so a stale consumer reading from a high cursor is handled
-by the recreate path below.
+A `memory` box is best-effort: it takes the same group-committed WAL + recovery path as
+`disk`, so on restart its records **may survive or be lost** (no guarantee either way). It
+never resets to empty by contract and **`head_seq` never regresses above the acked head** — at
+worst a lost tail leaves `head_seq` at a lower (but still monotonic, never-rewound-below-acked)
+value; the box config always persists. See [Durability Classes](/guarantees/durability).
 
 ### Delete + recreate (seq rewind)
 

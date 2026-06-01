@@ -29,13 +29,13 @@ Complementary: node-filtering prevents *delivery* of your own events; the hop-ca
 
 ## Recipe — a two-node A↔B mirror
 
-The simplest multi-master: two nodes, each with a shared box, mirrored both ways so each node sees the other's writes.
+The simplest multi-master: two logical nodes (origin labels), each with its own box **in the same server**, mirrored both ways with local routers so each node sees the other's writes. (Nodes are content labels, not machines — streams is single-server.)
 
 ```text
-   node A                                node B
+   node A (label)                        node B (label)
    write $node=A ──► ┌────────┐  router A→B  ┌────────┐ ◄── write $node=B
-                     │ box on │ ───────────► │ box on │
-   read node=A   ◄── │  A     │ ◄─────────── │  B     │ ──► read node=B
+                     │ box-A   │ ───────────► │ box-B  │
+   read node=A   ◄── │ (local) │ ◄─────────── │(local) │ ──► read node=B
                      └────────┘  router B→A  └────────┘
 ```
 
@@ -85,12 +85,13 @@ curl -X PUT localhost:4000/v0/routers/b-to-a \
   "performance": { "server_total_ms": 0.20 } }
 ```
 
-<Callout type="info">
-  In a real deployment each "box" lives on a *separate streams process* on a different
-  machine; a router's `dest` would name a box reached through that node's HTTP endpoint. The
-  semantics are identical — `$node` preservation and the hop-cap work the same whether the
-  hops are in one process or across the network. (streams is single-machine per process; the
-  mirror is built by pointing routers at peer instances.)
+<Callout type="warning">
+  **This is a single-server, local pattern.** A "node" here is a *logical origin label*
+  (`$node`), not a separate machine, and a router's `source`/`dest` are both **local box
+  names** in the same process — there is no remote / cross-machine / HTTP-endpoint router, and
+  streams does **not** do multi-server replication or HA. The mirror is built from local boxes
+  plus local routers; `$node` preservation and the hop-cap give you echo-free, loop-free
+  fan-out across the logical nodes within one server.
 </Callout>
 
 ### Each node reads the union, filtering its own events
@@ -156,7 +157,7 @@ Node-filtering ensures correctness (you never *consume* your own event); the hop
 - **Don't clear `$node` on forwards.** `preserve_node` defaults `true`; setting it `false` strips the origin id and breaks loop-prevention across that route.
 - **Deletes and filters are per-box.** A delete on one node's box does **not** propagate through routers — a copy may already have been forwarded. To remove a record everywhere, delete it on each box (or design idempotent consumers). See [Routers](/api/routers).
 - **Forwarding is at-least-once.** A crash between "appended to dest" and "advanced router cursor" can re-forward, so a record may arrive twice. Combined with the hop-cap and node-filtering, duplicates are the only residue — **consumers must be idempotent** (dedupe on `$node` + a key in `data`/`meta`).
-- **Per-box durability still applies independently.** Each box in the mirror chooses its own [durability class](/guarantees/durability); a forward honors the *destination* box's class (a `memory` dest persists no copy).
+- **Per-box durability still applies independently.** Each box in the mirror chooses its own [durability class](/guarantees/durability); a forward's re-derived copy is governed by the *destination* box's class (a `memory` dest keeps a best-effort copy — it may survive or be lost on restart).
 
 ## See also
 

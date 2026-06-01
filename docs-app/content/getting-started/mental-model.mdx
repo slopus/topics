@@ -25,8 +25,10 @@ Everything below exists to keep that distinction crisp.
 ## The `$`-prefixed convention
 
 Before the concepts, one naming rule that runs through every JSON example on this site.
-**Server-computed fields are `$`-prefixed** — `$seq`, `$ts`, `$node`, `$tag`, `$type` —
-so they can never collide with the user-controlled `data` namespace. On **write** you set
+**Server-computed fields are `$`-prefixed** — `$seq`, `$ts`, `$node`, `$tag` —
+so they can never collide with the user-controlled `data` namespace. (SSE distinguishes
+payload kinds by the **event name**, e.g. `event: record` / `event: tombstone`, not a `$type`
+field — there is no `$type` key on the wire.) On **write** you set
 `node` and `tag` as plain top-level keys; on **read** the server echoes them back as the
 canonical, immutable `$node` and `$tag`. The `data` and `meta` objects keep the same key
 both ways (pure passthrough). All times are integer milliseconds since the Unix epoch
@@ -73,7 +75,8 @@ auto_priority, auto_create, idempotency_window_ms, dedupe_node }`. Every default
 all caps and TTL are **off** (`ttl_ms`, `cap_records`, `cap_bytes` all `0`), so an
 out-of-the-box box loses nothing — silent loss must be a deliberate choice you opt into.
 
-The load-bearing config knob is the **durability commit class**, resolved once at create:
+The load-bearing config knob is the **durability commit class**, resolved from the box's
+current config (the box `type` is immutable, but durability/config can be updated in place):
 
 | Class | Where it lands | Ack timing | Survives a crash? |
 |---|---|---|---|
@@ -201,13 +204,15 @@ loops.
 
 ### Forward mechanics & ordering
 
-When record `r` commits to `source` at seq `s`, the router appends a forwarded copy to
-`dest`, which assigns it a **fresh** `dst.$seq` from its own counter — unrelated to `s`.
-The forward is driven off the same committed log as a consumer (a server-internal consumer
-of `source` with its own cursor), so a router never forwards a record that didn't durably
-commit. Delivery is **at-least-once** with **per-source FIFO**: records from a single
-`source` arrive in `dest` in `source` commit order; if multiple routers feed one `dest`,
-its order is the interleaving by `dest` commit time.
+Forwarding is **async** (off the source write/ack path) and **derived**. When record `r`
+commits to `source` at seq `s`, a background per-router worker appends a forwarded copy to
+`dest`, which assigns it a **fresh** `dst.$seq` from its own counter — unrelated to `s`. The
+copy is **derived**: it is **not separately WAL-logged**, so one source append is **one WAL
+write regardless of fan-out**, and the copies are re-derived on recovery by replaying from a
+**durable per-router cursor**. A derived `dest` is **single-source** (a second router with a
+different `source` into one `dest` is rejected `409 box_exists_incompatible`,
+`error.detail.reason: "router_dest_fan_in"`). Delivery is **at-least-once** with **per-source
+FIFO**: records from a single `source` arrive in `dest` in `source` commit order.
 
 <Callout type="warning">
   At-least-once means a crash between "appended to dest" and "advanced the router cursor"
@@ -219,10 +224,12 @@ its order is the interleaving by `dest` commit time.
 
 A forwarded copy preserves `$node` (verbatim — this is what makes loop-prevention work
 across the route), `$tag`, `meta`, and `data`. Only `$seq` and `$ts` are reassigned by
-`dest`. A forward is an ordinary append into `dest`, so it **honors the destination box's
-durability class** — a `memory` dest persists nothing, an `fsync` dest fsyncs the copy
-before advancing the router cursor. Deletes and node filters are **per-box** and do not
-propagate: a delete on `source` does not reach copies already forwarded to `dest`.
+`dest`. Because forwarding is async and the copies are derived (not WAL-logged), the source
+ack never waits on the destination; the destination box's **durability class** governs only
+how/whether the re-derived copy is retained and recovered — a `memory` dest keeps a
+best-effort copy (may survive or be lost), an `fsync` dest fsyncs it. Deletes and node
+filters are **per-box** and do not propagate: a delete on `source` does not reach copies
+already forwarded to `dest`.
 
 ### Cycle control
 
@@ -234,10 +241,10 @@ cycle is rejected at creation with `409 router_cycle`. For intentional mirrors (
 terminates. See [Routers](/api/routers) and the [multi-master guide](/guides/multi-master).
 
 <Callout type="info">
-  Router forwarding is **synchronous on the append path** today. A persistently-failing or
-  full `discard:"reject"` destination is treated as backpressure (the record stays in
-  `source`) — there is **no background retry driver yet**, so a chronically-failing dest can
-  lag. Size a durable `dest ≥ source`, or give `dest` `discard:"old"`.
+  A full `discard:"reject"` (or otherwise erroring) destination is treated as backpressure:
+  the router does not advance its cursor and the record stays available in `source`, so a
+  chronically-failing dest **lags** behind its source until it recovers. Size a durable
+  `dest ≥ source`, or give `dest` `discard:"old"`.
 </Callout>
 
 ## Tombstone
@@ -283,8 +290,9 @@ the `tombstone` field of the response:
 
 `gap_from` is what you asked for next; `gap_to` is the last seq before the first live
 record; the range is inclusive on both ends. `missed_estimate` is the approximate dropped
-count (eviction is segment-granular). `reason` ∈ `cap | ttl | mixed | recreated`
-(diff), plus `from_seq_too_old` at SSE connect time. **The reason is best-effort; the
+count (eviction is segment-granular). `reason` ∈ `cap | ttl | mixed | recreated |
+source_trim` (diff; `source_trim` is a derived-router dest reflecting source-side eviction),
+plus `from_seq_too_old` at SSE connect time. **The reason is best-effort; the
 `[gap_from, gap_to]` range is authoritative.** In a diff this rides in the `tombstone`
 field (`null` when none, at most one per response); in SSE it is a framed
 `event: tombstone` carrying `{box, reason, gap_from, gap_to, earliest_seq, head_seq}`,
@@ -313,8 +321,11 @@ match. It is the one operation that removes data on your command — and it is d
   "resurrect," write a new record.
 - **Effective immediately.** The delete is invisible to **all** reads at once — `diff`, box
   state `count`/`bytes`, and SSE. A reader's cursor simply advances past the deleted seqs.
-- **Asynchronous / lazy reclaim.** Records are *logically* gone instantly; the physical
-  memory/disk is reclaimed by a background reclaimer (segment-granular).
+- **Asynchronous, no compaction / no reclaim.** Records are *logically* gone instantly (the
+  work runs off the call path), but a deleted record **stays on disk, just marked** — there is
+  no compaction and no per-record disk reclaim. On disk a delete flips an **in-place
+  delete-flag byte** in segment files (the WAL stays append-only); the only space released is a
+  **whole segment dropped** when a delete clears it entirely.
 - **Silent.** A delete **never** produces a tombstone. It advances `earliest_seq` but not
   `evict_floor`, so reading across a purely-deleted gap returns `tombstone: null`.
 - **Point-in-time.** A `match`-only delete is bounded by the **current head** at call time;

@@ -6,8 +6,26 @@ readiness, correctness/concurrency/perf). Every claim is grounded in `file:line`
 This is a build-decision document: what is missing, what could be better, what is
 incorrect or risky — and an ordered plan.
 
+> **STATUS — this is a historical point-in-time analysis, not the current backlog.**
+> Several items below have since been **implemented** or **decided out of scope**; the
+> `file:line` cites and "Recommend" blocks reflect the state *at the time of writing*. Read
+> it as a record of the engineering reasoning, not a live to-do list. The authoritative
+> current state is README.md / API.md / DESIGN.md / ARCHITECTURE.md / ROADMAP.md. Key
+> reconciliations (see the inline **UPDATE** notes for `file:line` corrections):
+> - **Implemented since:** `/v0/metrics` is a full gauge/WAL/histogram surface, **not** a one-gauge
+>   stub (M3); bounded graceful drain with SSE wind-down (M11); queue `lease_id` fencing —
+>   validate-when-supplied (R4); bounded WAL submission with `503` backpressure (R5); off-gate
+>   segment seal (R6); the **sharded** WAL (`STREAMS_WAL_SHARDS`); **async + derived** routers; the
+>   `queue` box type. The WAL is **sharded**, not a single global writer.
+> - **Decided OUT OF SCOPE (will not be built):** multi-server / replication / HA / single-writer
+>   fencing (M1); durable consumer groups as a server primitive (M4 — they are an app pattern: a box
+>   per consumer + delete); LSM / keyed log compaction / compacted box type and any intra-segment
+>   per-record reclaim (M5, the M8 compaction half); native TLS (terminate at a reverse proxy) and
+>   hard multi-tenancy beyond per-key scopes + prefix allowlists (M13). Deletion is **no compaction /
+>   no reclaim** by design.
+
 **One-paragraph framing.** streams is a genuinely well-built *single-node, append-mostly*
-event engine. Its durability core (single ordered WAL writer, XXH3 framing,
+event engine. Its durability core (sharded ordered WAL writers, XXH3 framing,
 torn-tail truncation, adaptive group commit, tail-rewind on fsync failure,
 checkpoint = `(wal_idx, wal_offset)`, idempotent convergent replay) and its
 crash-test harness (FakeDisk/FaultFs + ~60 enumerated faults + a model oracle
@@ -25,6 +43,10 @@ system that does it well and how.
 ## (1) MISSING
 
 ### M1 — Replication / HA / failover  · **high**
+> **UPDATE — OUT OF SCOPE (decided).** Multi-server / replication / HA / failover and single-writer
+> fencing are **not** on the roadmap; streams is single-server by design. The text below is retained
+> as the original analysis only.
+
 No replication, standby, or failover anywhere (`grep replicat|raft|failover|standby`
 → nothing). Any node loss = downtime; checkpointed-but-unreplicated data is exposed
 to single-disk loss. The single-writer assumption is also *unfenced* —
@@ -47,6 +69,11 @@ analyses independently rank it #1–2.
 - **Where:** `src/engine/recovery.rs:184-197`, `src/storage/snapshot.rs:182-238`, `src/engine/mod.rs:311-357`, `src/main.rs:85-107`.
 
 ### M3 — Observability / `/v0/metrics` is a stub  · **high** (low effort)
+> **UPDATE — RESOLVED (implemented).** `/v0/metrics` now exposes the full surface: process/aggregate
+> gauges, per-box gauges (head/earliest/records/bytes/queue), real `WalMetrics`, and a fsync-latency
+> histogram (`src/http/health.rs`). It is **not** a one-gauge stub. The text below describes the old
+> state.
+
 `render_prometheus` emits exactly **one** gauge (`streams_boxes`) with an in-code TODO
 (`src/http/health.rs:79-86`), even though the data already exists: `WalMetrics`
 (fsyncs/frames/batches/bytes/rotations, `src/storage/wal.rs:989`) and per-box
@@ -58,6 +85,11 @@ no slow-op log, no request tracing spans (only coarse `info!`/`warn!`).
 - **Where:** `src/http/health.rs:50-86`, `src/storage/wal.rs:989`, `src/engine/mod.rs:1222`.
 
 ### M4 — Durable consumer groups / committed offsets  · **high**
+> **UPDATE — OUT OF SCOPE (decided).** Durable consumer groups as a *server primitive* will not be
+> built. The supported pattern is application-level: a box per consumer (or per group) plus
+> delete-as-ack; the lease-based `queue` box type covers competing-worker delivery. The text below
+> is the original analysis.
+
 Every consumer is bring-your-own-cursor: the `diff` path keeps **no** server-side
 per-consumer state (`docs/API.md:614-617`, `src/types.rs:410-434`). The lease queue is
 the only server-tracked delivery state. No named groups, no committed offsets, no
@@ -67,6 +99,12 @@ the only server-tracked delivery state. No named groups, no committed offsets, n
 - **Where:** `src/types.rs:410-434`, `src/engine/queue.rs:1-9`, `docs/API.md:612-617`.
 
 ### M5 — Keyed log compaction / compacted box type  · **high**
+> **UPDATE — OUT OF SCOPE (decided).** LSM / keyed log compaction and a compacted box type will not
+> be built; deletion is **no compaction / no per-record reclaim** by design (a delete-flag byte is
+> flipped in place; only a whole cleared segment is dropped). The last-value-per-key pattern is built
+> at the application level (a tag + a point-in-time `match` delete of prior versions). The text below
+> is the original analysis.
+
 No keyed last-value compaction; `before_seq` delete is snapshot-compaction, not keyed
 (`docs/DESIGN.md:429`). Records have no optional `key`. Already flagged as future
 (`docs/ROADMAP.md:196-203`). Combined with **no intra-segment reclaim** (see B3/storage),
@@ -87,19 +125,24 @@ add (lowest cost, reuses existing machinery).
 - **Where:** `src/engine/filters.rs`, `src/http/boxes.rs`, `docs/API.md:122-124`.
 
 ### M7 — Admin verify / repair / scrub tooling  · **med**
-CRC validation happens **only lazily on the read path** (`src/storage/wal.rs:564`,
+Checksum (XXH3-64) validation happens **only lazily on the read path** (`src/storage/wal.rs:564`,
 `src/storage/segment.rs:204-208`, `src/storage/snapshot.rs:299`). There is no offline/online
 `verify`/`fsck`, no `integrity_check`-style full scan, no `dump-wal`/`scan-segments`/
 `repair-orphans`, no rebuild-index. Bit-rot in a cold segment is found only when something
-reads it. Worse, `F-WAL-CRC-FLIP-MIDLOG` (`docs/FAULT_TESTING.md:73`): a mid-log CRC flip
+reads it. Worse, `F-WAL-CRC-FLIP-MIDLOG` (`docs/FAULT_TESTING.md:73`): a mid-log checksum (XXH3-64) flip
 on the active WAL truncates *everything after it* — silently dropping acked `disk`/`fsync`
 records (overlaps R8). An operator cannot proactively scrub or salvage without booting the server.
 - **Borrows from:** PostgreSQL (`pg_amcheck`, `pg_checksums`), SQLite (`PRAGMA integrity_check`), InnoDB (page checksums + recovery modes), RocksDB (`ldb`/repair/checkpoint).
-- **Recommend:** add startup/background full-scan XXH3 verification + offline `verify`/`dump-wal`/`scan-segments`/`repair-orphans`, reusing the CRC readers already in place. Turns lazy detection into proactive.
+- **Recommend:** add startup/background full-scan XXH3 verification + offline `verify`/`dump-wal`/`scan-segments`/`repair-orphans`, reusing the XXH3-64 readers already in place. Turns lazy detection into proactive.
 - **Where:** `src/main.rs:16-174`, `src/storage/wal.rs:564`, `src/storage/segment.rs:204-208`, `docs/FAULT_TESTING.md:73`.
 
 ### M8 — Box-cardinality scaling: file/inode explosion + no segment coalescing  · **med**
 *(The storage deep-dive ranks this its #1 structural risk; codex did not surface it — noted disagreement.)*
+> **UPDATE — partially OUT OF SCOPE.** The file/inode-cardinality concern remains a real
+> single-node scaling note, but the **compaction half** of the recommendation (rewriting
+> sparsely-deleted segments to drop dead frames / intra-segment per-record reclaim) is **out of
+> scope** — deletion is no-compaction / no-reclaim by design (only whole cleared segments drop).
+
 Each box is its own directory (`src/engine/mod.rs:485`) with ≥2 files per sealed segment,
 mirrored under cold. With the 1h age trigger sealing partial segments, even idle boxes
 accrete tiny 2-file segments forever. 100k low-traffic boxes ⇒ 100k+ directories, O(files)
@@ -125,6 +168,9 @@ scaling-ergonomics gap vs JetStream.
 - **Where:** `src/engine/box_state.rs:66-83,146-176`, `docs/API.md:122-124`.
 
 ### M11 — Bounded drain / rolling-restart safety  · **med** (low effort)
+> **UPDATE — RESOLVED (implemented).** Graceful shutdown now races a `DRAIN_BUDGET` timeout and
+> actively winds down SSE streams (`src/serve.rs`). The text below describes the old state.
+
 `graceful.shutdown().await` (`src/serve.rs:148`) has **no deadline** — a long-lived SSE or
 `/work` stream stalls a rolling restart indefinitely; SSE streams are not told to wind down.
 - **Borrows from:** any production HTTP server (drain timeout + forced close).
@@ -133,13 +179,18 @@ scaling-ergonomics gap vs JetStream.
 
 ### M12 — Online config change + on-disk format versioning / migration  · **med**
 Config is env-only, read once at boot (`src/config.rs:290`); no SIGHUP/reload. WAL/segment/
-snapshot frames carry CRC but no explicit surfaced **format-version field** for upgrades —
+snapshot frames carry an XXH3-64 checksum but no explicit surfaced **format-version field** for upgrades —
 cross-version compatibility is undefined. Limits/segment-policy/keys all need a full restart.
 - **Borrows from:** PostgreSQL (catalog/extension migrations), MySQL (`SET PERSIST`), Kafka (dynamic configs), JetStream (stream updates).
 - **Recommend:** add a format-version field (cheap insurance before more users pin data) + documented upgrade policy; version persisted config and validate online changes before any format churn.
 - **Where:** `src/config.rs:288-356`, `src/engine/mod.rs:875-920`.
 
 ### M13 — Multi-tenancy / TLS / quotas / audit  · **low**
+> **UPDATE — mostly OUT OF SCOPE.** Native TLS will not be built (terminate at a reverse proxy), and
+> hard multi-tenancy beyond per-key scopes + box-name-prefix allowlists is **out of scope**. Per-key
+> resource limits and a global total-bytes quota are implemented (§11); audit logging remains a
+> possible future op concern. The text below is the original analysis.
+
 "Tenancy" = per-key box-name prefix allowlist (a filter, not a partition;
 `docs/API.md:1578`, acknowledged future at `docs/API.md:108`); quotas are global
 (`max_boxes`/`max_total_bytes`), not per-tenant. No in-process TLS (plain HTTP, relies on
@@ -170,6 +221,11 @@ grow with total live data. Three analyses converge.
 - **Where:** `src/storage/wal.rs:852-857`, `src/engine/recovery.rs:82-181`, `src/engine/snapshot.rs:60-92`.
 
 ### B3 — Segment/tier store lacks LSM-style maintenance + intra-segment reclaim  · **med**
+> **UPDATE — intra-segment reclaim is OUT OF SCOPE (decided).** Whole-segment-only reclaim is the
+> intended design: deletion is no-compaction / no-reclaim, so dead bytes inside a still-live segment
+> are retained on purpose (a delete-flag byte is flipped in place). Partial rewrite / LSM compaction
+> will not be built. The cold-path fd/block-cache and filter-block ideas remain valid perf notes.
+
 Reclaim is whole-segment only (`src/engine/box_state.rs:135,1046`): a `match`-delete killing
 99% of a 10k-record segment keeps the whole `.data`+`.idx` until the last record dies — dead
 bytes pinned indefinitely (space amplification). No MANIFEST, no Bloom/filter blocks, no
@@ -283,6 +339,11 @@ violated for the `disk` class. Coupled with B1.
 - **Where:** `src/engine/mod.rs:1637-1697`, `src/engine/recovery.rs:241-293`, `src/types.rs:207-218`.
 
 ### R4 — Queue ack/nack/extend keyed on `node`, not `lease_id` — stale-worker fencing gap  · **high**
+> **UPDATE — RESOLVED (implemented).** ack/nack/extend now accept an optional `lease_ids` array and
+> fence on it (`ack_fenced`/`lease_token_ok`, `src/engine/queue.rs`): **validate-when-supplied** — a
+> stale token is rejected and that seq skipped — while remaining optional (legacy `node`+`seqs` match
+> when omitted). The text below describes the old state.
+
 The jobs path matches on `l.node == node` (`src/engine/queue.rs:624`) and does not require the
 returned `lease_id` (`src/types.rs:704-750`, `src/engine/queue.rs:622-630,721-733,799-808`). A stale
 worker reusing the same `node` after its lease expired and the job was re-delivered can ack/nack/extend
@@ -292,6 +353,10 @@ a *newer* delivery — wrong-delivery acknowledgement.
 - **Where:** `src/types.rs:704-750`, `src/engine/queue.rs:622-630,721-733,799-808`.
 
 ### R5 — WAL submission unbounded despite `channel_cap`  · **high**
+> **UPDATE — RESOLVED (implemented).** WAL ingest now uses a bounded channel with `try_send` →
+> `WalError::Full` → `503` backpressure (`src/storage/wal.rs`). The text below describes the old
+> state.
+
 The WAL ingest uses an unbounded `mpsc::channel` (`src/storage/wal.rs:911-912,1129-1131,
 1368-1373`), so a stalled WAL device turns backpressure into unbounded memory growth — the
 configured `channel_cap` is not honored. (Related to B10's per-record sends.)
@@ -300,6 +365,10 @@ configured `channel_cap` is not honored. (Related to B10's per-record sends.)
 - **Where:** `src/storage/wal.rs:911-912,1129-1131,1368-1373`.
 
 ### R6 — Segment seal does fsync'd I/O while holding the publish gate  · **high**
+> **UPDATE — RESOLVED (implemented).** Segment seal now runs off the publish gate
+> (`publish_staged_no_seal` + off-gate `materialize_published`, used as the default path). The text
+> below describes the old state.
+
 `publish_staged` → `materialize_segment` → `seal_active` → `hot().put(...)` fsyncs inline
 (`src/engine/box_state.rs:652,762-831`, `src/engine/segwriter.rs:377`) *while the writer holds the
 publish-gate turn* (`src/engine/mod.rs:1677-1696`). A slow seal fsync serializes every subsequent
@@ -321,7 +390,7 @@ evicted records can resurrect on restart.
 
 ### R8 — Mid-log corruption / recovery contiguity guard silently truncates  · **med**
 Two faces of the same hazard. (a) `F-WAL-CRC-FLIP-MIDLOG` (`docs/FAULT_TESTING.md:73`): a mid-log
-CRC flip on the active WAL is treated as logical EOF, silently discarding all later frames —
+checksum (XXH3-64) flip on the active WAL is treated as logical EOF, silently discarding all later frames —
 including acked `disk`/`fsync` records — with no alarm. (b) Recovery ignores any Append whose
 `seq != head+1` (`src/engine/recovery.rs:279-281`): a torn *middle* (not just tail) drops the
 higher frame and every later frame for that box silently, converging to a truncated box rather than
@@ -393,13 +462,25 @@ gate mutex*, not in the ticket gap.
 
 ## Top 8 next things to build, in order (impact × effort)
 
+> **UPDATE — historical.** Items 1 (metrics, M3), 2 (bounded drain, M11), 3 (queue `lease_id`
+> fencing, R4), 4 (bounded WAL submission + per-batch token, R5/B10), and 6 (async + derived
+> replay-from-cursor routers, R1/R2/R12) are **implemented**. Item 8's compaction / intra-segment
+> reclaim half (M8/B3) is **out of scope** (no compaction / no reclaim by design; only the
+> file-cardinality / packed-cold-store concern remains a valid note). The list is kept as the
+> original prioritization record.
+
 1. **Flesh out `/v0/metrics`** (M3) — wire existing `WalMetrics` + per-box atomics + latency histograms + recovery/router-lag/queue/SSE gauges. *Days, huge ROI, zero new subsystems.* `src/http/health.rs:79-86`.
 2. **Bounded drain + SSE wind-down** (M11) — timeout-race in `serve.rs` + signal SSE to close. *Small, fixes rolling-restart safety.* `src/serve.rs:146-149`.
 3. **Require `lease_id` on queue ack/nack/extend** (R4) — close the stale-worker fencing bug. *Small, correctness.* `src/engine/queue.rs:622-630`.
 4. **Bound WAL submission + per-batch commit token** (R5 + B10) — honor `channel_cap`, return 429/503, stop one-Arc-per-record. *Small–med, prevents OOM-under-stall.* `src/storage/wal.rs:911-912,1030-1041`.
 5. **Read-time `filter` on `diff`/`watch`** (M6) — expose the existing `filters.rs` `Eq`/`Glob` tuples on reads. *Med, biggest ergonomic unlock, reuses existing machinery.* `src/engine/filters.rs`.
 6. **Async + batched router forwarding, with a durable replay-from-cursor catch-up loop** (R1 + R2 + R12) — move fanout off the request thread, advance cursors only after dest commit, re-drive on restart. *Med–high, fixes the biggest perf liability AND a silent-loss correctness gap.* `src/engine/mod.rs:1736-1889`.
-7. **Backup / archived-WAL retention / PITR + offline `verify`/`fsck` scrub** (M2 + M7 + R10) — retain absorbed WAL behind an archive hook, keep N snapshots, add restore + replay-to-point, and a full-scan integrity check reusing the CRC readers. *High effort, closes the single-durable-copy risk and gives operators a recovery path.* `src/engine/recovery.rs:187-198`, `src/storage/snapshot.rs:232-237`.
+7. **Backup / archived-WAL retention / PITR + offline `verify`/`fsck` scrub** (M2 + M7 + R10) — retain absorbed WAL behind an archive hook, keep N snapshots, add restore + replay-to-point, and a full-scan integrity check reusing the XXH3-64 readers. *High effort, closes the single-durable-copy risk and gives operators a recovery path.* `src/engine/recovery.rs:187-198`, `src/storage/snapshot.rs:232-237`.
 8. **Segment coalescing + intra-segment reclaim** (M8 + B3) — threshold-triggered merge of small/sparse sealed segments (and a packed cold store for many small boxes), preserving the append-mostly zero-rewrite property in the common case. *High effort, the structural fix for box-cardinality + sparse-delete space amplification.* `src/engine/box_state.rs:1031-1089`, `src/engine/segwriter.rs`.
 
-*Deferred but important once a second node exists:* single-writer fencing → WAL shipping → replication/HA (M1), keyed compaction / compacted box type (M5), durable consumer groups (M4), incremental snapshots (B2).
+*Out of scope (will not be built):* single-writer fencing / WAL shipping / replication / HA (M1),
+keyed / LSM compaction and a compacted box type (M5) plus intra-segment per-record reclaim (B3/M8),
+durable consumer groups as a server primitive (M4 — an app pattern instead), native TLS (M13 —
+reverse proxy), and hard multi-tenancy beyond per-key scopes + prefix allowlists (M13). *Still a
+valid future op concern:* backup / archived-WAL / PITR + offline scrub (M2/M7), incremental snapshots
+(B2).

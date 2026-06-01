@@ -8,13 +8,13 @@ import { Callout } from 'nextra/components'
 # Durability Classes
 
 Durability in streams is a **per-box** decision, not a server-wide mode. Each box is one of
-three **commit classes** — `memory`, `disk`, or `fsync` — chosen at create time, that trade
-write latency against crash survival. A RAM-only cache box, a group-committed pub/sub feed,
-and an `fsync`-gated job queue coexist in one process, and each pays for exactly the guarantee
-it uses.
+three **commit classes** — `memory`, `disk`, or `fsync` — that trade write latency against
+crash survival. A best-effort `memory` cache box, a group-committed pub/sub feed, and an
+`fsync`-gated job queue coexist in one process, and each pays for exactly the guarantee it uses.
 
-The class is resolved once when the box is created (`durability_class()`), reported on every
-box-state and box-create response, and never reinterpreted at runtime.
+The class is resolved from the box's **current config** (`durability_class()`) and reported on
+every box-state and box-create response. The box `type` is immutable, but durability/config can
+be **updated in place** — the resolved class always reflects the current config.
 
 ## The three classes
 
@@ -46,9 +46,9 @@ reachable **only** by setting `durability:"memory"` explicitly — no legacy boo
 ### `disk`
 
 Records are written to the WAL and **group-committed** — no per-write `fsync` — so `fsync_ms`
-is `0` (the fast path). The write is acked **as soon as its frame is enqueued** to the single
-WAL writer; the ack is **not** fsync-gated. The writer then group-commits and `fdatasync`s the
-batch shortly after.
+is `0` (the fast path). The write is acked **as soon as its frame is enqueued** to its box's
+WAL-shard writer (the WAL is [sharded](/how-it-works/wal-and-group-commit)); the ack is **not**
+fsync-gated. The shard writer then group-commits and `fdatasync`s the batch shortly after.
 
 A crash loses the **un-fsynced tail** — the frames that were enqueued but not yet
 group-fsynced. Everything older is recovered by WAL replay. This is the default and the
@@ -128,29 +128,29 @@ Internally, `is_durable()` is simply `class == "fsync"`.
 
 ## Routers and dead-letter honor the destination class
 
-A router-forwarded copy and a dead-lettered job are ordinary appends into their destination
-box, so they take on the **destination box's** commit class — not the source's:
+Router forwarding is **async** (off the source write/ack path) and **derived** — the forwarded
+copy is **not separately WAL-logged**, so one source append is one WAL write regardless of
+fan-out, and copies are re-derived on recovery by replaying from a durable per-router cursor.
+The **destination box's** commit class governs how/whether that re-derived copy (and a
+dead-lettered job) is retained and recovered — not the source's:
 
-- A `fsync` destination advances the router's forward cursor only **after** the destination
-  fsyncs the forwarded record.
-- A `disk` destination writes the forwarded copy to the WAL, group-committed.
-- A `memory` destination takes the **same best-effort path** as any `memory` write — the
-  forwarded copy is group-committed to the WAL like `disk` but carries **no durability
-  guarantee**, exactly like a direct write to that box.
+- A `fsync` destination retains/recovers the copy under fsync semantics.
+- A `disk` destination retains it group-committed, recovered minus the un-fsynced tail.
+- A `memory` destination keeps a **best-effort** copy — **may survive or be lost** on a restart
+  (the dest config always persists), exactly like a direct write to that box.
 
 So if you route an `fsync` source into a `memory` destination, the forwarded copies are
-best-effort — they **MAY survive OR be lost** on a restart (the dest config always persists),
-while the durable source recovers in full. The durability of the copy follows where it lands,
-not where it came from. Size and class your destinations deliberately. See
+best-effort while the durable source recovers in full. The durability of the copy follows where
+it lands, not where it came from. Size and class your destinations deliberately. See
 [Routers](/api/routers) and the [Multi-master guide](/guides/multi-master).
 
 <Callout type="info">
-  Router forwarding is at-least-once via the source log, but a persistently-failing or slow
-  durable destination is currently held as **backpressure with no background retry driver
-  yet** — a stuck destination can lag. Queue lease durability is best-effort
-  (`leases_durable` defaults `false`); a transient WAL error on a lease append degrades to the
-  queue's baseline at-least-once rather than losing or duplicating work. See the maturity notes
-  in the [Introduction](/getting-started).
+  Router forwarding is at-least-once via the durable per-router cursor. A persistently-failing
+  or full `discard:"reject"` destination is held as **backpressure** (the record stays available
+  in `source`, the cursor does not advance), so a stuck destination lags until it recovers.
+  Queue lease durability is best-effort (`leases_durable` defaults `false`); a transient WAL
+  error on a lease append degrades to the queue's baseline at-least-once rather than losing or
+  duplicating work. See the maturity notes in the [Introduction](/getting-started).
 </Callout>
 
 ## How a crash actually recovers

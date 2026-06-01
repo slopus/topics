@@ -141,7 +141,7 @@ counter.
 | Field | Meaning |
 |---|---|
 | `claimed[]` | The leased jobs, ascending by `$seq`. Each carries the record's `$seq`/`$ts`/`data` (and `$tag`/`meta` when present), plus the lease fields below. |
-| `claimed[].lease_id` | Opaque lease identity for this delivery (`"lease_"` + hex). For logging/observability and disambiguating redeliveries — `ack`/`nack`/`extend` match on `node` + `seqs`, not on `lease_id`. |
+| `claimed[].lease_id` | Opaque lease identity for this delivery (`"lease_"` + hex). **Validate-when-supplied, not strictly required:** `ack`/`nack`/`extend` match on `node` + `seqs` by default, but you MAY echo these tokens back in an optional `lease_ids` array to **fence** stale workers — a token whose lease has since been superseded is rejected and that seq skipped. Also for logging/observability and disambiguating redeliveries. |
 | `claimed[].deadline` | Absolute ms epoch when the lease expires if not acked/extended: `deadline = claim_ts + effective lease_ms`. |
 | `claimed[].deliveries` | How many times this job has now been delivered (this claim counted). Starts at `1`; compared against `max_deliveries`. |
 | `count` | `claimed.length`. |
@@ -161,13 +161,14 @@ equals the box's `durable` — an acked+deleted job stays gone iff its delete wa
 **Request body**
 
 ```json
-{ "node": "worker-eu-1", "seqs": [480101, 480104] }
+{ "node": "worker-eu-1", "seqs": [480101, 480104], "lease_ids": ["lease_1a2b", "lease_3c4d"] }
 ```
 
 | Field | Type | Req? | Meaning |
 |---|---|---|---|
 | `node` | string | yes | The worker acking. Must be the current lease holder of each seq for the ack to count. |
 | `seqs` | array&lt;u64&gt; | yes | `1..=1000` (the fixed `MAX_CLAIM` bound) job seqs to complete. |
+| `lease_ids` | array&lt;string&gt; | no | Optional **per-seq lease fence** (validate-when-supplied), one token per `seqs` entry, in the same order — the `claimed[].lease_id` values from the originating claim. When present, a seq is acked only if its token still matches the current lease; a **stale** token (the lease was superseded by another worker's re-claim/extend) is rejected and that seq **skipped**. Omit to fall back to the `node` + `seqs` match. |
 
 Only seqs currently leased to `node` are acked. A seq that is not leased to `node` (never
 claimed, already acked, or its lease expired and was leased to someone else) is **silently
@@ -205,7 +206,7 @@ sooner (or after `delay_ms`).
 **Request body**
 
 ```json
-{ "node": "worker-eu-1", "seqs": [480104], "delay_ms": 0 }
+{ "node": "worker-eu-1", "seqs": [480104], "delay_ms": 0, "lease_ids": ["lease_3c4d"] }
 ```
 
 | Field | Type | Req? | Default | Meaning |
@@ -213,6 +214,7 @@ sooner (or after `delay_ms`).
 | `node` | string | yes | — | Must be the current lease holder (else that seq is skipped). |
 | `seqs` | array&lt;u64&gt; | yes | — | Job seqs to release. Bounded to `1000`. |
 | `delay_ms` | `u64` | no | `0` | Hold the job invisible this long before it becomes claimable again (delayed retry / backoff). `0` = claimable immediately. Clamped `[0, 86400000]`. |
+| `lease_ids` | array&lt;string&gt; | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as `ack`: a stale token's seq is skipped; omit for the `node` + `seqs` match. |
 
 A nack drops the active lease and makes the seq claimable again at `now + delay_ms`,
 incrementing the delivery counter on its next claim (and subject to dead-lettering).
@@ -244,7 +246,7 @@ now."
 **Request body**
 
 ```json
-{ "node": "worker-eu-1", "seqs": [480101], "lease_ms": 30000 }
+{ "node": "worker-eu-1", "seqs": [480101], "lease_ms": 30000, "lease_ids": ["lease_1a2b"] }
 ```
 
 | Field | Type | Req? | Meaning |
@@ -252,6 +254,7 @@ now."
 | `node` | string | yes | Must be the current lease holder. |
 | `seqs` | array&lt;u64&gt; | yes | Held job seqs to extend. Bounded to `1000`. |
 | `lease_ms` | `u64` | yes | New lease duration from **now**: `deadline = now + lease_ms`. Clamped `[100, 86400000]`. |
+| `lease_ids` | array&lt;string&gt; | no | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as `ack`: a stale token's seq is skipped; omit for the `node` + `seqs` match. |
 
 A seq whose lease has **already expired** (and was reclaimed) cannot be extended — it is
 skipped; the worker should re-claim. Extending does **not** change the delivery counter.
@@ -332,7 +335,8 @@ counter. The dead-letter box is an ordinary box (log or queue), so a poison job 
 inspected via [`diff`](/api/reading) / [`watch`](/api/watch), or re-driven by reading it
 and re-producing into the source queue. Forwarded / dead-lettered copies honor the
 **destination** box's [durability class](/guarantees/durability) — a `memory` dead-letter
-box persists nothing.
+box retains a best-effort copy (it may survive or be lost on restart, same as `disk` minus
+the durability guarantee).
 
 ## Queue observability
 

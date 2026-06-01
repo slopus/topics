@@ -86,9 +86,9 @@ on. See [Configuration](/deployment/configuration) for every variable and
 [Security](/deployment/security) for the key, scope, and prefix-allowlist model.
 
 <Callout type="warning">
-  streams speaks **plain HTTP** — it does not terminate TLS. For any non-loopback exposure,
-  run it behind a TLS-terminating reverse proxy, or bind loopback and tunnel. Native TLS is
-  planned. See [Security](/deployment/security).
+  streams speaks **plain HTTP** — it does not terminate TLS, by design. For any non-loopback
+  exposure, run it behind a TLS-terminating reverse proxy, or bind loopback and tunnel. Native
+  TLS is out of scope — terminate it at the proxy. See [Security](/deployment/security).
 </Callout>
 
 ## Graceful shutdown
@@ -100,8 +100,9 @@ draining, `GET /v0/ready` returns **503 `shutting_down`**.
 Because durability is WAL-first, you don't depend on the shutdown snapshot for correctness:
 an acknowledged durable (`disk`/`fsync`) write is already in the WAL and is recovered by
 replay even after an abrupt kill. The final snapshot is a recovery-speed optimization, not
-a correctness requirement. (A `memory`-class box is intentionally not persisted and
-reappears empty — see [Durability](/guarantees/durability).)
+a correctness requirement. (A `memory`-class box takes the same group-committed WAL path as
+`disk` but is best-effort — after a restart its records may survive or be lost, with no
+guarantee either way; its config always survives — see [Durability](/guarantees/durability).)
 
 ## Where next
 

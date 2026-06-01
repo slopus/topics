@@ -31,20 +31,25 @@ Five concepts. That's the whole product.
   opaque cursor token for box reads: the monotonic `seq` *is* the cursor. The client
   owns its position; advancing it is the ack.
 - **Router** — a server-side forwarding rule `source → dest`. Every record appended to
-  `source` is copied into `dest`. Routers fan out, and because the origin `node` rides
-  through untouched, N symmetric nodes can mirror to each other without echo or loops.
+  `source` is copied into `dest` **asynchronously, off the write/ack path**: forwarding
+  is driven by a durable per-router cursor, so the source write acks immediately and the
+  copy follows. Routers fan out, and because the origin `node` rides through untouched, N
+  symmetric nodes can mirror to each other without echo or loops.
 - **Tombstone** — the explicit "you missed data" signal. If records you wanted were
   evicted (cap) or expired (TTL) before you read them, the read returns an in-band
   tombstone with the exact `[gap_from, gap_to]` range — at HTTP 200, never silently.
 - **Delete** — a permanent, asynchronous, point-in-time removal of records, by `seq`
   range and/or by `tag` match. A delete is **silent** (never a tombstone) and takes
-  effect immediately on all reads; the physical memory/disk is reclaimed lazily in the
-  background. It only removes records that exist at call time — it is not a standing
-  filter, so future records are never affected. For a record already sealed into a
-  segment, the delete is made durable **in place**: it flips a single delete-flag byte
-  in the segment file (and fsyncs) while the WAL stays append-only, so the deletion
-  survives a checkpoint that trims the WAL `Delete` frame and is re-derived from the
-  on-disk flag on restart. Clearing a whole segment drops it in one op (crash-safe).
+  effect immediately on all reads. It only removes records that exist at call time — it
+  is not a standing filter, so future records are never affected. There is **no
+  compaction and no per-record disk reclaim**: a deleted record stays on disk, just
+  marked. For a record already sealed into a segment, the delete is made durable **in
+  place** by flipping a single delete-flag byte in the segment file (and fsyncing) while
+  the WAL stays append-only (a `Delete` frame is appended, never mutated in place), so
+  the deletion survives a checkpoint that trims the WAL `Delete` frame and is re-derived
+  from the on-disk flag on restart. The only physical space released is a **whole
+  segment dropped in one op** when a delete clears it entirely (crash-safe); individual
+  deleted records inside a still-live segment are never reclaimed.
 
 The load-bearing invariant: **involuntary capacity-driven loss you didn't ask for
 (cap eviction, TTL expiry) always produces a tombstone; voluntary removal you did ask
@@ -60,17 +65,22 @@ across a purely-deleted gap is silent while reading below an evicted floor tombs
 What streams **aims** for — the design targets the implementation is built and tuned against:
 
 - **Throughput: ~1,000,000 events/sec (batched).** Writes are batched (a single `POST`
-  carries up to thousands of records) and the WAL is a single sequential writer with
-  **adaptive group commit** — one `fsync` amortized across a whole batch of concurrent
-  durable writers — so the per-event cost approaches the cost of a sequential disk append.
-  Reads are `seq`-indexed (`O(1)` slot lookup) and SSE broadcasts serialize each record
-  **once**, shared ref-counted across all watchers (a 1→N fan-out pays serialization once).
+  carries up to thousands of records) and the WAL is **sharded** (`STREAMS_WAL_SHARDS`,
+  default `min(num_cpus, 8)`) into independent ordered writers, each with **adaptive group
+  commit** — one `fsync` amortized across a whole batch of concurrent durable writers — so
+  the per-event cost approaches the cost of a sequential disk append and durable throughput
+  scales with shard count. Each box routes to exactly one shard by a stable hash of its id,
+  so per-box ordering and every durability guarantee still hold; recovery is
+  shard-count-agnostic (it replays all shards by `box_id`, so the shard count may change
+  between restarts). Reads are `seq`-indexed (`O(1)` slot lookup) and SSE broadcasts
+  serialize each record **once**, shared ref-counted across all watchers (a 1→N fan-out
+  pays serialization once).
 - **Latency: ~1 ms delivery / response.** On local NVMe, a `disk` write acks as soon as its
-  WAL frame is enqueued (group-committed shortly after by the single writer — no per-write
-  fsync, the ack is not fsync-gated) and an `fsync` write acks after one group `fsync`; both
-  target single-digit-millisecond p99. Under CPU pressure, delivery degrades in **latency,
-  never in correctness** (the elastic scheduler), and a long-poll/SSE consumer is woken on
-  append rather than polling.
+  WAL frame is enqueued to its box's shard writer (group-committed shortly after — no
+  per-write fsync, the ack is not fsync-gated) and an `fsync` write acks after one group
+  `fsync`; both target single-digit-millisecond p99. Under CPU pressure, delivery degrades in
+  **latency, never in correctness** (the elastic scheduler), and a long-poll/SSE consumer is
+  woken on append rather than polling.
 
 The central tradeoff is the **three durability commit classes**, chosen per box, so each box
 buys exactly the guarantee it needs without taxing the others:
@@ -281,8 +291,17 @@ Configuration is read from the environment:
 | `STREAMS_PORT` | `4000` | Listen port. |
 | `STREAMS_API_KEYS` | _(unset)_ | Comma-separated bearer keys. **Hashed at rest** (SHA-256) and constant-time compared. Each entry may carry optional scopes + a box-name prefix allowlist: `key` \| `key:scopes` \| `key:scopes:prefixes` (§0.2). A bare `key` = full access. Unset ⇒ **auth disabled** (dev mode). |
 | `STREAMS_ALLOW_INSECURE_NO_AUTH` | `0` | Required to start on a **non-loopback** bind with **no** keys — otherwise the server refuses to start (it would be an open, unauthenticated event store). |
+| `STREAMS_PROBE_AUTH` | `0` | Require auth on the health/ready/metrics probes too (`/v0/health`, `/v0/ready`, `/v0/metrics`). Off ⇒ probes are unauthenticated. |
+| `STREAMS_MAX_BODY_BYTES` | `67108864` (64 MiB) | Max total request body before parse; larger ⇒ `413`. |
 | `STREAMS_DATA_DIR` | `./streams-data` | Directory for the WAL, segments, and snapshots. Replayed on start; a missing/empty dir is a fresh start. |
-| `STREAMS_COLD_DIR` | _(unset)_ | Optional cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path; unset ⇒ tiering disabled (everything stays hot). |
+| `STREAMS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread / file set / group-commit). Each box maps to one shard by a stable hash of its id, so per-box ordering + durability still hold; recovery is shard-count-agnostic (replays all shards by `box_id`), so this may change between restarts. `1` = the flat single-writer layout. |
+| `STREAMS_COLD_DIR` | _(unset)_ | Optional cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path; unset ⇒ tiering disabled (everything stays hot). Cold reads never affect writes or delivery. |
+| `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal (roll) the active segment after this many records. |
+| `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Also seal a segment after this many `.data` bytes. |
+| `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Also seal a partially-filled active segment after this wall-clock age. `0` disables the age trigger. |
+| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Keep at most this many most-recent sealed segments hot before relocating older ones to the cold tier (the active segment is always hot). |
+| `STREAMS_HOT_RETAIN_BYTES` | `0` (count-only) | Optionally bound hot sealed-segment bytes; the stricter of the two retention bounds wins. |
+| `STREAMS_FORWARD_V2` | `0` | Selects the async + derived router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged, single-source-per-dest) described in [Routers](#features). Default `0` keeps the legacy synchronous in-line forward; set `1` to enable the cursor-driven async path. |
 | `STREAMS_MAX_BOXES` | `100000` | Max boxes (DoS hardening). `0` = unlimited. Creating past it ⇒ `429 throttled`. |
 | `STREAMS_MAX_ROUTERS` | `10000` | Max routers. `0` = unlimited. |
 | `STREAMS_MAX_WATCH_SESSIONS` | `10000` | Max live watch sessions. `0` = unlimited. |
@@ -341,9 +360,9 @@ commands above work verbatim.
   alone is not a credential, so a leaked `wid` cannot be opened by a holder who lacks the key —
   and can never exceed the creator's scope. The `?token=` query fallback is accepted **only on
   the SSE stream GETs** and leaks via logs — prefer the `Authorization` header.
-- **streams speaks plain HTTP** (no built-in TLS). For any non-loopback exposure, run it
-  behind a **TLS-terminating reverse proxy** (or bind loopback). Native TLS is **planned** —
-  see `docs/API.md` §0.2 / §0.11.
+- **streams speaks plain HTTP** (no built-in TLS, by design). For any non-loopback exposure,
+  run it behind a **TLS-terminating reverse proxy** (or bind loopback). Native TLS is **out of
+  scope** — terminate it at the proxy. See `docs/API.md` §0.2 / §0.11.
 
 ### Running the tests
 
@@ -434,13 +453,21 @@ cursor and replay from the last acked `from_seq`. If a cap is ever configured an
 - **Permanent deletion** — remove records by `seq` range (`before_seq`) and/or by tag
   (exact or `tag*` prefix), backed by a per-box tag index for efficiency. Permanent,
   silent (never a tombstone), effective immediately on reads, point-in-time (never
-  affects future records), with lazy background physical reclaim.
+  affects future records). No compaction and no per-record reclaim: on disk a delete
+  flips an in-place delete-flag byte in segment files (the WAL stays append-only); a
+  whole segment is dropped only when a delete clears it entirely.
 - **Node loop-prevention** — a node never receives back events it produced, making
   N-way multi-master fan-out safe by construction.
-- **Routers** — server-side `source → dest` forwarding, at-least-once, per-source FIFO,
-  cycle-rejecting by default. A forwarded copy goes through the same write path as a user write,
-  so it **honors the destination box's durability class** (`fsync`/`disk` recover on restart; a
-  `memory` dest's copy is best-effort — it may survive or be lost).
+- **Routers** — server-side `source → dest` forwarding that is **async** (off the
+  write/ack path) and **derived**: forwarded copies are **not separately WAL-logged**, so
+  one source append produces exactly **one WAL write regardless of fan-out**. A durable
+  per-router cursor drives forwarding and replay-from-cursor recovery. At-least-once,
+  per-source FIFO, cycle-rejecting by default; `$node` is preserved (loop prevention), with
+  a hop cap. A derived destination is **single-source**: a second router with a *different*
+  source into the same dest is rejected with `409 box_exists_incompatible`
+  (`error.detail.reason: "router_dest_fan_in"`). (This async/derived
+  path is gated behind `STREAMS_FORWARD_V2`; the current default is the legacy synchronous
+  in-line forward — see the config table.)
 - **Lease-based queues** — set `type: "queue"` to layer claim/ack/nack/extend (and a
   `/work` auto-claim SSE stream) on the same log: visibility-timeout leases,
   coalesced fair fan-out, redelivery, and optional dead-lettering (see API §10).
@@ -466,8 +493,13 @@ Honest about maturity (the `/v0` contract is fully implemented; some operational
 partial or planned):
 
 - **Implemented:** the full `/v0` API (boxes, batched diff reads, permanent deletes,
-  routers, multiplexed SSE, lease-based queues); the WAL with adaptive group commit; the
-  three durability commit classes (`memory`/`disk`/`fsync`); segments + snapshots +
+  routers, multiplexed SSE, lease-based queues); the **sharded** WAL with adaptive group
+  commit (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`, shard-count-agnostic recovery);
+  **async + derived router forwarding** (off the write/ack path, forwarded copies not
+  WAL-logged so one source append is one WAL write, durable per-router cursor with
+  replay-from-cursor recovery, single-source-per-dest enforced via `409 box_exists_incompatible`
+  with `error.detail.reason: "router_dest_fan_in"`);
+  the three durability commit classes (`memory`/`disk`/`fsync`); segments + snapshots +
   crash-recovery replay (including the directory-fsync hardening so a rotated/first WAL
   file's entry is durable before an ack); per-box tag index; node loop-prevention; bearer
   auth with **keys hashed at rest** (SHA-256, constant-time compare, plaintext zeroized after
@@ -476,13 +508,10 @@ partial or planned):
   connections / per-key in-flight / total-bytes quota, a per-response byte budget, queue `seqs`
   length bound, idle watch-session GC), the `wid`-plus-key watch-stream binding, and the
   loopback-default bind.
-- **Partial:** router forwarding is **synchronous on the append path** and at-least-once via
-  the source log, but a *failed* durable forward into a slow/erroring destination is treated
-  as backpressure (left in the source) with **no background retry driver** yet — recovery does
-  not re-drive un-forwarded source records, so a persistently-failing destination can lag.
-  The cap-vs-TTL tombstone **reason** is best-effort across a restart (the gap *range* is
-  always authoritative). The throughput/latency targets above are design goals validated by
-  the in-memory baseline benchmarks, not yet a tuned production SLO on durable boxes.
+- **Partial:** the cap-vs-TTL tombstone **reason** is best-effort across a restart (the gap
+  *range* is always authoritative). The throughput/latency targets above are design goals
+  validated by the in-memory baseline benchmarks, not yet a tuned production SLO on durable
+  boxes.
   With `leases_durable:true`, a queue **claim** durably logs its lease BUT the lease-log
   append is best-effort: if it fails (a transient WAL error), the claim still succeeds and the
   job degrades to the queue's baseline **at-least-once** guarantee (it becomes reclaimable
@@ -490,10 +519,12 @@ partial or planned):
   This never loses or duplicates a job beyond at-least-once; the in-flight-lease *durability*
   is the only relaxation. A fully fail-closed durable lease (stage → durably append → publish,
   propagating the error) is planned.
-- **Planned:** TLS termination (run behind a reverse proxy today), hard multi-tenant
-  *namespace* isolation (beyond the prefix-allowlist filter that ships today), and a durable
-  router-backlog worker that retries failed forwards from a persisted cursor. See
-  `docs/API.md` §0.2 / §0.11 and `docs/ROADMAP.md`.
+- **Out of scope (by design, not on the roadmap):** native TLS (terminate at a reverse
+  proxy — see Security below), hard multi-tenant *namespace* isolation beyond the per-key
+  scope + box-name-prefix allowlist that ships today, multi-server / replication / HA /
+  single-writer fencing, LSM / keyed log compaction, and durable consumer groups as a server
+  primitive (the consumer-group pattern is built at the application level with a box per
+  consumer plus delete). See `docs/API.md` §0.2 / §0.11 and `docs/ROADMAP.md`.
 
 ---
 

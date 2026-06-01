@@ -72,9 +72,10 @@ A few codes are worth calling out:
 - **`401` vs `403`** — `401` means no/invalid token; `403` means the token authenticates
   but lacks the required [scope](/deployment/security), or names a box/router outside its
   prefix allowlist (enforced on the path **and** relevant request-body names). On
-  [watch](/api/watch), `401` is returned only when a bearer or `?token=` *was* presented
-  but does not match the key that created the `wid` — omitting the bearer entirely is fine,
-  since the `wid` is the capability.
+  [watch](/api/watch): when the session was created **with auth enabled** it is bound to the
+  creating key, so the SSE GET must present that **same** bearer (header or the dev-only
+  `?token=`) — a wrong key *or* **no bearer at all** is `401` (a leaked `wid` alone is not a
+  credential). Only an **unauthenticated** (dev-mode) session opens on the `wid` alone.
 - **`409 not_a_queue`** — a [queue](/api/queues) endpoint (`claim`/`ack`/`nack`/`extend`/
   `work`) was called on a plain `"log"` box.
 - **`409 box_exists_incompatible`** — a `PUT` tried to change a box's immutable `type`
@@ -167,7 +168,7 @@ is omitted when it does not apply.
 | Field | Always? | Meaning |
 |---|---|---|
 | `server_total_ms` | yes | Total server-side handling time for the request (ms). |
-| `wal_append_ms` | when relevant | Time spent enqueuing the WAL frame. `0` on `memory` boxes. |
+| `wal_append_ms` | when relevant | Time spent enqueuing the WAL frame. A `memory` box still enters the WAL write path like `disk`, so this is **not** always `0` for `memory` (only the WAL-less in-memory test engine reports `0`). |
 | `fsync_ms` | when relevant | Time the ack was held for the group `fsync`. `0` for non-`fsync` boxes (the fast path). |
 | `records_scanned` | on reads | Records examined to build the response (includes filtered/skipped ones). |
 | `throttle_wait_ms` | when throttled | Time parked behind the elastic scheduler before handling. |

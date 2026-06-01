@@ -143,7 +143,7 @@ contiguous range).
 |---|---|
 | `gap_from` | First missing seq (= the stale `from_seq + 1`). |
 | `gap_to` | Last missing seq (= `earliest_seq - 1`). The lost range `[gap_from, gap_to]` is inclusive at both ends. |
-| `reason` | `"cap"` (evicted for capacity), `"ttl"` (expired), `"mixed"` (both), or `"recreated"` (box was deleted then recreated). Best-effort/informational — the **range is authoritative**. |
+| `reason` | `"cap"` (evicted for capacity), `"ttl"` (expired), `"mixed"` (both), `"recreated"` (box was deleted then recreated), or `"source_trim"` (a derived-router dest reflecting source-side eviction). Best-effort/informational — the **range is authoritative**. |
 | `missed_estimate` | Approximate count of dropped records (approximate because eviction is segment-granular). |
 | `earliest_seq` / `head_seq` | Current watermarks, echoed for convenience. |
 

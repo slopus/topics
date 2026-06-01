@@ -94,13 +94,15 @@ Either way, that frame and everything after it is the logical end of the log. `f
 the WAL at that boundary so it is clean and writable for new appends. A partial `write()`
 fails one of these checks and is discarded — it is **never interpreted as data**.
 
-### Reclaim orphan segments
+### Drop orphan segments
 
-Re-derive which sealed segments are fully or partially below the live set and reclaim them
-— drop a segment whose highest seq is below `earliest_seq`, rewrite a partially-deleted
-one. Reclaim is **idempotent**: a crash between advancing a watermark and unlinking a file
-is harmless, because restart simply recomputes which segments are droppable and unlinks the
-orphans again. A pre-crash reclaim whose `unlink` never completed is finished here.
+Re-derive which sealed segments are **fully** below the live set and drop them — a
+whole-segment unlink when its highest seq is below `earliest_seq`. There is **no partial
+segment rewrite and no compaction**: a partially-deleted segment keeps its in-place
+delete-flag bytes and is not rewritten (deletion is no-reclaim — deleted records stay on disk,
+just marked). The drop is **idempotent**: a crash between advancing a watermark and unlinking a
+file is harmless, because restart simply recomputes which whole segments are droppable and
+unlinks the orphans again. A pre-crash drop whose `unlink` never completed is finished here.
 
 ### Resume
 

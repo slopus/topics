@@ -57,16 +57,17 @@ advances synchronously, while disk reclaim happens off the hot path. See
 ### 4. Single machine, sequential disk
 
 Seqs are mostly-sequential `u64`, so the seq→location map is a base+offset vector, not a
-hash map — O(1) lookup with no hashing on the read path. The disk is a single sequential
-resource, so a **single WAL writer thread** matches the hardware, makes group commit
-trivial, and removes write-side lock contention. Boxes are sharded across cores for
-everything else.
+hash map — O(1) lookup with no hashing on the read path. The WAL is **sharded**
+(`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`) into independent ordered shard writers —
+each shard is a single sequential stream matching the hardware (trivial group commit, no
+write-side lock contention), and a box maps to one shard so per-box ordering still holds.
+Boxes are also sharded across cores for delivery work.
 
 <Callout type="important">
   The load-bearing invariant: **involuntary loss you didn't ask for tombstones; voluntary
   removal you did ask for is silent.** Every structural choice — the dual floor, the tag
-  index, lazy segment reclaim — exists to keep that distinction crisp. See the
-  [Core Guarantees](/guarantees).
+  index, in-place delete-flag marking (no compaction / no reclaim; whole cleared segments
+  drop) — exists to keep that distinction crisp. See the [Core Guarantees](/guarantees).
 </Callout>
 
 ## The layered shape
@@ -81,7 +82,7 @@ the bytes.
         Engine      (per-box index, dual floor, tag index, scheduler)
               │  enqueue frame under the per-box lock
               ▼
-        WAL         (single writer thread, adaptive group commit, fdatasync)
+        WAL         (sharded writer threads, adaptive group commit, fdatasync)
               │  checkpoint: copy contiguous byte ranges per box
               ▼
         Segments    (.data + .idx, mmap reads)  +  metadata snapshots
@@ -96,9 +97,10 @@ the bytes.
   deletes, and the wakeup primitive that drives SSE and long-poll diffs without polling. A
   [priority scheduler](/how-it-works/scheduler) governs the post-write propagation that has
   to hit the 1–5 ms target.
-- **WAL.** A process-global append-only log of length-prefixed, XXH3-64-checksummed frames.
-  Seq assignment and frame enqueue happen under the per-box lock (microseconds); the fsync
-  wait happens **off the lock**, so many writers' waits coalesce into one group flush.
+- **WAL.** A **sharded** append-only log of length-prefixed, XXH3-64-checksummed frames (N
+  independent shard writers; each box maps to one shard). Seq assignment and frame enqueue
+  happen under the per-box lock (microseconds); the fsync wait happens **off the lock**, so
+  many writers' waits coalesce into one group flush per shard.
 - **Segments & snapshots.** A background compactor copies committed WAL bytes into per-box
   segment files (`.data` + a fixed-stride `.idx`), and a metadata snapshot lets recovery
   start without replaying the WAL from time zero. Sealed segments are immutable and served
@@ -113,9 +115,9 @@ head never waits for a checkpoint.
 
 State is **sharded, not globally locked**. Boxes are partitioned across cores via a
 `DashMap` registry; each box has its own `RwLock` so two writers on two boxes proceed in
-parallel, and each shard has a small ready-set mutex held only for an O(1) splice. The one
-serialization point is the single WAL writer thread, fed by an MPSC channel — which is
-correct, because the disk is one sequential resource. Cold-tier I/O and the segment
+parallel, and each shard has a small ready-set mutex held only for an O(1) splice. The
+serialization points are the **per-shard WAL writer threads**, each fed by its own MPSC
+channel — correct because each shard is one sequential stream. Cold-tier I/O and the segment
 relocator run on a **separate blocking pool** under a hard invariant: cold reads may degrade
 historical reads but **never** block writes or live SSE delivery.
 
@@ -123,7 +125,7 @@ historical reads but **never** block writes or live SSE delivery.
 
 <Cards>
   <Cards.Card title="WAL & Group Commit" href="/how-it-works/wal-and-group-commit" arrow>
-    The frame format, the single writer thread, adaptive group commit, and off-lock fsync.
+    The frame format, the sharded writer threads, adaptive group commit, and off-lock fsync.
   </Cards.Card>
   <Cards.Card title="Segments & Snapshots" href="/how-it-works/segments-and-snapshots" arrow>
     Checkpointing the WAL into per-box `.data`/`.idx` segments and atomic metadata snapshots.

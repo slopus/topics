@@ -10,8 +10,9 @@ import { Callout, Tabs } from 'nextra/components'
 streams exposes three operational endpoints — **liveness**, **readiness**, and **metrics** —
 plus an inline `performance` block on every JSON response. The probes are designed for
 load-balancer and Kubernetes health checks, and crucially the readiness probe gates traffic
-during **WAL replay** on boot. The metrics surface is **deliberately small today** (essentially
-a box count) with a richer catalog planned — this page is honest about exactly what ships now.
+during **WAL replay** on boot. The metrics surface is a **full catalog** — process/aggregate
+gauges, per-box gauges, real WAL counters, and a fsync-latency histogram (see below) — not a
+box-count stub.
 
 ## Liveness — health
 
@@ -128,24 +129,39 @@ curl localhost:4000/v0/metrics
 curl -H 'accept: application/json' localhost:4000/v0/metrics
 ```
 
-<Callout type="warning">
-  **The current metric surface is small.** Unlike `/v0/health` and `/v0/ready`, the metrics
-  endpoint exposes operational state and is **auth-gated by default** when keys are configured:
-  it requires a key with the `read` scope (a full-access key suffices). In dev mode (no keys) it
-  is open. The JSON snapshot today contains essentially a **box count**
-  (`{ "boxes": N }`); the Prometheus text exposition is correspondingly minimal. A richer
-  per-box / scheduler / WAL metric catalog is **planned but not yet implemented** — do not build
-  dashboards against metrics not listed here.
+<Callout type="info">
+  **Auth.** Unlike `/v0/health` and `/v0/ready`, the metrics endpoint exposes operational state
+  and is **auth-gated by default** when keys are configured: it requires a key with the `read`
+  scope (a full-access key suffices). In dev mode (no keys) it is open.
 </Callout>
 
+`/v0/metrics` emits a **full catalog**: process/aggregate gauges (`streams_boxes`,
+`streams_boxes_by_class{class=…}`, `streams_routers`, `streams_records_live`,
+`streams_bytes_live`, `streams_queue_boxes`, `streams_queue_leases_in_flight`,
+`streams_sse_connections`, `streams_watch_sessions`, `streams_ready`,
+`streams_recovery_progress`, `streams_uptime_ms`), **per-box gauges** (`streams_box_head_seq` /
+`_earliest_seq` / `_records_live` / `_bytes_live` / `_queue_ready` / `_queue_in_flight`,
+labelled `{box=…}`, bounded by `streams_box_metrics_truncated`), real **WAL counters**
+(`streams_wal_frames_total` / `_batches_total` / `_fsyncs_total` / `_bytes_written_total` /
+`_rotations_total` / `_queue_depth` / `_queue_depth_peak` / `_submit_full_total` /
+`_read_only`), and a **fsync-latency histogram** `streams_wal_fsync_latency_us`. There are no
+per-box append/read/eviction/tombstone counters and no scheduler-throttle metric.
+
 ```json
-# Accept: application/json — the current JSON snapshot
-{ "boxes": 42 }
+# Accept: application/json — the JSON snapshot mirrors the same series in one object
+{ "boxes": 42, "boxes_memory": 3, "boxes_disk": 30, "boxes_fsync": 9, "routers": 5,
+  "records_live": 1843201, "bytes_live": 734003200, "queue_boxes": 2,
+  "queue_leases_in_flight": 286, "sse_connections": 41, "watch_sessions": 44,
+  "ready": true, "replay_progress": 1.0, "uptime_ms": 360123,
+  "wal": { "fsyncs": 88241, "frames": 1843290, "batches": 90011,
+           "bytes_written": 812340992, "rotations": 12, "queue_depth": 0,
+           "queue_depth_peak": 1280, "submit_full_total": 0, "read_only": 0,
+           "fsync_count": 88241, "fsync_micros_total": 441205000 } }
 ```
 
-In the interim, the per-response [`performance` block](#the-performance-block-inline-observability)
-below is the richest observability streams ships today — it surfaces per-call latency, fsync
-cost, scan counts, and cold-read counts inline, with no separate scrape.
+The per-response [`performance` block](#the-performance-block-inline-observability) below
+complements the scrape — it surfaces per-call latency, fsync cost, scan counts, and cold-read
+counts inline.
 
 ## The performance block (inline observability)
 

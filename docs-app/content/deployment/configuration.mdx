@@ -54,6 +54,7 @@ rotation; the hot-retention knobs govern when sealed segments relocate to cold s
 | Env var | Default | Meaning |
 |---|---|---|
 | `STREAMS_DATA_DIR` | `./streams-data` | Root for the WAL, segments, and snapshots (the hot tier). Replayed on start; a missing/empty dir is a fresh start. |
+| `STREAMS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread, file set, and group-commit loop). Each box maps to one shard by a stable hash of its id, so per-box ordering + durability still hold; recovery is **shard-count-agnostic** (replays all shards by `box_id`), so this may change between restarts. `1` = the flat single-writer layout. |
 | `STREAMS_COLD_DIR` | _(unset)_ | Cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path. Unset ⇒ tiering disabled (everything stays hot). |
 | `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal the active segment after this many records. |
 | `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Seal after this many `.data` bytes. |
@@ -66,6 +67,12 @@ rotation; the hot-retention knobs govern when sealed segments relocate to cold s
   the retention knobs have no effect. Cold reads run on a separate I/O pool and **never block
   writes or live SSE delivery**. See [Storage & Tiering](/deployment/storage-and-tiering).
 </Callout>
+
+## Routers
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `STREAMS_FORWARD_V2` | `0` | Selects the **async + derived** router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged so one source append is one WAL write, single-source-per-dest, replay-from-cursor recovery) described in [Routers](/api/routers). Default `0` keeps the legacy synchronous in-line forward; set `1` to enable the cursor-driven async path. |
 
 ## Resource limits
 

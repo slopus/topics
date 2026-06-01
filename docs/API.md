@@ -88,25 +88,24 @@ configured bind is **non-loopback** (e.g. `0.0.0.0`) **and** no api keys are set
 `STREAMS_ALLOW_INSECURE_NO_AUTH=1`. Loopback with no keys stays dev-friendly. Configure the
 bind via `STREAMS_HOST`/`STREAMS_PORT`.
 
-> streams speaks **plain HTTP** — it does not terminate TLS. For any non-loopback exposure,
-> run it behind a TLS-terminating reverse proxy (or bind loopback and tunnel). A built-in TLS
-> story is **planned** (§0.11). Bearer keys are secrets: a token sent over plain HTTP, or in a
+> streams speaks **plain HTTP** — it does not terminate TLS, **by design**. For any non-loopback
+> exposure, run it behind a TLS-terminating reverse proxy (or bind loopback and tunnel); native
+> TLS is **out of scope** (§0.11). Bearer keys are secrets: a token sent over plain HTTP, or in a
 > URL query string, can be observed in transit or in logs — see the watch `?token=` note in §7.1.
 
-### 0.11 Planned security work (not yet implemented)
+### 0.11 Security scope (what's deliberately out of scope)
 
-These are documented as the intended direction so clients can anticipate them; their absence is
-by design for the single-machine dev/loopback default:
+streams is a **single-machine** event store; some platform concerns are intentionally left to the
+deployment rather than built in:
 
-- **TLS:** streams speaks plain HTTP today. Until native TLS lands, terminate TLS at a reverse
-  proxy or bind loopback. No wire-contract change is anticipated when TLS is added (it is a
-  transport concern).
-- **Scopes / prefix allowlist — *implemented* (§0.2).** A key may now carry a scope set
+- **TLS — out of scope.** streams speaks plain HTTP; terminate TLS at a reverse proxy (or bind
+  loopback). This is a transport concern handled outside the binary, not a planned feature.
+- **Scopes / prefix allowlist — *implemented* (§0.2).** A key may carry a scope set
   (`read`/`write`/`delete`/`admin`) and a box-name prefix allowlist; keys are hashed at rest.
   A bare key is still full-access for back-compat. The `tenant:` prefix convention (§3) becomes
-  a real boundary when a key is prefix-restricted. **Multi-tenant *namespace* isolation** (a
-  hard partition of the box/router namespace per tenant, rather than a prefix filter) remains a
-  future revision.
+  a real boundary when a key is prefix-restricted. **Multi-tenancy beyond these per-key scopes +
+  prefix allowlists is out of scope** — there is no hard per-tenant namespace partition (and the
+  prefix allowlist is a filter, not an isolated namespace).
 - **Resource / rate limits — *implemented* (§11).** Configurable caps on boxes, routers, watch
   sessions, concurrent SSE connections (global + per-key), per-key in-flight requests, and a
   global **total-bytes** quota (`STREAMS_MAX_TOTAL_BYTES`), enforced on every creation/write path
@@ -144,7 +143,7 @@ server echoes them as `$node`/`$tag` to signal they are now server-canonical and
 | `$ts` | `i64` (ms) | Server commit time. |
 | `$node` | `string` | Origin node id supplied by the writer (loop prevention). Omitted if absent. |
 | `$tag` | `string` | Tag supplied by the writer (deletion-match key). Omitted if absent. |
-| `$type` | `string` | `"record"` (default, omitted on plain records) or `"tombstone"`. Used in SSE framing. |
+| (SSE event name) | — | SSE framing distinguishes payload kinds by the **event name** (`event: record`, `event: tombstone`, `event: caught-up`, …), **not** a `$type` field. Record payloads carry `$seq`/`$ts`/`$node`/`$tag`/`data`/`meta` — there is no `$type` key. |
 
 `data`/`meta` keep the same key in both directions (pure passthrough). `$node`/`$tag`/
 `meta` are omitted from a response object when absent (absence, not `null`). `data` is
@@ -281,7 +280,7 @@ optional on create; omitted fields take the documented default.
 | `cap_bytes` | `u64` | `0` (off) | Max retained payload bytes (`data` + `meta` + framing). `0` = unbounded. Whichever of `cap_records`/`cap_bytes` is hit first triggers eviction. |
 | `discard` | `"old" \| "reject"` | `"old"` | Full-box policy. `old` = evict oldest (pub/sub friendly). `reject` = refuse the write with `422 box_full` so durable queues fail loudly rather than dropping unconsumed work. |
 | `durable` | `bool` | `false` | **Back-compat alias** for `durability` (below). On create: `durable:true` ⇒ class `fsync`, `durable:false` ⇒ class `disk` (only consulted when `durability` is absent). On every response it is reported as `durable == (durability == "fsync")`, so a legacy client reading `durable` still sees the right boolean. Prefer `durability` for new clients. |
-| `durability` | `"memory" \| "disk" \| "fsync"` | _(resolved from `durable`)_ | The **durability commit class** — where a write lands and when it is acked (the durability/perf tradeoff). **`memory`** — _"disk-like but best-effort"_: takes the **same** group-committed WAL write **and** recovery path as `disk` and is fully queryable (getState / getDifference / SSE), but carries **NO durability GUARANTEE**. After a restart its records **MAY survive OR be lost** (recovery is gradual / best-effort: it does **not** block readiness and does **not** guarantee completeness or emptiness). The box CONFIG always survives. Never `fsync`-gated, so `fsync_ms` is `0`. Effectively `disk` minus the durability promise — for caches / scratch where occasional loss is fine. **`disk`**: written to the WAL and **group-committed** (no per-write `fsync`); acked on frame enqueue (the ack is **not** `fsync`-gated — group-committed shortly after by the single writer); survives a crash **minus the un-fsynced tail**; reports `fsync_ms` as `0` (the fast path). **`fsync`**: the ack is **`fsync`-gated** (held until the WAL frame is durably synced, real `fsync_ms`); survives any crash. **Resolution:** an explicit `durability` always wins; otherwise it is derived from `durable` (`true`⇒`fsync`, `false`⇒`disk`) — so `memory` is reachable only by setting `durability:"memory"` explicitly. The resolved class is always reported in box-state/box-create responses, and the class is freely mutable in place. Router-forwarded / dead-lettered copies honor the **destination** box's class (a `memory` dest persists a best-effort copy — it may survive or be lost). |
+| `durability` | `"memory" \| "disk" \| "fsync"` | _(resolved from `durable`)_ | The **durability commit class** — where a write lands and when it is acked (the durability/perf tradeoff). **`memory`** — _"disk-like but best-effort"_: takes the **same** group-committed WAL write **and** recovery path as `disk` and is fully queryable (getState / getDifference / SSE), but carries **NO durability GUARANTEE**. After a restart its records **MAY survive OR be lost** (recovery is gradual / best-effort: it does **not** block readiness and does **not** guarantee completeness or emptiness). The box CONFIG always survives. Never `fsync`-gated, so `fsync_ms` is `0`. Effectively `disk` minus the durability promise — for caches / scratch where occasional loss is fine. **`disk`**: written to the WAL and **group-committed** (no per-write `fsync`); acked on frame enqueue (the ack is **not** `fsync`-gated — group-committed shortly after by its box's WAL-shard writer; the WAL is sharded — see ARCHITECTURE §2); survives a crash **minus the un-fsynced tail**; reports `fsync_ms` as `0` (the fast path). **`fsync`**: the ack is **`fsync`-gated** (held until the WAL frame is durably synced, real `fsync_ms`); survives any crash. **Resolution:** an explicit `durability` always wins; otherwise it is derived from `durable` (`true`⇒`fsync`, `false`⇒`disk`) — so `memory` is reachable only by setting `durability:"memory"` explicitly. The resolved class is always reported in box-state/box-create responses, and the class is freely mutable in place. Router-forwarded / dead-lettered copies honor the **destination** box's class (a `memory` dest persists a best-effort copy — it may survive or be lost). |
 | `priority` | `i32 \| null` | `null` | Manual delivery priority (higher served first under pressure), clamped `[-1000, 1000]`. `null` ⇒ use auto-priority. |
 | `auto_priority` | `bool` | `true` | If `priority` is `null`, derive effective priority from recency of the last read/SSE/state call on this box. A manual `priority` always overrides. |
 | `auto_create` | `bool` | `true` | Whether a write to this box name may lazily create it. The per-write `create` flag can override downward. |
@@ -703,9 +702,13 @@ Permanently remove records by **seq range** (`before_seq`) and/or by **tag** mat
 - **Permanent** — deleted records are gone for good; there is no un-delete in `/v0`.
 - **Effective immediately** — invisible to all reads at once (diff, box state `count`/
   `bytes`, and SSE); the reader's cursor simply advances past the deleted seqs.
-- **Asynchronous (lazy reclaim)** — records are logically gone instantly; memory/disk is
-  reclaimed by a background reclaimer (free payload/tag immediately, pop physical slots
-  from the front as the prefix becomes fully dead).
+- **Asynchronous, no compaction / no reclaim** — records are logically gone instantly (the
+  work runs off the call path), but a deleted record **stays on disk, just marked**: there is
+  no compaction and no per-record disk reclaim. In memory the payload/tag is freed and
+  front-of-log slots pop as the prefix becomes fully dead; on disk a record sealed into a
+  segment has its **delete-flag byte flipped in place** (the WAL stays append-only — a `Delete`
+  frame is appended, never mutated). The only space released is a **whole segment dropped** when
+  a delete clears it entirely.
 - **Silent** — a delete **never** produces a tombstone. Tombstones are reserved for
   **involuntary** cap/TTL loss (§3.3).
 - **Point-in-time** — it is **not** a standing filter. It only removes records present at
@@ -776,8 +779,14 @@ A **router** is a server-side forwarding rule: every record appended to `source`
 appended to `dest`. Routers make pub/sub fan-out safe across N symmetric nodes because
 forwarded records keep their origin `$node`, and node loop-prevention stops a node from
 receiving back what it produced. Routers live in their own namespace (`/v0/routers`).
-Forwarding is **at-least-once, per-source FIFO** (a crash between "appended to dest" and
-"advanced router cursor" can re-forward; consumers must be idempotent — see DESIGN §6).
+Forwarding is **async** (off the source write/ack path — a write to `source` acks immediately
+and a background per-router worker forwards) and **derived** (the forwarded copies are **not
+separately WAL-logged**, so one source append is **one WAL write regardless of fan-out**; the
+copies are re-derived on recovery by replaying from a **durable per-router cursor**). It is
+**at-least-once, per-source FIFO** (a crash between "appended to dest" and "advanced router
+cursor" can re-forward; consumers must be idempotent — see DESIGN §6). A derived `dest` is
+**single-source**: a second router with a *different* `source` into the same `dest` is rejected
+`409 box_exists_incompatible` with `error.detail.reason: "router_dest_fan_in"`.
 
 ### 6.1 Create / configure — `PUT /v0/routers/:router`
 
@@ -802,10 +811,11 @@ Forwarding is **at-least-once, per-source FIFO** (a crash between "appended to d
 | `allow_cycle` | bool | no | `false` | If `false`, creating a router that would introduce a directed cycle is rejected `409 router_cycle` (DAG-by-default). If `true`, the route is permitted and runtime hop-cap loop-breaking applies instead (for intentional A↔B multi-master). |
 
 **Behavior**
-- Forwarding is applied at append time to `source`. The forwarded copy gets its own fresh
-  `$seq` and `$ts` in `dest` (an independent log); `$node`/`$tag`/`data`/`meta` carry through
-  verbatim (subject to `preserve_*`). Optional reserved meta `$src_box`/`$src_seq` aid
-  traceability (off by default).
+- Forwarding runs **asynchronously** off the `source` write/ack path (driven by the durable
+  per-router cursor), not inline at append. The forwarded copy gets its own fresh `$seq` and
+  `$ts` in `dest` (an independent log); `$node`/`$tag`/`data`/`meta` carry through verbatim
+  (subject to `preserve_*`). Optional reserved meta `$src_box`/`$src_seq` aid traceability (off
+  by default).
 - `dest`'s own config governs the forward: `discard:"old"` evicts to make room; `discard:"reject"`
   rejects the forward, the router **does not advance** its cursor and retries with backoff
   (backpressure up the route). See DESIGN §6.4.
@@ -821,7 +831,9 @@ Forwarding is **at-least-once, per-source FIFO** (a crash between "appended to d
 ```
 
 **Errors** — `400 invalid_request` (missing `source`/`dest`, `source == dest`, bad filter);
-`404 box_not_found`; `409 router_cycle` (`error.detail.cycle: ["A","B","A"]`).
+`404 box_not_found`; `409 router_cycle` (`error.detail.cycle: ["A","B","A"]`);
+`409 box_exists_incompatible` with `error.detail.reason: "router_dest_fan_in"` (a second router
+with a different `source` into a `dest` that is already a derived destination — single-source).
 
 ### 6.2 Get a router — `GET /v0/routers/:router`
 
@@ -957,7 +969,8 @@ Per-box `head_seq`/`earliest_seq` let the client compute lag and see, before str
 whether a cursor has already fallen off the start (it gets a tombstone on connect if so).
 
 **Errors** — `400 invalid_request` (malformed `boxes`, too many boxes); `404 box_not_found`
-(unknown box, unless `?lenient=true` skips it and reports via an opening warning frame).
+(unknown box, unless `?lenient=true`, which simply **drops** unknown boxes — they are absent
+from the response `boxes` map; there is no separate warning frame).
 
 ### 7.3 GET /v0/watch/:wid — open the stream
 
@@ -1079,10 +1092,13 @@ data: {"code":429,"error":"watch throttled under CPU pressure","retry_after_ms":
   client resumes with no loss beyond the box's own cap/TTL.
 
 **Errors at establishment** — `200` (stream opened); `400 invalid_request` (bad/expired wid
-or boxes); `401 unauthorized` (a bearer/`?token=` *was* presented but does not match the key
-that created the `wid`; omitting the bearer entirely is fine — the `wid` is the capability —
-see §7.1); `404 not_found` (wid GC'd or unknown → POST again); `406 not_acceptable` (Accept
-not `text/event-stream`); `429 throttled`.
+or boxes); `401 unauthorized` — when the session was created **with auth enabled** it is
+bound to the creating key, so the SSE GET must present that **same** bearer (via the
+`Authorization` header **or** the dev-only `?token=` on the GET); a wrong key *or* **no
+bearer at all** is rejected (a leaked `wid` alone is not a credential). When the session was
+created **without auth** (dev mode) the `wid` alone authorizes and no bearer is needed (the
+`EventSource` case). See §7.1. `404 not_found` (wid GC'd or unknown → POST again);
+`406 not_acceptable` (Accept not `text/event-stream`); `429 throttled`.
 
 ---
 
@@ -1109,20 +1125,32 @@ not require auth by default (`STREAMS_PROBE_AUTH=true` to require it).
 ### 8.3 Metrics — `GET /v0/metrics`
 
 Prometheus text exposition (`text/plain; version=0.0.4`) by default; `Accept:
-application/json` for a JSON snapshot. Per-box counters (appends, reads, evictions,
-tombstones emitted, bytes), scheduler stats (throttle events, queue depth by band), WAL
-stats (group-commit batch size, fsync latency histogram), and SSE connection counts.
+application/json` for a JSON snapshot. Exposes process/aggregate gauges (`streams_boxes`,
+`streams_boxes_by_class{class=...}`, `streams_routers`, `streams_records_live`,
+`streams_bytes_live`, `streams_queue_boxes`, `streams_queue_leases_in_flight`,
+`streams_sse_connections`, `streams_watch_sessions`, `streams_ready`,
+`streams_recovery_progress`, `streams_uptime_ms`), **per-box gauges**
+(`streams_box_head_seq` / `_earliest_seq` / `_records_live` / `_bytes_live` /
+`_queue_ready` / `_queue_in_flight`, labelled `{box=...}`; the per-box block is bounded and
+sets `streams_box_metrics_truncated` if capped), the real **WAL metrics**
+(`streams_wal_frames_total`, `_batches_total`, `_fsyncs_total`, `_bytes_written_total`,
+`_rotations_total`, `_queue_depth`, `_queue_depth_peak`, `_submit_full_total`,
+`_read_only`), and a **fsync-latency histogram** `streams_wal_fsync_latency_us` (with
+`_bucket{le=...}` / `_sum` / `_count`).
 
 ```
-# HELP streams_box_appends_total Records appended.
-# TYPE streams_box_appends_total counter
-streams_box_appends_total{box="jobs"} 480231
-streams_box_evictions_total{box="jobs"} 12044
-streams_tombstones_emitted_total{box="jobs"} 3
-streams_wal_fsync_seconds{quantile="0.99"} 0.0007
-streams_scheduler_throttle_total 0
+# HELP streams_box_head_seq Highest assigned seq per box.
+# TYPE streams_box_head_seq gauge
+streams_box_head_seq{box="jobs"} 480231
+streams_box_earliest_seq{box="jobs"} 468188
+streams_box_records_live{box="jobs"} 12043
+streams_wal_fsyncs_total 88241
+streams_wal_fsync_latency_us_bucket{le="500"} 84120
+streams_wal_fsync_latency_us_count 88241
 ```
-`200` always (even when not ready — metrics describe the recovering process).
+`200` always (even when not ready — metrics describe the recovering process). (There are no
+per-box append/read/eviction/tombstone counters and no scheduler-throttle metric — the
+surface is gauges + WAL counters + the fsync histogram above.)
 
 > **Auth.** Unlike `/v0/health` and `/v0/ready` (which stay unauthenticated so a load balancer
 > can poll liveness/readiness), `/v0/metrics` exposes operational state (box count, …) and is
@@ -1248,7 +1276,7 @@ sleep affects correctness).
 | Field | Meaning |
 |---|---|
 | `claimed[]` | The leased jobs, ascending by `$seq`. Each carries the record's `$seq`/`$ts`/`data` (and `$tag`/`meta` when present — same omit-when-absent rule as §0.4), plus the lease fields below. |
-| `claimed[].lease_id` | Opaque lease identity for this delivery. Echo it nowhere required (ack/nack/extend match on `node`+`seqs`); it is for logging/observability and disambiguating redeliveries. |
+| `claimed[].lease_id` | Opaque lease identity for this delivery (format `lease_<hex>`). **Validate-when-supplied, not strictly required:** ack/nack/extend match on `node`+`seqs` by default, but a worker MAY echo these tokens back in the optional `lease_ids` array (§10.4/§10.5/§10.6) to **fence** stale workers — a token whose lease has since been superseded is rejected and that seq is skipped. Also useful for logging/observability and disambiguating redeliveries. |
 | `claimed[].deadline` | Absolute ms epoch when the lease expires if not acked/extended. `deadline = claim_ts + effective lease_ms`. |
 | `claimed[].deliveries` | How many times this job has now been delivered (this claim is counted). Starts at `1`; compared against `max_deliveries` (§10.6). |
 | `count` | `claimed.length`. |
@@ -1279,13 +1307,14 @@ acked+deleted job stays gone iff its delete was durable — i.e. **ack durabilit
 **Request body**
 
 ```json
-{ "node": "worker-eu-1", "seqs": [480101, 480104] }
+{ "node": "worker-eu-1", "seqs": [480101, 480104], "lease_ids": ["lease_1a2b", "lease_3c4d"] }
 ```
 
 | Field | Type | Req? | Meaning |
 |---|---|---|---|
 | `node` | string | yes | The worker acking. Must be the current lease holder of each seq for the ack to count. |
 | `seqs` | array<u64> | yes | 1..=`STREAMS_MAX_CLAIM` job seqs to complete. |
+| `lease_ids` | array<string> | no | Optional **per-seq lease fence** (validate-when-supplied): the `claimed[].lease_id` tokens from the originating claim, one per entry of `seqs` (same length and order). When present, a seq is acked only if its supplied token matches the current lease — a **stale** token (the lease was superseded by a re-claim/extend by another worker) is rejected and that seq is **skipped**. Omit to fall back to the legacy `node`+`seqs` match. |
 
 **Behavior** — only seqs currently leased to `node` are acked (deleted). A seq that is not
 leased to `node` (never claimed, already acked, or its lease expired and was reclaimed/leased
@@ -1322,7 +1351,7 @@ Records a `released` event in the leases log.
 **Request body**
 
 ```json
-{ "node": "worker-eu-1", "seqs": [480104], "delay_ms": 0 }
+{ "node": "worker-eu-1", "seqs": [480104], "delay_ms": 0, "lease_ids": ["lease_3c4d"] }
 ```
 
 | Field | Type | Req? | Default | Meaning |
@@ -1330,6 +1359,7 @@ Records a `released` event in the leases log.
 | `node` | string | yes | — | Must be the current lease holder (else that seq is skipped). |
 | `seqs` | array<u64> | yes | — | Job seqs to release. |
 | `delay_ms` | `u64` | no | `0` | Hold the job invisible for this long before it becomes claimable again (delayed retry / backoff). `0` = claimable immediately (added to the reclaim freelist now). Clamped `[0, 86400000]`. |
+| `lease_ids` | array<string> | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as §10.4: a stale token's seq is skipped; omit for the legacy `node`+`seqs` match. |
 
 A nack drops the active lease and makes the seq claimable again at `now + delay_ms` (via the
 Clock), incrementing the delivery counter on its next claim and subject to dead-lettering
@@ -1360,7 +1390,7 @@ event in the leases log.
 **Request body**
 
 ```json
-{ "node": "worker-eu-1", "seqs": [480101], "lease_ms": 30000 }
+{ "node": "worker-eu-1", "seqs": [480101], "lease_ms": 30000, "lease_ids": ["lease_1a2b"] }
 ```
 
 | Field | Type | Req? | Default | Meaning |
@@ -1368,6 +1398,7 @@ event in the leases log.
 | `node` | string | yes | — | Must be the current lease holder. |
 | `seqs` | array<u64> | yes | — | Held job seqs to extend. |
 | `lease_ms` | `u64` | yes | — | New lease duration from **now**; the new `deadline = now + lease_ms`. Clamped `[100, 86400000]`. (Extend sets, not adds — the worker asserts "I need this much more time from now.") |
+| `lease_ids` | array<string> | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as §10.4: a stale token's seq is skipped; omit for the legacy `node`+`seqs` match. |
 
 A seq whose lease has **already expired** (and was reclaimed) cannot be extended — it is
 skipped; the worker should re-claim. Extending does **not** change the delivery counter.
@@ -1583,11 +1614,10 @@ place.
   HTTP — or in a URL query string (the dev-only `?token=` SSE fallback, §7.1) — can be observed
   in transit or in logs. **For any non-loopback exposure, run streams behind a TLS-terminating
   reverse proxy** (nginx / Caddy / Envoy / a cloud LB), or bind loopback and tunnel (SSH /
-  WireGuard). Native TLS is planned (§0.11) and is a transport concern (no wire-contract
-  change anticipated).
+  WireGuard). Native TLS is **out of scope by design** — terminate it at the proxy.
 - **No hard tenant isolation.** The prefix allowlist is a *filter*, not a namespace partition:
-  two keys with overlapping prefixes share the same box namespace. Hard per-tenant isolation is
-  planned (§0.11).
+  two keys with overlapping prefixes share the same box namespace. Multi-tenancy beyond per-key
+  scopes + prefix allowlists is **out of scope** (there is no hard per-tenant partition).
 - **No audit log / no key rotation API.** Keys are static for the process lifetime (set at
   startup); rotate by restarting with a new `STREAMS_API_KEYS`. There is no per-request audit
   trail beyond the operational tracing logs (which never contain tokens).

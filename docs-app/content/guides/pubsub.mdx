@@ -15,8 +15,9 @@ It is deliberately the opposite of the [durable-streams](/guides/durable-streams
   Use the `disk` durability class (the default, `durable: false`) for pub/sub. A
   group-committed WAL keeps latency near the ~1 ms target without paying a per-write
   `fsync`, and a crash only loses the un-fsynced tail — acceptable for a feed whose whole
-  point is recency. Use `durability: "memory"` if you want pure RAM fan-out that resets
-  empty on restart. See [Durability classes](/guarantees/durability).
+  point is recency. Use `durability: "memory"` for the best-effort class — the same
+  group-committed WAL path as `disk` but with no durability guarantee (after a restart its
+  records may survive or be lost). See [Durability classes](/guarantees/durability).
 </Callout>
 
 ## The shape

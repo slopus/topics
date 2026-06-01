@@ -87,7 +87,9 @@ auto_priority, auto_create, idempotency_window_ms, dedupe_node }`. Defaults: `tt
 `dedupe_node=true`.
 
 **Durability commit class (`durability`).** A box has one of three commit classes — the
-durability/performance tradeoff — resolved once at create as `durability_class()`:
+durability/performance tradeoff — resolved from its current config as `durability_class()`
+(the box `type` is immutable, but durability/config can be updated in place, and the resolved
+class always reflects the current config):
 
 - **`memory`** — _"disk-like but best-effort"_. Takes the **same** group-committed WAL write
   **and** recovery path as `disk` (the SAME write/recovery code — no special-casing) and is
@@ -101,11 +103,11 @@ durability/performance tradeoff — resolved once at create as `durability_class
   same best-effort path (the copy may survive or be lost). Effectively `disk` minus the
   durability promise — for caches / scratch where occasional loss is acceptable.
 - **`disk`** — written to the WAL and **group-committed** (no per-write `fsync`); `fsync_ms` is
-  `0` (the fast path). The write is acked as soon as its frame is enqueued to the single WAL
-  writer (the ack is **not** fsync-gated — the engine drops the commit token); the writer
-  group-commits and `fdatasync`s the batch shortly after. Survives a crash **minus the
-  un-fsynced tail** (the frames enqueued but not yet group-fsynced). This is today's
-  `durable:false`.
+  `0` (the fast path). The write is acked as soon as its frame is enqueued to its box's WAL-shard
+  writer (the WAL is sharded — see ARCHITECTURE §2; the ack is **not** fsync-gated — the engine
+  drops the commit token); the shard writer group-commits and `fdatasync`s the batch shortly
+  after. Survives a crash **minus the un-fsynced tail** (the frames enqueued but not yet
+  group-fsynced). This is today's `durable:false`.
 - **`fsync`** — the ack is **`fsync`-gated** (held until the WAL frame is durably synced; real
   `fsync_ms`). Survives **any** crash. This is today's `durable:true`.
 
@@ -378,8 +380,10 @@ either tier. See [ARCHITECTURE §3.6](ARCHITECTURE.md).
 
 ## 6. Node loop-prevention
 
-Purpose: make router fan-out across N symmetric nodes safe (multi-master replication), so a node
-never receives back events it produced.
+Purpose: make router fan-out across N symmetric *logical* nodes safe (a multi-master *topology*
+built from local routers — `node` is a content/origin label, **not** a separate machine; streams
+is single-server and does not do remote/multi-server replication, §12), so a node never receives
+back events it produced.
 
 - Every record MAY carry an origin `node` string (set by the writing client), recorded as
   `$node`, immutable, and **preserved verbatim through router forwards** (§8.3).
@@ -411,10 +415,14 @@ filter. Five properties define it:
   the old open question — see ROADMAP). To "resurrect," write a new record.
 - **EFFECTIVE IMMEDIATELY.** The delete is invisible to **all** reads at once — `diff`, box state
   `count`/`bytes`, and SSE. A reader's cursor simply advances past the deleted seqs.
-- **ASYNCHRONOUS / lazy physical reclaim.** Records are *logically* gone instantly; memory/disk is
-  reclaimed by a background reclaimer. In the in-memory phase the payload/tag is freed immediately
-  (subtract `bytes`, decrement `count`) and physical slots are popped only from the **front** as
-  the prefix becomes fully dead (ARCHITECTURE §1, §3).
+- **ASYNCHRONOUS, NO COMPACTION / NO RECLAIM.** Records are *logically* gone instantly (the work
+  runs off the call path), but a deleted record **stays on disk, just marked** — there is no
+  compaction and no per-record disk reclaim. In memory the payload/tag is freed and front-of-log
+  physical slots are popped only as the prefix becomes fully dead. On disk a record already sealed
+  into a segment has its **delete-flag byte flipped in place** in the segment file (the WAL stays
+  append-only — a `Delete` frame is appended, never mutated in place); the only space released is
+  a **whole segment dropped in one op** when a delete clears it entirely (ARCHITECTURE §1, §3,
+  §3.5). A still-live segment's marked records are never rewritten or reclaimed.
 - **SILENT.** A delete **never** produces a tombstone. Tombstones stay reserved for **involuntary**
   cap/TTL loss (§5.4). A delete advances `earliest_seq` but **not** `evict_floor` (§5.1), so reading
   across a purely-deleted gap returns `tombstone: null`.
@@ -520,31 +528,38 @@ to `dst`. `{ name, source, dest, preserve_node, preserve_tag, filter, allow_cycl
 
 ### 8.1 Forward mechanics & ordering
 
-- When record `r` commits to `src` at `src.$seq = s`, the router appends a forwarded copy to
-  `dst`, which assigns it a **fresh `dst.$seq`** (dst's own counter). `dst.$seq` is unrelated to
-  `s`.
+- Forwarding is **async** and **off the source write/ack path**: a write to `src` acks
+  immediately, and a background per-router worker forwards copies driven by a **durable
+  per-router cursor**. When record `r` commits to `src` at `src.$seq = s`, the router appends a
+  forwarded copy to `dst`, which assigns it a **fresh `dst.$seq`** (dst's own counter).
+  `dst.$seq` is unrelated to `s`.
+- **DERIVED — no WAL amplification.** A forwarded copy is **derived**: it is **not separately
+  WAL-logged**. One source append produces exactly **one WAL write regardless of fan-out** (a
+  source feeding N derived dests still costs one WAL write); the derived dest copies are
+  reconstructed by replaying from the durable router cursor on recovery, not from per-copy WAL
+  frames.
+- **Single-source per derived dest.** A derived destination has exactly **one** source. A second
+  router with a *different* source into the same dest is rejected with **`409`**
+  (`error.detail.reason: "router_dest_fan_in"`). This keeps derived-recovery unambiguous (one
+  cursor, one source order per dest). Direct writes to a dest, or a mixed direct+derived graph
+  under `allow_cycle`, remain best-effort interleavings.
 - **Ordering:** records forwarded from a single `src` to a single `dst` preserve `src` commit
-  order in `dst` (per-route FIFO). If multiple routers/writers feed one `dst`, its order is the
-  interleaving by `dst` commit time — only **per-source FIFO** is guaranteed (same as Kafka with
-  multiple producers into one partition).
-- The forward is driven off the same committed log as consumers (a server-internal consumer of
-  `src` with its own cursor), so a router never forwards a record that didn't durably commit to
-  `src`.
+  order in `dst` (per-source FIFO). Because each derived dest is single-source, its forwarded
+  stream is a single ordered sequence; direct writes plus that one router can still interleave by
+  `dst` commit time, with only **per-source FIFO** guaranteed.
 
 ### 8.2 Delivery guarantee: at-least-once
 
 - Forwarding is **at-least-once**. The router persists its forward cursor over `src`; on restart
-  it resumes from the last *durably forwarded* position. A crash between "appended to dst" and
-  "advanced router cursor" can re-forward → duplicates in `dst`.
+  it **replays from the cursor** (re-derives un-forwarded copies). A crash between "appended to
+  dst" and "advanced router cursor" can re-forward → duplicates in `dst`.
 - Exactly-once is not offered (it would require distributed-style dedup the single-process design
   avoids). De-dup is the consumer's job; `$node` + an optional client dedup key in `meta` make
   idempotent consumption practical. **Consumers must be idempotent** (BullMQ at-least-once
   lesson).
-- Forwarding honors the **destination** box's durability commit class (§2.2): a `fsync` `dst`
-  advances the router cursor only after `dst` fsyncs the forwarded record; a `disk` `dst` writes
-  the forwarded copy to the WAL group-committed; a `memory` `dst` takes that **same** disk-like
-  best-effort path — the forwarded copy is group-committed to the WAL too, but with no durability
-  guarantee (it may survive or be lost on restart), exactly like a direct write to that box.
+- Because forwarding is async and the copies are derived (not WAL-logged), the source ack never
+  waits on the destination; a `memory`/`disk`/`fsync` dest governs only how/whether the *re-derived*
+  copy is retained and recovered, not when the source write acks.
 
 ### 8.3 What carries through a forward
 
@@ -586,10 +601,11 @@ A forward into `dst` is an ordinary append obeying `dst`'s config:
      cycle is rejected at creation with `409 router_cycle`** (`error.detail.cycle:["a","b","a"]`).
      DAG-by-default is the simplest correct rule.
    - For intentional cyclic/multi-master topologies (A↔B mirrors), set `allow_cycle: true` on the
-     router; the route then uses **runtime hop-cap loop-breaking**: a forwarded record carries a
-     bounded hop counter (`$ttl_hops`, default max 8) and/or a hop set (`$route_path`); a router
-     MUST NOT forward a record whose `dst` already appears in `$route_path` or whose `$ttl_hops` is
-     exhausted, so forwarding always terminates.
+     router; the route then uses **runtime hop-cap loop-breaking**: each record carries a bounded
+     **internal, in-memory hop count** (NOT exposed on the wire — there is no `$ttl_hops`,
+     `$route_path`, or persisted hop set in the record); once the cap is reached the record is not
+     forwarded again, so forwarding always terminates. An `allow_cycle` graph that mixes direct and
+     derived routers is best-effort.
 
    Complementary: node-filtering prevents *delivery* of your own events (correctness); the
    DAG/hop-cap prevents *unbounded forwarding* (resource safety).
@@ -617,17 +633,23 @@ A forward into `dst` is an ordinary append obeying `dst`'s config:
    `before_seq`/tag `match`) and own-node filtering drop records without tombstones; they advance
    `earliest_seq` but never `evict_floor`. Consumers detect them (if they care) via
    `head_seq`/`earliest_seq` arithmetic, never confusing them with data loss. Deletion is
-   permanent, effective immediately, asynchronously reclaimed, and point-in-time (never a standing
-   filter).
+   permanent, effective immediately, async, and point-in-time (never a standing filter), with no
+   compaction / no per-record reclaim (on disk a delete-flag byte is flipped in place; a whole
+   cleared segment may be dropped).
 4. **The dual watermark separates the two.** `earliest_seq` (first live seq) is the single source
    of truth for "what can I still read"; `evict_floor` (involuntary cap/TTL only, `evict_floor <=
    earliest_seq`) is the single tombstone trigger. Cap arithmetic is never authoritative (lazy,
    segment-granular eviction may exceed cap transiently).
 5. **`$node` is immutable and preserved through routers**, making N-way multi-master fan-out safe
    by construction.
-6. **Routers are at-least-once, per-source FIFO, DAG-by-default** (with an explicit hop-capped
-   `allow_cycle` escape hatch); `dst` enforces its own retention and `discard:"reject"` applies
-   backpressure rather than silently dropping.
+6. **Routers are async + derived, at-least-once, per-source FIFO, single-source-per-dest,
+   DAG-by-default** (with an explicit hop-capped `allow_cycle` escape hatch): forwarding runs off
+   the write/ack path, derived copies are not WAL-logged (one WAL write per source append
+   regardless of fan-out), a durable per-router cursor drives replay-from-cursor recovery, and a
+   second router with a different source into one dest is rejected `409 box_exists_incompatible`
+   (`error.detail.reason: "router_dest_fan_in"`). `dst`
+   enforces its own retention and `discard:"reject"` applies backpressure rather than silently
+   dropping.
 7. **Durability is per-box and explicit**; only data not yet in the (fsynced, for durable boxes)
    WAL is lost on crash, and such loss appears to consumers as ordinary eviction-style gaps.
 
@@ -701,7 +723,10 @@ use the Clock, never wall-clock sleeps):
 - **IN_FLIGHT → DONE** — an `ack` (§10.4) appends an `acked` event and **permanently deletes
   the job from the jobs log** (delete *is* the ack, reusing §7). Acks are matched on
   `node` + seq; an ack from a worker that no longer holds the lease is silently skipped
-  (idempotent).
+  (idempotent). `lease_id` is **validate-when-supplied**, not strictly required: a caller MAY
+  pass the per-seq `lease_ids` returned by its claim to **fence** ack/nack/extend (a stale token
+  whose lease has been superseded is rejected/skipped); omitting it falls back to the
+  `node` + seq match.
 - **IN_FLIGHT → READY** — either a `nack` (§10.5, voluntary early release, optionally delayed
   by `delay_ms`) or **lease expiry** (§10.6, the deadline passed). Both append a `released`
   event (expiry is recorded lazily, on the reclaiming claim pass) and return the job to the

@@ -83,8 +83,9 @@ and `seqs[i]` is the seq of `records[i]`.
 
 For a **durable** box the response is held until the write is committed per the box's
 [durability class](/guarantees/durability): an `fsync` box holds the ack until the WAL frame
-is durably synced; a `disk` box acks on group-commit enqueue; a `memory` box acks on the
-buffered in-RAM append. A non-durable box never blocks on `fsync`.
+is durably synced; a `disk` box acks on group-commit enqueue; a `memory` box acks the same way
+as `disk` (on WAL-frame enqueue) but is best-effort — not fsync-gated and with no durability
+guarantee. A non-`fsync` box never blocks on `fsync`.
 
 ### Full-box behavior
 

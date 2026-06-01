@@ -158,7 +158,7 @@ frame and sets `TCP_NODELAY` to hit the 1–5 ms delivery target.
 | HTTP / `error.code` | When |
 |---|---|
 | `200` | Stream opened. |
-| `401 unauthorized` | A bearer or `?token=` *was* presented but does not match the key that created the `wid`. (Omitting the bearer is fine — the `wid` is the capability when auth is off.) |
+| `401 unauthorized` | The session was created **with auth enabled** (so it is bound to the creating key) and the SSE GET did not present that same bearer — either a wrong key, **or no bearer at all** (a leaked `wid` alone is not a credential). Only an **unauthenticated** (dev-mode) session opens on the `wid` alone. |
 | `404 not_found` | The `wid` was GC'd, expired, or is unknown → POST again. |
 | `406 not_acceptable` | `Accept` is not `text/event-stream`. |
 | `429 throttled` | The SSE connection cap was reached, or backpressure under CPU pressure. |
@@ -233,7 +233,7 @@ event: tombstone
 data: {"box":"events","reason":"cap","gap_from":80000,"gap_to":83000,"earliest_seq":83001,"head_seq":88130}
 ```
 
-`reason` ∈ `cap` | `ttl` | `mixed` | `recreated`, plus `from_seq_too_old` — emitted
+`reason` ∈ `cap` | `ttl` | `mixed` | `recreated` | `source_trim` (a derived-router dest reflecting source-side eviction), plus `from_seq_too_old` — emitted
 **immediately on connect** when the requested `from_seq + 1 < earliest_seq` (the SSE
 expression of Kafka `OffsetOutOfRange`). The `[gap_from, gap_to]` range is authoritative; the
 `reason` is best-effort. See [Tombstones](/guarantees/tombstones).

@@ -125,15 +125,15 @@ endpoint is one of these doing its job.
 <span className="section-eyebrow">The central tradeoff</span>
 <h2 className="section-title">Durability is per box — each box buys exactly the guarantee it needs</h2>
 <p className="section-lede">
-A RAM-only cache, a group-committed pub/sub feed, and an fsync-gated job queue
+A best-effort cache, a group-committed pub/sub feed, and an fsync-gated job queue
 coexist in one process. Routers bridge them, honoring the destination box's class.
 </p>
 
 <div className="dura-grid">
   <div className="dura">
     <span className="d-tag">memory</span>
-    <h4>RAM-only, fastest</h4>
-    <p>Never touches the WAL. Lost on restart (the box reappears empty, config preserved). For caches, scratch, ephemeral fan-out.</p>
+    <h4>Disk-like, best-effort, fastest</h4>
+    <p>Same group-committed WAL path as <code>disk</code> and fully queryable, but with no durability guarantee: after a restart its records may survive or be lost (config always survives). Never fsync-gated. For caches, scratch, ephemeral fan-out.</p>
   </div>
   <div className="dura">
     <span className="d-tag">disk</span>

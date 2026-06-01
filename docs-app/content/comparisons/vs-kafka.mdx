@@ -44,7 +44,7 @@ function of how many machines hold the data, so a single broker can fail without
 streams' durability is **per-box and single-machine**, expressed as a
 [durability class](/guarantees/durability):
 
-- **`memory`** — RAM only, lost on restart.
+- **`memory`** — same group-committed WAL path as `disk`, but best-effort: not fsync-gated and no durability guarantee (records may survive or be lost on restart).
 - **`disk`** — WAL with adaptive group commit; ack on enqueue, survives a crash minus the
   un-fsynced tail.
 - **`fsync`** — ack is **fsync-gated**; an acknowledged write is committed and recovered by

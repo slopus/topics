@@ -198,13 +198,14 @@ disk.
 
 streams is honest about its boundaries. Deploy accordingly.
 
-- **No TLS.** streams speaks plain HTTP and does not terminate TLS. For any non-loopback
-  exposure, run it behind a TLS-terminating reverse proxy (nginx / Caddy / Envoy / a cloud
-  LB), or bind loopback and tunnel (SSH / WireGuard). Native TLS is **planned** and is a
-  transport concern (no wire-contract change anticipated when it lands).
+- **No TLS (by design).** streams speaks plain HTTP and does not terminate TLS. For any
+  non-loopback exposure, run it behind a TLS-terminating reverse proxy (nginx / Caddy / Envoy /
+  a cloud LB), or bind loopback and tunnel (SSH / WireGuard). Native TLS is **out of scope** —
+  terminate it at the proxy.
 - **No hard tenant isolation.** The prefix allowlist is a **filter**, not a namespace
-  partition: two keys with overlapping prefixes share the same box namespace. A hard
-  per-tenant partition is planned.
+  partition: two keys with overlapping prefixes share the same box namespace. Multi-tenancy
+  beyond per-key scopes + prefix allowlists is **out of scope** — there is no hard per-tenant
+  partition.
 - **No audit log / no key rotation API.** Keys are **static** for the process lifetime (set at
   startup). Rotate by restarting with a new `STREAMS_API_KEYS`. There is no per-request audit
   trail beyond the operational tracing logs (which never contain tokens).

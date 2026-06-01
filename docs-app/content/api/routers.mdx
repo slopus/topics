@@ -18,52 +18,63 @@ stops a node from receiving back what it produced. Routers live in their own nam
 Before the endpoints, the rules that govern what a router does — these are the contract you
 design against.
 
-- **At-least-once.** The router is driven off the committed `source` log (a server-internal
-  consumer with its own cursor), so it never forwards a record that didn't durably commit
-  to `source`. It persists that forward cursor and resumes from the last durably-forwarded
-  position on restart. A crash between "appended to `dest`" and "advanced the cursor" can
-  re-forward — so **consumers must be idempotent**. There is no exactly-once mode.
+- **Async, off the write/ack path.** A write to `source` acks immediately; a background
+  per-router worker forwards copies afterward, driven by a **durable per-router cursor**.
+  Forwarding never blocks or delays the source write.
+- **Derived — no WAL amplification.** A forwarded copy is **derived**: it is **not
+  separately WAL-logged**. One source append produces exactly **one WAL write regardless of
+  fan-out** (a source feeding N dests still costs one WAL write); the derived copies are
+  reconstructed on recovery by **replaying from the durable router cursor**, not from
+  per-copy WAL frames.
+- **Single-source per derived dest.** A derived `dest` has exactly one `source`. A second
+  router with a *different* `source` into the same `dest` is rejected `409
+  box_exists_incompatible` with `error.detail.reason: "router_dest_fan_in"`. (Direct writes
+  to a dest, or a mixed direct+derived graph under `allow_cycle`, remain best-effort
+  interleavings.)
+- **At-least-once.** The router is driven off the committed `source` log, so it never
+  forwards a record that didn't durably commit to `source`. It persists its forward cursor
+  and **replays from the cursor** on restart. A crash between "appended to `dest`" and
+  "advanced the cursor" can re-forward — so **consumers must be idempotent**. There is no
+  exactly-once mode.
 - **Per-source FIFO.** Records forwarded from one `source` into one `dest` preserve
   `source` commit order. The forwarded copy gets a **fresh** `$seq` and `$ts` in `dest`
-  (its own independent log); the `dest` seq is unrelated to the source seq. If multiple
-  routers or writers feed one `dest`, its order is the interleaving by `dest` commit time —
-  only per-source FIFO is guaranteed (same as Kafka with multiple producers into one
-  partition).
+  (its own independent log); the `dest` seq is unrelated to the source seq. Because each
+  derived dest is single-source, its forwarded stream is a single ordered sequence; direct
+  writes plus that one router can still interleave by `dest` commit time, with only
+  per-source FIFO guaranteed.
 - **What carries through.** `$node` (verbatim, never rewritten when `preserve_node` — this
   is what makes loop-prevention work across the route), `$tag` (when `preserve_tag`), `meta`,
   and `data` pass through unchanged. Original source seq/ts are optionally preserved in
   reserved meta `$src_box`/`$src_seq` for traceability (off by default to keep payloads lean).
-- **The destination's config governs the forward.** A forward is an ordinary append into
-  `dest`, so it honors `dest`'s [durability class](/guarantees/durability): a `fsync` dest
-  advances the router cursor only after the forwarded record fsyncs; a `disk` dest
-  group-commits it; a `memory` dest persists nothing (the copy is RAM-only, exactly like a
-  direct write). `dest`'s caps and TTL apply too — TTL is measured by `dest.$ts` (forward
-  time), not source time.
+- **The destination's config governs how the copy is retained.** Because forwarding is async
+  and the copies are derived (not WAL-logged), the source ack never waits on the destination.
+  The `dest`'s [durability class](/guarantees/durability) governs how/whether the re-derived
+  copy is retained and recovered — including a `memory` dest, which retains a best-effort copy
+  (it may survive or be lost, exactly like a direct write to that box). `dest`'s caps and TTL
+  apply too — TTL is measured by `dest.$ts` (forward time), not source time.
 - **Deletes and node filters are per-box.** They do not propagate through a router. A
   delete on `source` removes records from `source`, but a copy may already have been
   forwarded to `dest`; to remove it there too, [delete](/api/deletion) on `dest`.
 - **DAG-by-default, with a hop-capped escape hatch.** Creating a router that would
   introduce a directed cycle is rejected at creation with `409 router_cycle`. For an
   intentional cyclic topology (an A↔B mirror) set `allow_cycle: true`; the route then uses
-  **runtime hop-cap loop-breaking** — a forwarded record carries a bounded hop counter and
-  a hop set, and a router never forwards a record whose `dest` already appears in its path
-  or whose hop budget is exhausted, so forwarding always terminates. Node-filtering prevents
-  *delivery* of your own events (correctness); the DAG/hop-cap prevents *unbounded
-  forwarding* (resource safety).
+  **runtime hop-cap loop-breaking** — each record carries a bounded **internal, in-memory**
+  hop count (not exposed on the wire — there is no `$ttl_hops`, `$route_path`, or persisted
+  hop set), and once the cap is reached the record is not forwarded again, so forwarding
+  always terminates. An `allow_cycle` graph mixing direct and derived routers is best-effort.
+  Node-filtering prevents *delivery* of your own events (correctness); the DAG/hop-cap
+  prevents *unbounded forwarding* (resource safety).
 - **Cascade on box delete.** [Deleting a box](/api/boxes) removes every router that names
   it as `source` or `dest` — a router referencing a missing endpoint cannot exist. The
   delete response echoes the removed router names in `routers_removed`.
 
-<Callout type="warning">
-  **Partial: forwarding is synchronous, with no background retry driver yet.** The forward
-  runs on the `source` append path. A forward into a `discard:"reject"` dest that is full
-  (or otherwise erroring) is held as **backpressure**: the router does not advance its
-  cursor and the record stays in `source`. There is currently **no background worker** that
-  retries a persistently-failing durable forward from a saved cursor, so a dest that stays
-  full or broken will **lag** behind its source until it recovers or you intervene. A
-  durable fan-out should size `dest` at least as large as `source`, or use `discard:"old"`
-  on `dest`. A durable router-backlog worker is [planned](/getting-started). The delivery
-  guarantee itself is unaffected: forwarding remains at-least-once via the source log.
+<Callout type="info">
+  **Backpressure.** A forward into a `discard:"reject"` dest that is full (or otherwise
+  erroring) is held as **backpressure**: the router does not advance its cursor and the
+  record stays available in `source`, so a dest that stays full or broken **lags** behind its
+  source until it recovers. A durable fan-out should size `dest` at least as large as
+  `source`, or use `discard:"old"` on `dest`. The delivery guarantee itself is unaffected:
+  forwarding remains at-least-once via the source cursor.
 </Callout>
 
 ## PUT /v0/routers/:router — create or configure a router

@@ -150,15 +150,17 @@ is written once.
 
 ### 2.1 Record framing
 
-The WAL is an append-only sequence of length-prefixed, CRC-protected frames (one frame per record;
-multi-record writes produce many frames committed as one batch). Multi-byte integers little-endian.
+The WAL is an append-only sequence of length-prefixed, **XXH3-64-checksummed** frames (one frame
+per record; multi-record writes produce many frames committed as one batch). Multi-byte integers
+little-endian.
 
 ```
  off  size  field
    0    4   frame_len   u32   bytes of this frame EXCLUDING this field
    4    1   type        u8    1=Append 2=BoxCreate 3=BoxDelete 4=RouterCreate
                                 5=RouterDelete 6=Delete 7=EvictWatermark
-                                8=CheckpointMark 9=ConfigUpdate
+                                8=CheckpointMark 9=ConfigUpdate 10=Lease
+                                11=HeadWatermark
    5    1   flags       u8    bit0=has_tag bit1=has_node bit2=durable
    6    4   box_id      u32   interned numeric box id (string<->id in meta store)
   10    8   seq         u64   server-assigned (0 for non-Append control frames)
@@ -191,8 +193,8 @@ multi-record writes produce many frames committed as one batch). Multi-byte inte
 write request
   -> validate; resolve box_id; assign seq = head_seq.fetch_add(n)   (after a discard:"reject" cap check)
   -> serialize frame(s) into a reusable per-writer scratch BytesMut
-  -> hand (frames, durability_class, completion-oneshot) to the single WAL writer task
-  -> writer appends bytes to the active wal file (buffered write())
+  -> hand (frames, durability_class, completion-oneshot) to the box's WAL-shard writer
+  -> shard writer appends bytes to that shard's active wal file (buffered write())
   -> on commit (fsync for durable, or group-commit tick): fulfill oneshots
   -> update in-memory: push RecordLoc into BoxIndex, bump head_seq visibility, Notify watchers
   -> respond { seqs, head_seq, performance }
@@ -200,18 +202,29 @@ write request
 
 The seq is assigned **before** the WAL commit (so it can be returned) but the record is only
 *visible to readers* and *acked to the writer* after its commit class is satisfied. Guarantee: **if
-a write was acked, it is in the WAL.** A **single WAL writer task** (fed by an MPSC channel)
-serializes all appends — the disk is a single sequential resource, so a single ordered append stream
-matches the hardware, makes group commit trivial, and removes write-side lock contention.
+a write was acked, it is in the WAL.** The WAL is **sharded** (`STREAMS_WAL_SHARDS`, default
+`min(num_cpus, 8)`): there are **N independent shard writers**, each fed by its own MPSC channel and
+owning its own file set + group-commit loop, so durable write throughput scales ~linearly with the
+shard count. Each box routes to **exactly one shard** by a stable hash of its interned id
+(`xxh3(box_id) % n`), so within a shard appends are still one ordered sequential stream (matching the
+hardware, making group commit trivial and removing write-side lock contention), and per-box ordering
+and every durability guarantee still hold because a box always lives on the same shard. Recovery is
+**shard-count-agnostic** (it replays all discovered shards by `box_id`, §4), so the shard count may
+change between restarts. `STREAMS_WAL_SHARDS=1` is the legacy single-writer / flat-layout path.
 
 ### 2.3 Durability classes & group commit
 
-Durability is per-box. Two commit classes, one writer:
+Durability is per-box. **Three commit classes, one writer per WAL shard:**
 
-| `durable` | Commit class | Behavior |
+| Class (`durable` alias) | Commit class | Behavior |
 |---|---|---|
-| `true` | fsync-on-commit | Acked only after `fdatasync()` returns. Still **group-committed**: the writer coalesces all pending durable frames in a small window into one `write()` + one `fdatasync()`, then acks them all. |
-| `false` | group-commit, no wait | `write()`-en to the page cache and acked immediately. A background `fdatasync()` runs on a timer; writers do not wait. Loss window on crash = un-fsynced tail. |
+| `memory` | group-commit, best-effort | Takes the **same** group-committed WAL write + recovery path as `disk` (no special-casing) and is fully queryable, but carries **NO durability guarantee**: after a restart its records **may survive or be lost**, recovery is gradual/best-effort and never blocks readiness. Never fsync-gated (`fsync_ms` 0). It forgoes the disk-class seq-ceiling fsync, so on a lost tail `head_seq` may regress — but never above the acked head. Reachable only via an explicit `durability:"memory"`. |
+| `disk` (`durable:false`) | group-commit, no wait | `write()`-en to the page cache and acked **on frame enqueue** (not fsync-gated). A background `fdatasync()` runs on the shard's group-commit tick; writers do not wait. Loss window on crash = un-fsynced tail. |
+| `fsync` (`durable:true`) | fsync-on-commit | Acked only after `fdatasync()` returns. Still **group-committed**: the shard writer coalesces all pending durable frames in a small window into one `write()` + one `fdatasync()`, then acks them all. |
+
+The legacy `durable` bool is a back-compat alias: `durable:true ⇒ fsync`, `durable:false ⇒ disk`;
+`memory` is reachable only by setting `durability:"memory"` explicitly. (`disk` and `memory` are
+both group-committed and non-fsync-gated; only `fsync` gates the ack on `fdatasync`.)
 
 **Group-commit loop:**
 
@@ -429,14 +442,16 @@ instant.
    base_seq from the lowest surviving segment, evict_floor/earliest_seq from the persisted
    watermarks, head_seq from the highest segment seq. Rebuild the tag index from the
    surviving tagged records.
-3. Replay the WAL from the frame after the last CheckpointMark. For each frame, in order:
-     - frame_len fits remaining bytes? else torn tail -> STOP (truncate here).
-     - xxh3 valid? else torn/partial -> STOP (truncate here).
+3. Replay EVERY WAL shard (shard-count-agnostic: all discovered shards — the flat `wal/` and each
+   `wal/shard-NN/` — are replayed, dispatching each frame by box_id; each shard resumes from its own
+   per-shard checkpoint position recorded in the CheckpointMark). For each frame, in order:
+     - frame_len fits remaining bytes? else torn tail -> STOP (truncate this shard here).
+     - xxh3 valid? else torn/partial -> STOP (truncate this shard here).
      - apply: Append -> push RecordLoc (location=WAL), index tag, bump head_seq.
               Delete -> re-apply before_seq/match: mark slots deleted, free payloads,
                         prune tag index, advance earliest_seq (NOT evict_floor).
-              other Control frames -> mutate config/watermarks/routers.
-4. Truncate the WAL at the first bad/partial frame boundary (ftruncate) -> clean for new appends.
+              other Control frames -> mutate config/watermarks/routers/router cursors.
+4. Truncate each shard at its first bad/partial frame boundary (ftruncate) -> clean for new appends.
 5. Re-derive droppable/rewritable segments (sealed, fully or partially below the live set) and
    reclaim them (idempotent — §3.5).
 6. Resume: open the truncated/fresh active WAL, start the writer + compactor + reclaimer.
@@ -447,17 +462,23 @@ instant.
   written, checksum-valid frame and truncate. Since a write is acked only after its frame is committed
   (and fsynced, for durable boxes), an **acked durable write is always a complete checksum-valid frame ⇒
   never lost.**
-- **Partial `write()`:** the trailing partial frame fails CRC/length and is discarded; never
-  interpreted as data.
-- **`CheckpointMark` is itself CRC-protected and fsynced.** Crash after writing segments but before
+- **Partial `write()`:** the trailing partial frame fails the XXH3 checksum / length check and is
+  discarded; never interpreted as data.
+- **`CheckpointMark` is itself XXH3-checksummed and fsynced.** Crash after writing segments but before
   the CheckpointMark is durable ⇒ recovery re-replays those WAL frames into segments; duplicate
   appends are skipped by seq (a seq already in the segment index is ignored). Crash after the
   CheckpointMark but before deleting absorbed WAL files ⇒ those files are replayed-and-skipped
   (seqs ≤ checkpointed) — harmless.
-- **"Only data not yet in the WAL is lost":** for `durable=true` an acked write survives (ack waits
-  for fsync); for `durable=false` writes acked but not yet fsynced (within the group-commit timer)
-  can be lost on power loss — the documented fast-path tradeoff, surfacing to consumers as ordinary
-  eviction-style gaps. In both cases the boundary is precisely "what reached the WAL on disk."
+- **"Only data not yet in the WAL is lost":** for `fsync` (`durable=true`) an acked write survives
+  (ack waits for fsync); for `disk` (`durable=false`) writes acked but not yet fsynced (within the
+  group-commit timer) can be lost on power loss — the documented fast-path tradeoff, surfacing to
+  consumers as ordinary eviction-style gaps; a `memory` box takes the same path but with no
+  guarantee at all (its records may survive or be lost, head never above the acked head). In all
+  cases the boundary is precisely "what reached the WAL on disk."
+- **Routers recover from a durable per-router cursor.** Forwarded copies are **derived** (not
+  separately WAL-logged), so recovery does not replay per-copy frames; instead the per-router cursor
+  is restored and the router **replays from the cursor**, re-deriving any un-forwarded source
+  records into each (single-source) derived dest (at-least-once; §8).
 
 ---
 
@@ -509,10 +530,13 @@ the compact snapshot; metadata is tiny and changes rarely.
 ├── meta/
 │   ├── snapshot.0007.bin            # latest atomic metadata snapshot
 │   └── snapshot.0006.bin            # previous (kept until next snapshot fsynced)
-├── wal/
-│   ├── CURRENT                      # tiny file naming the active wal segment (atomic-renamed)
-│   ├── wal-0000000000001024.log     # preallocated, append-only, mixed-box framed records
-│   └── wal-0000000000004096.log     # active wal segment (highest first-seq)
+├── wal/                            # sharded (STREAMS_WAL_SHARDS, default min(num_cpus,8))
+│   ├── shard-00/                   # one dir per shard when shards>1 (shards==1 ⇒ flat wal/)
+│   │   ├── CURRENT                 # tiny file naming this shard's active wal segment
+│   │   ├── wal-0000000000001024.log # preallocated, append-only, mixed-box framed records
+│   │   └── wal-0000000000004096.log # active wal segment (highest first-seq)
+│   └── shard-01/
+│       └── ...                     # each shard: own writer thread / file set / group commit
 └── boxes/                          # HOT tier (fast NVMe)
     ├── 0000000A/                    # one dir per box, named by interned box_id (hex)
     │   ├── seg-0000000000000001.data
@@ -530,8 +554,11 @@ the compact snapshot; metadata is tiny and changes rarely.
         └── seg-0000000000000001.idx
 ```
 
-WAL is **process-global** (one ordered stream → trivial group commit, matches the single sequential
-disk). Segments are **per-box** (independent eviction, per-box mmap, locality for `getDifference`).
+The WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`): N independent shard
+writers, each an ordered append stream over its own file set with trivial group commit (matching the
+sequential disk). A box maps to one shard by `xxh3(box_id) % n`; on disk each shard >1 lives under
+`wal/shard-NN/` (shards==1 is the flat `wal/` layout). Segments are **per-box** (independent
+eviction, per-box mmap, locality for `getDifference`).
 Segment files named by first seq sort into seq order; finding a segment for a seq is a binary search
 over first-seqs. The same `seg-<first_seq>` naming is used in both tiers, so a relocated segment keeps
 its identity (§3.6); the cold tier mirrors the per-box layout under `STREAMS_COLD_DIR`. A box delete
@@ -645,11 +672,13 @@ never ack-then-drop.
 
 ### 8.1 Sharding
 
-Boxes are partitioned across `S` shards by `shard = hash(box_id) % S`, with `S = N_workers` (one
-shard per core) by default. Each shard owns its slice of the box map, its ready-set, and its WAL
-ingest lane. **State is sharded, not globally locked.** The only global structures are the lock-free
-`pressure` atomic and the read-mostly box-name→shard directory (`dashmap`). The single WAL writer
-(§2.2) is fed by per-shard MPSC lanes.
+Boxes are partitioned across `S` **delivery** shards by `shard = hash(box_id) % S`, with
+`S = N_workers` (one shard per core) by default. Each shard owns its slice of the box map and its
+ready-set. **State is sharded, not globally locked.** The only global structures are the lock-free
+`pressure` atomic and the read-mostly box-name→shard directory (`dashmap`). This delivery sharding is
+**independent of the WAL sharding** (§2.2): the WAL has its own N shard writers, each with its own
+ingest channel; a box maps to one delivery shard *and* one WAL shard, by separate hashes. There is no
+single WAL writer.
 
 ### 8.2 Lock strategy: short shard lock + per-box fine lock
 
@@ -668,9 +697,9 @@ ingest lane. **State is sharded, not globally locked.** The only global structur
 |---|---|---|
 | **Write** | HTTP task → shard lane → append under box lock → assign seqs → mark dirty (short shard lock) → return | box's own lock + brief splice; independent boxes never contend |
 | **getState** | lock-free atomic loads (head/earliest/count) + `last_consumed_ms` store | lock-free |
-| **getDifference** | box read lock over committed segments; bounded batch; bump recency; tombstone if `from_seq+1 < earliest_seq` | box read lock; doesn't block other boxes; rarely blocks the append tail (seqlock) |
+| **getDifference** | box read lock over committed segments; bounded batch; bump recency; tombstone iff `from_seq+1 < evict_floor` (the involuntary cap/TTL floor — a purely-deleted gap below `earliest_seq` is silent) | box read lock; doesn't block other boxes; rarely blocks the append tail (seqlock) |
 | **SSE push** | worker draining the box pushes frames to each watcher's bounded channel; slow consumer's channel full → degrade that connection, not the box | per-box during drain; per-connection channel isolates a slow client |
-| **Router** | at drain time, new src records handed to the dest shard via its ingest MPSC (no cross-shard lock); dest box scheduling/priority applies; node filtering at dest read time | cross-shard hop only when src/dst differ; no cross-shard lock acquisition |
+| **Router** | **async, off the write/ack path**: a background per-router worker forwards from a durable cursor; forwarded copies are **derived** (not WAL-logged — one WAL write per source append regardless of fan-out); each derived dest is single-source (a different second source ⇒ `409 box_exists_incompatible`, `error.detail.reason: "router_dest_fan_in"`); dest scheduling/priority applies; node filtering at dest read time | no cross-shard lock on the source ack path; recovery replays from the per-router cursor |
 
 ### 8.4 Slow-consumer isolation (SSE)
 
@@ -771,13 +800,14 @@ computation, the per-box tag index + permanent-delete path (logical removal + la
 node loop-prevention read loop, priority/recency tracking, `Notify`-based SSE/diff wakeups, the
 banded scheduler (in-memory it just has nothing to fsync).
 
-**Added in phase 4:** the WAL (framing, single-writer group commit, per-box durable fsync), the
+**Added in phase 4:** the WAL (framing, **sharded** group-commit writers, per-box durable fsync), the
 compactor (WAL→segment checkpointing), segment files + `.idx` + mmap serving, segment-granular lazy
-cap/TTL eviction, the **background reclaimer** (async physical reclaim of deleted records via
-whole-segment drop and partial-segment rewrite, §3.5), metadata snapshots + control-frame replay
-(incl. `Delete` frames), and restart recovery. Phase 4 only re-points `RecordLoc` from heap `Bytes`
-to `(location, offset, len)`, inserts the WAL on the append path, and adds background segment
-rewrite/drop — the serving and indexing logic is reused intact.
+cap/TTL eviction, the **background orphan-segment dropper** (async **whole-segment drop** when a delete
+clears a segment — **no compaction / no partial-segment rewrite / no per-record reclaim**; deletes flip
+an in-place delete-flag byte, §3.5), metadata snapshots + control-frame replay (incl. `Delete` frames),
+and restart recovery. Phase 4 only re-points `RecordLoc` from heap `Bytes` to `(location, offset, len)`,
+inserts the WAL on the append path, and adds the background whole-segment drop — the serving and indexing
+logic is reused intact.
 
 **Added in phase 6 (tiered storage, §3.6):** the `SegmentStore` trait + `LocalSegmentStore` + per-box
 `BoxTier` (HOT + optional COLD), the segment file format (`src/storage/segment.rs`), and the

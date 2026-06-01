@@ -170,10 +170,12 @@ previous file is removed only after the new one is durably in place.
 
 ## On-disk layout
 
-Putting it together: the WAL is process-global (one ordered stream), while segments are
-per-box (independent eviction, per-box mmap, locality for diff reads). Box directories are
-named by the interned `box_id` (hex), never the box name — so there is no path traversal from
-a user-supplied name.
+Putting it together: the WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`)
+into N independent ordered streams — each box maps to one shard, and each shard (when shards >
+1) is its own `wal/shard-NN/` directory with its own `CURRENT` + files. Segments are per-box
+(independent eviction, per-box mmap, locality for diff reads). Box directories are named by the
+interned `box_id` (hex), never the box name — so there is no path traversal from a user-supplied
+name.
 
 <FileTree>
   <FileTree.Folder name="streams-data" defaultOpen>
@@ -181,10 +183,13 @@ a user-supplied name.
       <FileTree.File name="snapshot-7.bin (latest atomic snapshot)" />
       <FileTree.File name="snapshot-6.bin (previous, kept until next fsync)" />
     </FileTree.Folder>
-    <FileTree.Folder name="wal" defaultOpen>
-      <FileTree.File name="CURRENT (names the active wal file)" />
-      <FileTree.File name="wal-0000000000001024.log (preallocated, mixed-box)" />
-      <FileTree.File name="wal-0000000000004096.log (active wal file)" />
+    <FileTree.Folder name="wal (sharded; STREAMS_WAL_SHARDS, default min(num_cpus,8))" defaultOpen>
+      <FileTree.Folder name="shard-00 (one dir per shard when shards>1; shards==1 ⇒ flat wal/)">
+        <FileTree.File name="CURRENT (names this shard's active wal file)" />
+        <FileTree.File name="wal-0000000000001024.log (preallocated, mixed-box)" />
+        <FileTree.File name="wal-0000000000004096.log (active wal file)" />
+      </FileTree.Folder>
+      <FileTree.Folder name="shard-01 (own writer thread / file set / group commit)" />
     </FileTree.Folder>
     <FileTree.Folder name="boxes (HOT tier)" defaultOpen>
       <FileTree.Folder name="0000000A (one dir per box, by box_id hex)">

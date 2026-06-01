@@ -90,7 +90,7 @@ zero — the server recovers and reports ready in:
 |---|---|---|
 | 1 000 000 | **0.68–0.94 s** | 1 000 000 (no loss) |
 
-That is ~1.1–1.5 M frames/s of CRC-validate + decode + re-index + tag-index rebuild. With a
+That is ~1.1–1.5 M frames/s of XXH3-64-validate + decode + re-index + tag-index rebuild. With a
 graceful shutdown or the periodic snapshotter, recovery starts from the checkpoint and
 replays only the un-checkpointed tail, so real-world time-to-ready is bounded by the snapshot
 interval, not the total record count. See [Crash Recovery](/how-it-works/recovery).

@@ -104,14 +104,21 @@ by default, or a JSON snapshot when you send `Accept: application/json`. Returns
 always — even when the server is not yet ready, since metrics describe the recovering
 process.
 
-<Callout type="warning">
-  **The current metric surface is small.** Today `/v0/metrics` exposes essentially a **box
-  count** (the JSON snapshot is `{"boxes": N}`). A richer per-box / scheduler / WAL metric
-  catalog — append counters, eviction and tombstone counters, fsync-latency histograms,
-  SSE connection gauges — is **planned but not yet implemented**. Build dashboards against
-  what the endpoint actually emits at your version; do not assume the full catalog is
-  present. The [`performance` block](/api/errors#the-performance-block) on every response
-  is the most detailed per-request observability available today.
+<Callout type="info">
+  **The metric surface is a full catalog**, not a stub. `/v0/metrics` emits process/aggregate
+  gauges (`streams_boxes`, `streams_boxes_by_class{class=…}`, `streams_routers`,
+  `streams_records_live`, `streams_bytes_live`, `streams_queue_boxes`,
+  `streams_queue_leases_in_flight`, `streams_sse_connections`, `streams_watch_sessions`,
+  `streams_ready`, `streams_recovery_progress`, `streams_uptime_ms`), **per-box gauges**
+  (`streams_box_head_seq` / `_earliest_seq` / `_records_live` / `_bytes_live` /
+  `_queue_ready` / `_queue_in_flight`, labelled `{box=…}`, bounded — `streams_box_metrics_truncated`
+  flags a cap), the real **WAL metrics** (`streams_wal_frames_total`, `_batches_total`,
+  `_fsyncs_total`, `_bytes_written_total`, `_rotations_total`, `_queue_depth`, `_queue_depth_peak`,
+  `_submit_full_total`, `_read_only`), and a **fsync-latency histogram**
+  `streams_wal_fsync_latency_us` (with `_bucket{le=…}` / `_sum` / `_count`). There are **no**
+  per-box append/read/eviction/tombstone counters and no scheduler-throttle metric. The
+  [`performance` block](/api/errors#the-performance-block) on every response remains the most
+  detailed per-request view.
 </Callout>
 
 **Prometheus text** (default)
@@ -124,16 +131,33 @@ curl localhost:4000/v0/metrics
 # HELP streams_boxes Number of boxes.
 # TYPE streams_boxes gauge
 streams_boxes 42
+# HELP streams_box_head_seq Highest assigned seq per box.
+# TYPE streams_box_head_seq gauge
+streams_box_head_seq{box="jobs"} 480231
+streams_box_earliest_seq{box="jobs"} 468188
+# HELP streams_wal_fsyncs_total WAL fsyncs.
+# TYPE streams_wal_fsyncs_total counter
+streams_wal_fsyncs_total 88241
+streams_wal_fsync_latency_us_bucket{le="500"} 84120
+streams_wal_fsync_latency_us_count 88241
 ```
 
-**JSON snapshot**
+**JSON snapshot** (mirrors the same series in one object)
 
 ```bash
 curl localhost:4000/v0/metrics -H 'accept: application/json'
 ```
 
 ```json
-{ "boxes": 42 }
+{ "boxes": 42, "boxes_memory": 3, "boxes_disk": 30, "boxes_fsync": 9,
+  "routers": 5, "records_live": 1843201, "bytes_live": 734003200,
+  "queue_boxes": 2, "queue_leases_in_flight": 286,
+  "sse_connections": 41, "watch_sessions": 44, "ready": true,
+  "replay_progress": 1.0, "uptime_ms": 360123,
+  "wal": { "fsyncs": 88241, "frames": 1843290, "batches": 90011,
+           "bytes_written": 812340992, "rotations": 12, "queue_depth": 0,
+           "queue_depth_peak": 1280, "submit_full_total": 0, "read_only": 0,
+           "fsync_count": 88241, "fsync_micros_total": 441205000 } }
 ```
 
 <Callout type="important">

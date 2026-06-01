@@ -34,7 +34,7 @@ metric, if you're watching, long after the fact.
 
 streams takes a different position:
 
-- **Durability is a per-box decision, not a server-wide mode.** A RAM-only cache box, a
+- **Durability is a per-box decision, not a server-wide mode.** A best-effort `memory` cache box, a
   group-committed pub/sub feed, and an `fsync`-gated job queue coexist in one process.
   Each box buys exactly the guarantee it needs without taxing the others.
 - **Involuntary loss is never silent.** If records you wanted were evicted (cap) or
@@ -65,20 +65,24 @@ streams is honest about maturity. The `/v0` contract is fully implemented; a few
 operational edges are partial or planned.
 
 - **Implemented** — the full `/v0` API (boxes, batched diff reads, permanent deletes,
-  routers, multiplexed SSE, lease-based queues); the WAL with adaptive group commit; the
+  routers, multiplexed SSE, lease-based queues); the **sharded** WAL with adaptive group
+  commit (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`, shard-count-agnostic recovery);
+  **async + derived router forwarding** (off the write/ack path, forwarded copies not
+  WAL-logged so one source append is one WAL write, durable per-router cursor with
+  replay-from-cursor recovery, single-source-per-dest); the
   three durability classes (`memory`/`disk`/`fsync`); segments, snapshots, and crash
   recovery; the per-box tag index; node loop-prevention; bearer auth with keys hashed at
   rest, optional per-key scopes and a box-name prefix allowlist; DoS-hardening resource
   limits; optional hot→cold segment tiering; and the loopback-default bind.
-- **Partial** — router forwarding is synchronous on the append path and at-least-once via
-  the source log, but a persistently-failing destination is treated as backpressure with
-  **no background retry driver yet**. Queue lease durability is best-effort
+- **Partial** — the cap-vs-TTL tombstone *reason* is best-effort across a restart (the gap
+  *range* is always authoritative). Queue lease durability is best-effort
   (`leases_durable` defaults off, and a transient WAL error on a lease append degrades to
   the queue's baseline at-least-once rather than losing or duplicating work).
-- **Planned** — native TLS (run behind a TLS-terminating reverse proxy today), hard
-  multi-tenant **namespace** isolation (beyond the prefix-allowlist filter that ships
-  today), and a durable router-backlog worker that retries failed forwards from a
-  persisted cursor.
+- **Out of scope (by design, not on the roadmap)** — native TLS (terminate at a
+  TLS-terminating reverse proxy), hard multi-tenant **namespace** isolation beyond the
+  per-key scope + box-name-prefix allowlist that ships today, multi-server / replication /
+  HA / single-writer fencing, LSM / keyed log compaction, and durable consumer groups as a
+  server primitive (built instead as an app pattern: a box per consumer + delete).
 
 <Callout type="warning">
   streams speaks **plain HTTP** — it does not terminate TLS. For any non-loopback

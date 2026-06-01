@@ -180,7 +180,8 @@ streams is more modest on all three axes, and says so:
 
 - **Isolation** is a [prefix allowlist](/deployment/security) per API key — a *filter*,
   not a partition. Two keys can be scoped to non-overlapping box-name prefixes, but this
-  is not hard tenant isolation; namespace partitioning is planned, not shipped.
+  is not hard tenant isolation, and a hard namespace partition is **out of scope** (not a
+  planned feature).
 - **TLS** is **not** terminated by streams. Run it behind a TLS-terminating reverse proxy
   for any non-loopback exposure. Auth is bearer keys, hashed SHA-256 at rest and compared
   in constant time, with [per-key scopes](/deployment/security) (`read`/`write`/`delete`/`admin`).

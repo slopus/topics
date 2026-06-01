@@ -103,6 +103,7 @@ tombstone is delivered *alongside* the records that follow it, never as an error
 | `ttl` | Live records were TTL-expired (`now - $ts > ttl_ms`, strict). | diff + SSE |
 | `mixed` | Both cap and TTL contributed to the gap. | diff + SSE |
 | `recreated` | The box was deleted and recreated; a stale cursor is from the old instance. | diff + SSE |
+| `source_trim` | A derived-router destination could not re-materialize a forwarded record because the **source** box had already evicted/trimmed it (involuntary TTL/cap loss) below the router's forward cursor — the dest faithfully reflects the source's retention rather than silently skipping. | diff + SSE |
 | `from_seq_too_old` | Connect-time variant: the requested `from_seq + 1 < earliest_seq` was detected when the watch opened (the SSE expression of Kafka `OffsetOutOfRange`). | SSE only |
 
 Some seqs inside `[gap_from, gap_to]` may have been *deleted* rather than evicted — the

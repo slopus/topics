@@ -26,8 +26,10 @@ Permanently remove records by seq range, tag match, or both. Deletion is:
 - **Permanent** — deleted records are gone for good; there is no un-delete in `/v0`.
 - **Effective immediately** — invisible to all reads at once (diff, box-state `count`/`bytes`,
   and SSE); the reader's cursor simply advances past the deleted seqs.
-- **Asynchronous (lazy reclaim)** — records are logically gone instantly; the bytes are
-  reclaimed by a background reclaimer.
+- **Asynchronous, no compaction / no reclaim** — records are logically gone instantly (work
+  runs off the call path), but a deleted record **stays on disk, just marked**: on disk a
+  delete flips an **in-place delete-flag byte** in segment files (the WAL stays append-only),
+  and the only space released is a **whole segment dropped** when a delete clears it entirely.
 - **Silent** — a delete **never** produces a [tombstone](/guarantees/tombstones). Tombstones
   are reserved for **involuntary** cap/TTL loss.
 - **Point-in-time** — it is **not** a standing filter. It removes only records present at
@@ -59,7 +61,7 @@ curl -X POST localhost:4000/v0/boxes/jobs/delete \
 
 | Field | Type | Req? | Meaning |
 |---|---|---|---|
-| `before_seq` | `u64` | one of | Delete every record with `$seq < before_seq` (a snapshot / compaction by seq). |
+| `before_seq` | `u64` | one of | Delete every record with `$seq < before_seq` (a snapshot / drop-prefix by seq — logical removal, not physical compaction). |
 | `match` | predicate | one of | A tag predicate: `["tag","Eq","X"]` exact match, or `["tag","Glob","X*"]` **trailing-prefix only** (a literal prefix followed by a single `*`). A bare string is shorthand for `Eq`: `"match": "tenant42:job-9001"` == `["tag","Eq","tenant42:job-9001"]`. |
 
 <Callout type="info">
@@ -73,7 +75,7 @@ curl -X POST localhost:4000/v0/boxes/jobs/delete \
 
 | Body | Effect |
 |---|---|
-| `before_seq` only | Delete every record with `$seq < before_seq` (a snapshot / compaction by seq). |
+| `before_seq` only | Delete every record with `$seq < before_seq` (a snapshot / drop-prefix by seq). |
 | `match` only | Delete every **existing** record whose tag matches, bounded by the current head at call time. Point-in-time: future records with that tag are **not** deleted (e.g. revoke a kicked user's chat history with `match ["tag","Glob","chat-42:*"]`). |
 | `match` + `before_seq` | Delete records with `$seq < before_seq` **AND** a matching tag (e.g. publish v2 of a message then delete its prior versions, keeping the new one: `match ["tag","Eq","msg-123"]`, `before_seq = <seq of v2>`). |
 

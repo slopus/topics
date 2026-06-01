@@ -306,7 +306,7 @@ SIGKILL.
 | 1 000 000 (1e6) | ~1.40 s | **~0.68–0.94 s** | 1 000 000 (no loss) |
 
 This is the **worst case**: a hard kill with no snapshot, so recovery replays
-*every* frame from WAL offset zero. ~1e6 records replay (CRC-validate + decode +
+*every* frame from WAL offset zero. ~1e6 records replay (XXH3-64-validate + decode +
 re-index + tag-index rebuild) in well under a second (~1.1–1.5 M frames/s). With
 a graceful shutdown (or the periodic snapshotter), recovery starts from the
 checkpoint and replays only the un-checkpointed tail, so real-world time-to-ready
@@ -336,7 +336,7 @@ plus the real SIGKILL subprocess tests.
 | **Durability:** acked `durable:true` write survives SIGKILL at any instant | `crash_recovery::sigkill_durable_writes_survive_with_identical_state` (real `kill -9` of the binary; the write ack is fsync-gated so a 2xx ⇒ on disk) |
 | **Recovery correctness:** post-restart head/earliest/count/config/routers/delete match pre-crash | same test asserts each field for durable boxes + deleted-stays-gone + cap-floor-tombstones; `integration_durability::write_snapshot_more_writes_restart_matches` |
 | **Crash consistency (clean prefix):** SIGKILL during a non-durable burst ⇒ recovered tail is a contiguous prefix, no torn frame misread | `crash_recovery::sigkill_during_nondurable_burst_recovers_clean_prefix` |
-| **Torn tail truncated, not misread:** a corrupted/oversized last frame on disk ⇒ clean recovery, no panic, no bogus record, WAL writable again | `crash_recovery::torn_tail_on_subprocess_wal_recovers_clean`; `integration_durability::torn_tail_is_truncated_not_read_as_data`; WAL-reader unit tests (CRC + length-overrun + trailing-zeros) |
+| **Torn tail truncated, not misread:** a corrupted/oversized last frame on disk ⇒ clean recovery, no panic, no bogus record, WAL writable again | `crash_recovery::torn_tail_on_subprocess_wal_recovers_clean`; `integration_durability::torn_tail_is_truncated_not_read_as_data`; WAL-reader unit tests (XXH3-64 checksum + length-overrun + trailing-zeros) |
 | **No silent loss across restart:** cursor below recovered `evict_floor` ⇒ tombstone; purely-deleted gap ⇒ silent | `integration_durability::tombstone_vs_silent_gap_survive_restart` |
 
 ## 6. ROADMAP Phase-4 acceptance-criteria coverage
@@ -865,15 +865,16 @@ are reported here.
 
 ## 2. Per-durability-class write-ack + throughput (the headline table)
 
-Three commit classes (API §0.10): `memory` (RAM-only, no WAL), `disk` (WAL,
-group-committed, no per-write fsync), `fsync` (fsync-gated ack). Single-write ack
-and throughput were measured against the live release server.
+Three commit classes (API §0.10): `memory` (same group-committed WAL write path as
+`disk` but best-effort — not fsync-gated and no durability guarantee; the lowest-latency
+class), `disk` (WAL, group-committed, no per-write fsync), `fsync` (fsync-gated ack).
+Single-write ack and throughput were measured against the live release server.
 
 **Single-record write-ack latency (Rust client, `streams-probe`, n=5000):**
 
 | Class | p50 | p99 | p999 | max | Throughput (16 writers × batch 100) |
 |---|---:|---:|---:|---:|---:|
-| memory | ≤ disk (skips WAL append) | — | — | — | ~614 K rec/s |
+| memory | ≤ disk (not fsync-gated; best-effort) | — | — | — | ~614 K rec/s |
 | disk (`durable:false`) | **0.062 ms** | 0.102 ms | 0.148 ms | 0.265 ms | **566 K rec/s** |
 | fsync (`durable:true`) | **5.21 ms** | 6.76 ms | 10.48 ms | 13.14 ms | **143 K rec/s** |
 

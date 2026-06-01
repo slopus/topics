@@ -116,17 +116,21 @@ Lock in correctness and record initial performance numbers against the phase-2 s
 Add persistence and scale underneath the unchanged API, staying a single restartable process.
 
 **Scope**
-- WAL: framing (§ARCHITECTURE 2.1), single-writer task, adaptive group commit, per-box durable
-  fsync, preallocation, rotation.
+- WAL: framing (§ARCHITECTURE 2.1), **sharded writers** (`STREAMS_WAL_SHARDS`, default
+  `min(num_cpus, 8)`; each shard an ordered writer with its own file set), adaptive group commit,
+  per-box durable fsync, preallocation, rotation; shard-count-agnostic recovery.
 - Compactor: WAL→segment checkpointing; segment `.data`/`.idx`; mmap serving of sealed segments,
   buffered `pread` of the active one, WAL-direct serving of the newest records.
 - Segment-granular lazy cap/TTL eviction + persisted `EvictWatermark` (advances `evict_floor`).
-- Async physical reclaim of deleted records (background reclaimer, ARCHITECTURE §3.5): whole-segment
-  drop when fully deleted, partial-segment **rewrite** to reclaim surviving records; `Delete` control
-  frames replay deterministically (idempotent reclaim across crashes).
+- Async deletion (background, ARCHITECTURE §3.5), **no compaction / no per-record reclaim**: a
+  delete flips an **in-place delete-flag byte** in segment files (the WAL stays append-only — a
+  `Delete` frame is appended, never mutated); a **whole segment is dropped** only when a delete
+  clears it entirely. There is no partial-segment rewrite and no general reclaim of marked records.
+  `Delete` control frames replay deterministically (idempotent across crashes).
 - Metadata store: WAL control frames + atomic bincode snapshots; interned `box_id`s.
-- Restart recovery: snapshot load → segment `.idx` bulk load + tag-index rebuild → WAL replay from
-  last checkpoint (incl. `Delete` frames) → CRC torn-tail truncation → idempotent segment reclaim.
+- Restart recovery: snapshot load → segment `.idx` bulk load + tag-index rebuild → WAL replay
+  (**all shards by box_id**) from last checkpoint (incl. `Delete` frames) → **XXH3-64** torn-tail
+  truncation → idempotent segment reclaim.
 - Full priority scheduler: banded DWRR + aging; governor-driven elastic throttling
   (coalesce → widen group commit → defer low priority → `429`).
 - Slow-consumer isolation for SSE (bounded channels, lagged-degrade-to-tombstone).
@@ -135,16 +139,17 @@ Add persistence and scale underneath the unchanged API, staying a single restart
 - [ ] **Durability:** for `durable: true` boxes, an acked write survives a hard kill (`SIGKILL`) at
       any instant and is present after restart; no acked durable write is ever lost.
 - [ ] **Crash consistency:** a kill during a write leaves the WAL recoverable — recovery truncates the
-      torn tail (CRC/length), and no partial frame is ever interpreted as data.
+      torn tail (XXH3-64 checksum / length), and no partial frame is ever interpreted as data.
 - [ ] **Recovery correctness:** after restart, `head_seq`/`earliest_seq`/`evict_floor`/`count`,
       config, routers, and the set of deleted records match the pre-crash state (modulo un-fsynced
       non-durable tail); previously-deleted records stay gone after replay of their `Delete` frames.
 - [ ] **No silent loss across restart:** a consumer whose cursor fell below the recovered
       `evict_floor` receives a tombstone, never silent skip; a cursor in a purely-deleted gap stays
       silent.
-- [ ] **Eviction is segment-granular; deletion reclaim is async:** physical occupancy may transiently
-      exceed cap by ≤ one segment and may transiently retain not-yet-reclaimed deleted records;
-      `earliest_seq`/`count`/`bytes` always report the live logical floor regardless.
+- [ ] **Eviction is segment-granular; deletion is no-compaction / no-reclaim:** physical occupancy
+      may transiently exceed cap by ≤ one segment, and deleted records **stay on disk just marked**
+      (only whole cleared segments are dropped — no per-record reclaim); `earliest_seq`/`count`/
+      `bytes` always report the live logical floor regardless.
 - [ ] **Latency target met:** non-durable / `eventual` SSE delivery p99 ≤ 5 ms at a defined sustained
       load (see benchmark plan); durable write-ack p99 within budget with adaptive group commit.
 - [ ] **Elastic throttling:** under induced CPU pressure, high-priority boxes keep their latency while
@@ -189,15 +194,23 @@ recovery costs.
 - **Cursor epoch encoding:** recommended yes — include an opaque `epoch` so delete+recreate is
   detected exactly rather than heuristically (DESIGN §5.5). Whether to expose the epoch in
   `next_from_seq`/SSE `id:` or keep it server-side is an implementation detail to settle in phase 4.
-- **Delete un-delete:** **Resolved — deletion is permanent by design.** Records are physically
-  reclaimed (asynchronously), so there is no un-delete in `/v0` and none is planned; to restore a
-  value, write a new record. (This supersedes the earlier read-time-filter model, where removal was
-  a reversible filter.)
-- **Per-message explicit ack / lease / heartbeat (BullMQ stalled-job mode):** deliberately out of the
-  core; a planned higher-level mode layered on tags + a side in-flight box. Decide its API shape
-  (and capped-redelivery → dead-letter policy) after the core ships.
-- **Compacted box type (Kafka log compaction, last-record-per-key):** noted as a possible future box
-  mode; not in `/v0`.
+- **Delete un-delete:** **Resolved — deletion is permanent by design.** Deleted records are
+  logically gone instantly but **stay on disk just marked** — there is no compaction and no
+  per-record reclaim (only a whole cleared segment is dropped) — and there is no un-delete in `/v0`;
+  to restore a value, write a new record. (This supersedes the earlier read-time-filter model, where
+  removal was a reversible filter.)
+- **Per-message explicit ack / lease / heartbeat (BullMQ stalled-job mode):** **Resolved —
+  *implemented* as the `queue` box type** (`type:"queue"`): claim/ack/nack/extend + the `/work`
+  auto-claim SSE stream, visibility-timeout leases, redelivery, capped-redelivery → dead-letter, and
+  optional `lease_id` fencing (validate-when-supplied). See API §10 / DESIGN §10.
+- **Compacted box type (Kafka log compaction, last-record-per-key):** **Out of scope** — LSM / keyed
+  compaction is not implemented and not planned. The last-record-per-key pattern is built at the
+  application level with a tag + a point-in-time `match` delete of prior versions.
+- **Durable consumer groups as a server primitive:** **Out of scope** — they are an application-level
+  pattern (a box per consumer + delete-as-ack), not a built-in server feature.
+- **Multi-server / replication / HA / single-writer fencing, native TLS, hard multi-tenancy:**
+  **Out of scope** — streams is single-server (TLS terminates at a reverse proxy; tenancy is per-key
+  scopes + box-name-prefix allowlists).
 - **Auto-priority constants** (`AUTO_MAX=500`, `HALF_LIFE_MS=30000`) and **band weights/boundaries**
   are starting defaults; phase 3/4 benchmarks may retune them. The formula and knobs are stable; the
   numbers are tunable.

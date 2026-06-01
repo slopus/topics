@@ -91,7 +91,9 @@ and immutable.
 | `$ts` | `i64` (ms) | Server commit time. |
 | `$node` | `string` | Origin node id supplied by the writer (loop prevention). Omitted when absent. |
 | `$tag` | `string` | Tag supplied by the writer (deletion-match key). Omitted when absent. |
-| `$type` | `string` | `"record"` (default, omitted on plain records) or `"tombstone"`. Used in SSE framing. |
+_(SSE distinguishes payload kinds by the **event name** — `event: record`, `event: tombstone`,
+`event: caught-up`, … — **not** by a `$type` field. Record payloads carry the keys above plus
+`data`/`meta`; there is no `$type` key on the wire.)_
 
 `$node`, `$tag`, and `meta` are **omitted** from a response object when absent — absence,
 not `null`. `data` is always present (and may be JSON `null`).
@@ -213,8 +215,8 @@ observability lives in the response, not a side channel:
 | Field | When present | Meaning |
 |---|---|---|
 | `server_total_ms` | always | Total server-side handling time in ms. |
-| `wal_append_ms` | write paths | Time to append the WAL frame; `0` for `memory`-class boxes. |
-| `fsync_ms` | durable write paths | Time parked on the group fsync; `0` for `memory`/`disk` classes. |
+| `wal_append_ms` | write paths | Time to enqueue the WAL frame. A `memory` box still enters the WAL write path like `disk`, so this is **not** always `0` for `memory`. (Only the pure in-memory test engine, with no WAL, reports `0`.) |
+| `fsync_ms` | durable write paths | Time parked on the group fsync; `0` for `memory`/`disk` classes (neither is fsync-gated). |
 | `records_scanned` | read paths | Records examined (including filtered ones). |
 | `throttle_wait_ms` | under pressure | Time parked behind the elastic scheduler. |
 | `cold_segments_read` | cold reads | Cold-tier segments touched to satisfy the read. |

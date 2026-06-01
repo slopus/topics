@@ -1,6 +1,6 @@
 ---
 title: Permanent Deletion
-description: How a delete removes records that exist right now — permanent, immediate, async-reclaimed, silent, and point-in-time — and why it advances earliest_seq but never evict_floor.
+description: How a delete removes records that exist right now — permanent, immediate, async (no compaction / no reclaim), silent, and point-in-time — and why it advances earliest_seq but never evict_floor.
 ---
 
 import { Callout, Tabs } from 'nextra/components'
@@ -8,7 +8,8 @@ import { Callout, Tabs } from 'nextra/components'
 # Permanent Deletion
 
 A **delete** removes records that exist in a box **right now**, by `seq` range and/or by
-tag match. It is permanent, effective immediately on every reader, asynchronously reclaimed,
+tag match. It is permanent, effective immediately on every reader, asynchronous (with **no
+compaction / no reclaim** — deleted records stay on disk, just marked),
 **silent** (never a tombstone), and **point-in-time** (a future record with the same tag is
 never touched). This page specifies all five properties, the request grammar, the three
 patterns it enables, the per-box tag index that makes it cheap, and the one watermark
@@ -29,11 +30,14 @@ standing filter that keeps matching future writes. Five properties define it:
   state (`count` / `bytes`), and live SSE. A reader's cursor simply advances past the
   deleted seqs. A lagging consumer cannot "miss a deletion," because the record is gone for
   every reader simultaneously.
-- **Asynchronous (lazy physical reclaim).** Records are *logically* gone instantly — the
-  payload and tag are freed and `count` / `bytes` drop immediately. Physical disk/memory is
-  reclaimed by a background reclaimer that pops slots from the **front** of the log as the
-  prefix becomes fully dead, segment-granular. Logical correctness never waits on the
-  reclaimer.
+- **Asynchronous, no compaction / no reclaim.** Records are *logically* gone instantly — the
+  payload and tag are freed and `count` / `bytes` drop immediately (the work runs off the call
+  path) — but a deleted record **stays on disk, just marked**: there is no compaction and no
+  per-record disk reclaim. In memory, front-of-log slots pop as the prefix becomes fully dead;
+  on disk a record sealed into a segment has its **delete-flag byte flipped in place** (the WAL
+  stays append-only — a `Delete` frame is appended, never mutated). The only physical space
+  released is a **whole segment dropped** when a delete clears it entirely. Logical correctness
+  never waits on any of this.
 - **Silent.** A delete **never** produces a [tombstone](/guarantees/tombstones). Tombstones
   are reserved for **involuntary** capacity loss (cap eviction, TTL expiry). Reading across
   a purely-deleted gap returns `tombstone: null`.
@@ -97,9 +101,10 @@ These three shapes cover the practical uses of point-in-time deletion.
 <Tabs items={['Snapshot / compaction', 'Message-update', 'Prefix revoke']}>
   <Tabs.Tab>
 
-**Snapshot / compaction by seq.** You have read and persisted everything below some seq
-elsewhere; reclaim it. `before_seq` only is an O(1) marker delete — it never touches the
-tag index.
+**Snapshot / drop-prefix by seq.** You have read and persisted everything below some seq
+elsewhere; drop it from the box. `before_seq` only is an O(1) marker delete — it never touches
+the tag index. (This is logical removal, not physical compaction — see the no-reclaim note
+above; disk space is only released when a whole segment is cleared.)
 
 ```bash
 # Drop everything the durable consumer has already checkpointed past.

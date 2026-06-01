@@ -7,7 +7,7 @@ import { Callout, FileTree } from 'nextra/components'
 
 # Storage & Tiering
 
-streams persists everything under one data directory: a process-global **write-ahead log**,
+streams persists everything under one data directory: a **sharded write-ahead log**,
 periodic **metadata snapshots**, and per-box **segment files** that are the long-term store and
 read source. Segments **seal** (become immutable) after a size, count, or age trigger. An
 optional **cold tier** relocates older sealed segments to a second directory — **disabled by
@@ -32,10 +32,13 @@ top-level subtrees: `meta/`, `wal/`, and `boxes/`.
       <FileTree.File name="snapshot.0007.bin" />
       <FileTree.File name="snapshot.0006.bin" />
     </FileTree.Folder>
-    <FileTree.Folder name="wal" defaultOpen>
-      <FileTree.File name="CURRENT" />
-      <FileTree.File name="wal-0000000000001024.log" />
-      <FileTree.File name="wal-0000000000004096.log" />
+    <FileTree.Folder name="wal (sharded; STREAMS_WAL_SHARDS, default min(num_cpus,8))" defaultOpen>
+      <FileTree.Folder name="shard-00 (one dir per shard when shards>1; shards==1 ⇒ flat wal/)">
+        <FileTree.File name="CURRENT" />
+        <FileTree.File name="wal-0000000000001024.log" />
+        <FileTree.File name="wal-0000000000004096.log" />
+      </FileTree.Folder>
+      <FileTree.Folder name="shard-01" />
     </FileTree.Folder>
     <FileTree.Folder name="boxes" defaultOpen>
       <FileTree.Folder name="0000000A" defaultOpen>
@@ -49,11 +52,15 @@ top-level subtrees: `meta/`, `wal/`, and `boxes/`.
   </FileTree.Folder>
 </FileTree>
 
-- **`wal/`** — the WAL is **process-global**: one ordered, append-only, mixed-box stream. A
-  single sequential disk resource maps to a single ordered append stream, which makes group
-  commit trivial. Files are named `wal-<first-frame-seq>.log` (zero-padded); the
-  highest-numbered is active, and the tiny `CURRENT` file (atomically renamed) names it. Files
-  are **64 MiB preallocated** so appends never extend the inode.
+- **`wal/`** — the WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`): N
+  independent ordered, append-only, mixed-box streams, each a single sequential stream (so group
+  commit stays trivial per shard) and each box mapped to exactly one shard by a stable hash of
+  its id. When shards > 1 each shard is its own `wal/shard-NN/` directory; `STREAMS_WAL_SHARDS=1`
+  is the flat `wal/` layout. Within a shard, files are named `wal-<first-frame-seq>.log`
+  (zero-padded); the highest-numbered is active, and the tiny `CURRENT` file (atomically renamed)
+  names it. Files are **64 MiB preallocated** so appends never extend the inode. Recovery is
+  shard-count-agnostic (it replays all shards by `box_id`), so the shard count may change between
+  restarts.
 - **`meta/`** — atomic metadata snapshots (`snapshot.<n>.bin`): the box name↔id mapping, per-box
   config, the dual watermarks (`evict_floor`, `earliest_seq`), `delete_below`, routers, epochs,
   and the WAL replay floor. The previous snapshot is kept until the next is durably written.
@@ -186,6 +193,7 @@ The complete set of storage-related environment variables. All are also document
 | Env var | Default | Meaning |
 |---|---|---|
 | `STREAMS_DATA_DIR` | `./streams-data` | Hot tier + WAL + meta root. |
+| `STREAMS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread / file set / group commit). Each box maps to one shard; recovery is shard-count-agnostic. `1` = the flat single-writer layout. |
 | `STREAMS_COLD_DIR` | *(unset)* | Cold tier root. **Unset ⇒ tiering disabled (all hot).** |
 | `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal a segment after this many records. |
 | `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Seal after this many `.data` bytes. |
