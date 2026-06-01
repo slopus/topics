@@ -1,0 +1,5 @@
+[toolchain]
+# Pin the project toolchain to match the development machine (rustc 1.96.0).
+# rustup honors this for cargo build/test/clippy/fmt; CI + the Dockerfile pin the
+# same version. Bump in lockstep with the local toolchain.
+channel = "1.96.0"

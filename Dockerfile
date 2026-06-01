@@ -6,12 +6,12 @@
 # We build ONLY the server (`-p streams`), not the `streams-probe` test/bench
 # CLI in the `probe` workspace member, to keep the image lean.
 #
-# The pinned `rust:1-bookworm` toolchain produces a glibc-linked binary that
+# The pinned `rust:1.96-bookworm` toolchain (matches rust-toolchain.toml) produces a glibc-linked binary that
 # runs as-is on `debian:bookworm-slim` (same libc), so no static-musl dance is
 # needed. `reqwest` here is rustls-only (no native OpenSSL), so the build needs
 # no extra system libraries.
 # ---------------------------------------------------------------------------
-FROM rust:1-bookworm AS builder
+FROM rust:1.96-bookworm AS builder
 
 WORKDIR /build
 
