@@ -345,6 +345,41 @@ commands above work verbatim.
   behind a **TLS-terminating reverse proxy** (or bind loopback). Native TLS is **planned** —
   see `docs/API.md` §0.2 / §0.11.
 
+### Running the tests
+
+```bash
+cargo test                              # default suite
+cargo test --features test-fs           # + the fault-injection corpus (fake-disk crash sweeps)
+cargo test --features test-fs,failpoints # + failpoint-driven faults
+```
+
+The default test run is the **fast** loop. Two things keep it to a few minutes
+instead of ~30:
+
+- **Tiered crash-point sweeps.** The crash/fault corpus replays a small durable
+  workload and crashes after each mutating filesystem call, then recovers and
+  asserts the oracle. By default each sweep probes a **bounded, deterministic
+  sample** of crash points (always including both boundaries — crash-before-any-write
+  and crash-after-the-last-write — plus an evenly-spread interior set), which
+  exercises every boundary on every run. Timing-dependent assertions (heartbeat
+  cadence, TTL/lease expiry) are driven by an injected `TestClock` or a short
+  configurable interval, so there are no real-time waits for correctness.
+- **Opt-in exhaustive matrix.** To replay the **full** `0..=M` crash matrix for
+  every boundary, set `STREAMS_TEST_EXHAUSTIVE=1`:
+
+  ```bash
+  STREAMS_TEST_EXHAUSTIVE=1 cargo test --features test-fs,failpoints
+  ```
+
+  This runs nightly (and on demand) in CI — see `.github/workflows/ci.yml`'s
+  `exhaustive-crash-matrix` job — so full crash-consistency coverage is always
+  exercised even though it is not on the per-PR critical path.
+  `STREAMS_TEST_SAMPLE=N` is a middle ground: a wider but still bounded sample.
+
+Subprocess crash-recovery tests spawn the real binary on an **ephemeral port**
+(`STREAMS_PORT=0`; the child reports its OS-assigned port via `STREAMS_PORT_FILE`),
+so the suite runs at full `--test-threads` with no port-bind races.
+
 ---
 
 ## Use-case recipes

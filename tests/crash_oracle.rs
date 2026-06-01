@@ -1029,9 +1029,12 @@ fn sweep_durable_append_crash_points_oracle() {
 
     // Cap the sweep so the test stays fast but still covers every interesting
     // boundary of the small workload (each durable append blocks on a real group
-    // fsync, so the cap bounds total wall time).
+    // fsync, so the cap bounds total wall time). The set of probed crash points is
+    // tiered (streams::testutil::crash_points): a bounded deterministic sample by
+    // DEFAULT (both endpoints + an interior spread), the full `0..=cap` matrix when
+    // `STREAMS_TEST_EXHAUSTIVE=1` (nightly CI). No boundary is ever dropped.
     let cap = total_writes.min(14);
-    for crash_point in 0..=cap {
+    for crash_point in streams::testutil::crash_points(cap) {
         // A FaultFs that drives a FakeDisk.crash() after exactly `crash_point`
         // write_at calls — the harness-level crash injector at a precise FS index.
         let disk = FakeDisk::with_seed(crash_point);

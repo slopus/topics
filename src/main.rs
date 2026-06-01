@@ -179,10 +179,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
+    // The *actual* bound address. When `STREAMS_PORT=0` (ephemeral) the OS picks a
+    // free port, so this differs from `config.bind_addr`; everything below logs and
+    // reports the resolved address.
+    let local_addr = listener.local_addr()?;
     info!(
-        addr = %config.bind_addr,
+        addr = %local_addr,
         "streams listening (HTTP/1.1 keep-alive + HTTP/2 cleartext prior-knowledge)"
     );
+
+    // Test/automation hook (`STREAMS_PORT_FILE`): once the listener is bound, write
+    // the resolved `host:port` to this file ATOMICALLY (write a sibling temp file,
+    // then rename). This lets a parent process spawn the server with `STREAMS_PORT=0`
+    // and learn the OS-assigned port WITHOUT the reserve-a-port-then-release race
+    // (the child holds the bound socket the whole time, so nothing else can steal
+    // the port between reservation and bind). No-op when unset, so production is
+    // unaffected. The atomic rename means a reader never observes a partial address.
+    if let Ok(path) = std::env::var("STREAMS_PORT_FILE") {
+        if !path.trim().is_empty() {
+            let tmp = format!("{path}.tmp.{}", std::process::id());
+            if let Err(e) = std::fs::write(&tmp, local_addr.to_string())
+                .and_then(|()| std::fs::rename(&tmp, &path))
+            {
+                error!(error = %e, path = %path, "failed to write STREAMS_PORT_FILE");
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e.into());
+            }
+        }
+    }
 
     // Dual-protocol serve loop: auto-detects HTTP/1.1 vs HTTP/2-prior-knowledge
     // per connection (hyper-util auto::Builder) over the same listener, with the

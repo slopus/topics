@@ -294,7 +294,10 @@ fn f_sweep_durable_append() {
         TornDamage::ZeroSector,
         TornDamage::Garble,
     ];
-    for crash_point in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // of crash points by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE. All
+    // four torn-damage modes always run in full at each sampled crash point.
+    for crash_point in streams::testutil::crash_points(cap) {
         for (di, &damage) in damages.iter().enumerate() {
             let disk = FakeDisk::with_seed(crash_point * 7 + di as u64 + 1);
             let trip = CrashAfterAny::new(disk.clone(), crash_point, damage);

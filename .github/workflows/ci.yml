@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly full exhaustive crash matrix (the `exhaustive-crash-matrix` job).
+  schedule:
+    - cron: "0 3 * * *"
+  # Allow running the exhaustive matrix on demand from the Actions tab.
+  workflow_dispatch: {}
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -34,8 +39,51 @@ jobs:
       - name: Build (workspace)
         run: cargo build --workspace --all-targets
 
-      - name: Test (workspace)
+      # Default PR/push run: the crash-point sweeps probe a BOUNDED, deterministic
+      # sample of crash points per boundary (streams::testutil::crash_points) and
+      # the SSE heartbeat cadence is asserted on a sub-second interval, so the
+      # whole suite finishes in a few minutes. The full exhaustive crash matrix is
+      # the separate `exhaustive-crash-matrix` job below.
+      - name: Test (workspace, default)
         run: cargo test --workspace
+
+      - name: Test (test-fs)
+        run: cargo test --features test-fs
+
+      - name: Test (test-fs,failpoints)
+        run: cargo test --features test-fs,failpoints
 
       - name: Clippy (workspace)
         run: cargo clippy --workspace --all-targets
+
+  exhaustive-crash-matrix:
+    name: exhaustive crash matrix (full sweep)
+    runs-on: ubuntu-latest
+    # Opt-in: runs on the nightly schedule and on manual dispatch, NOT on every
+    # PR/push (it replays every crash point of every boundary across all feature
+    # combos and takes much longer). This is where full crash-consistency coverage
+    # is exercised; the PR job runs the bounded sample.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      # Turn every tiered crash-point sweep into its FULL `0..=M` matrix
+      # (streams::testutil::crash_points / exhaustive_enabled).
+      STREAMS_TEST_EXHAUSTIVE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+
+      # Run the full crash matrix under each feature combo the sweeps compile in.
+      - name: Exhaustive test (default)
+        run: cargo test --workspace
+
+      - name: Exhaustive test (test-fs)
+        run: cargo test --features test-fs
+
+      - name: Exhaustive test (test-fs,failpoints)
+        run: cargo test --features test-fs,failpoints

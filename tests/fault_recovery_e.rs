@@ -623,7 +623,9 @@ fn f_rec_delete_before_append_order() {
     // append's fsync. At EVERY crash point the recovered state must be a dense
     // prefix of the model's live set with no fabrication and no gap.
     let cap = total.min(14);
-    for crash_point in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xDE1E7E_u64.wrapping_mul(crash_point + 1));
         let trip = CrashAfter::new(disk.clone(), FaultOp::WriteAt, crash_point);
         let mut model = RefModel::default();

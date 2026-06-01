@@ -878,7 +878,9 @@ fn sweep_durable_claim_ack_crash_points_no_loss() {
     // the suite budget.
     let cap = total_writes.min(7);
 
-    for crash_point in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(crash_point);
         let trip = CrashAfter::new(disk.clone(), crash_point);
         let acked_seqs: Vec<u64>;

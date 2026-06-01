@@ -38,19 +38,27 @@ use serde_json::{json, Value};
 // Subprocess + HTTP helpers
 // ---------------------------------------------------------------------------
 
-/// Reserve an ephemeral TCP port, then release it for the child to rebind.
-fn pick_port() -> u16 {
-    let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+/// A spawned server: the child process plus the `base_url` it actually bound.
+struct Server {
+    child: std::process::Child,
+    base: String,
 }
 
-/// Spawn the `streams` binary on `port` with `data_dir`. Logs silenced.
-fn spawn_server(port: u16, data_dir: &std::path::Path) -> std::process::Child {
-    std::process::Command::new(env!("CARGO_BIN_EXE_streams"))
+/// Spawn the `streams` binary on an EPHEMERAL port (`STREAMS_PORT=0`) with
+/// `data_dir`, then read the OS-assigned `host:port` the child wrote to its
+/// `STREAMS_PORT_FILE`. This is robust under parallel spawn: the child holds the
+/// bound socket continuously, so unlike a reserve-then-release scheme nothing can
+/// steal the port between reservation and bind. Logs silenced.
+///
+/// `port_file` is a caller-owned path (kept alive for the child's lifetime); the
+/// returned [`Server`] carries the resolved base URL.
+fn spawn_server(data_dir: &std::path::Path, port_file: &std::path::Path) -> Server {
+    // Start clean so a stale file from a prior boot on the same path is never read.
+    let _ = std::fs::remove_file(port_file);
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_streams"))
         .env("STREAMS_HOST", "127.0.0.1")
-        .env("STREAMS_PORT", port.to_string())
+        .env("STREAMS_PORT", "0") // OS-assigned ephemeral port (no bind race).
+        .env("STREAMS_PORT_FILE", port_file)
         .env("STREAMS_DATA_DIR", data_dir)
         // Pin a single WAL shard so the on-disk layout is the flat
         // `wal/wal-<idx>.log` these tests inspect/poke directly (the default is
@@ -60,7 +68,27 @@ fn spawn_server(port: u16, data_dir: &std::path::Path) -> std::process::Child {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("spawn streams binary")
+        .expect("spawn streams binary");
+    let base = read_port_file(port_file, Duration::from_secs(10));
+    Server { child, base }
+}
+
+/// Poll `port_file` until the child has written its resolved `host:port`, then
+/// return the `http://host:port` base URL. Panics after `deadline`.
+fn read_port_file(port_file: &std::path::Path, deadline: Duration) -> String {
+    let start = Instant::now();
+    loop {
+        if let Ok(s) = std::fs::read_to_string(port_file) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return format!("http://{s}");
+            }
+        }
+        if start.elapsed() > deadline {
+            panic!("server did not report its bound port within {deadline:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Block until `GET /v0/health` answers 200, or panic after `deadline`.
@@ -130,12 +158,13 @@ fn get_json(c: &reqwest::blocking::Client, url: String) -> Value {
 #[test]
 fn sigkill_durable_writes_survive_with_identical_state() {
     let dir = tempfile::tempdir().unwrap();
-    let port = pick_port();
-    let base = format!("http://127.0.0.1:{port}");
+    let pf = tempfile::NamedTempFile::new().unwrap();
     let c = client();
 
     // --- Boot #1: build state, all durable, every write acked (= on disk). ---
-    let mut child = spawn_server(port, dir.path());
+    let server = spawn_server(dir.path(), pf.path());
+    let mut child = server.child;
+    let base = server.base;
     wait_healthy(&c, &base, Duration::from_secs(10));
 
     // A durable "jobs" box: 5 tagged/noded writes, then delete seq < 2.
@@ -234,8 +263,11 @@ fn sigkill_durable_writes_survive_with_identical_state() {
     sigkill(pid);
     let _ = child.wait();
 
-    // --- Boot #2 on the SAME data dir: state must match pre-crash exactly. ---
-    let mut child2 = spawn_server(port, dir.path());
+    // --- Boot #2 on the SAME data dir: state must match pre-crash exactly. The
+    // ephemeral port differs across boots, so rebind to the new base URL. ---
+    let server2 = spawn_server(dir.path(), pf.path());
+    let mut child2 = server2.child;
+    let base = server2.base;
     wait_ready(&c, &base, Duration::from_secs(10));
 
     let post_jobs = get_json(&c, format!("{base}/v0/boxes/jobs"));
@@ -359,11 +391,12 @@ fn sigkill_durable_writes_survive_with_identical_state() {
 #[test]
 fn sigkill_during_nondurable_burst_recovers_clean_prefix() {
     let dir = tempfile::tempdir().unwrap();
-    let port = pick_port();
-    let base = format!("http://127.0.0.1:{port}");
+    let pf = tempfile::NamedTempFile::new().unwrap();
     let c = client();
 
-    let mut child = spawn_server(port, dir.path());
+    let server = spawn_server(dir.path(), pf.path());
+    let mut child = server.child;
+    let base = server.base;
     wait_healthy(&c, &base, Duration::from_secs(10));
 
     // A NON-durable box (durable:false default) ⇒ writes are acked after the
@@ -403,8 +436,11 @@ fn sigkill_during_nondurable_burst_recovers_clean_prefix() {
         let _ = h.join();
     }
 
-    // --- Restart on the same dir: recovery must succeed and the tail be clean. ---
-    let mut child2 = spawn_server(port, dir.path());
+    // --- Restart on the same dir: recovery must succeed and the tail be clean.
+    // The ephemeral port differs across boots, so rebind to the new base URL. ---
+    let server2 = spawn_server(dir.path(), pf.path());
+    let mut child2 = server2.child;
+    let base = server2.base;
     // The fact it becomes ready at all proves recovery did not panic on a torn
     // tail (a misread partial frame would either panic or corrupt the index).
     // A generous deadline keeps this robust even when the test binaries run in
@@ -501,11 +537,12 @@ fn sigkill_during_nondurable_burst_recovers_clean_prefix() {
 #[test]
 fn torn_tail_on_subprocess_wal_recovers_clean() {
     let dir = tempfile::tempdir().unwrap();
-    let port = pick_port();
-    let base = format!("http://127.0.0.1:{port}");
+    let pf = tempfile::NamedTempFile::new().unwrap();
     let c = client();
 
-    let mut child = spawn_server(port, dir.path());
+    let server = spawn_server(dir.path(), pf.path());
+    let mut child = server.child;
+    let base = server.base;
     wait_healthy(&c, &base, Duration::from_secs(10));
 
     assert!(c
@@ -565,7 +602,10 @@ fn torn_tail_on_subprocess_wal_recovers_clean() {
     }
 
     // Restart: recovery truncates the torn tail and recovers exactly 3 frames.
-    let mut child2 = spawn_server(port, dir.path());
+    // The ephemeral port differs across boots, so rebind to the new base URL.
+    let server2 = spawn_server(dir.path(), pf.path());
+    let mut child2 = server2.child;
+    let base = server2.base;
     wait_ready(&c, &base, Duration::from_secs(10));
 
     let st = get_json(&c, format!("{base}/v0/boxes/t"));

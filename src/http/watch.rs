@@ -349,10 +349,13 @@ pub async fn create_watch(
     let now_ms = state.engine.clock.now_ms();
     state.sessions.gc_expired(now_ms);
 
-    // Clamp heartbeat into the documented bounds (API §7.2).
+    // Clamp heartbeat into the documented bounds (API §7.2). The lower bound is
+    // `MIN_HEARTBEAT_MS` (1000ms) in production; the test suite can lower it via
+    // `STREAMS_TEST_MIN_HEARTBEAT_MS` so the SSE cadence test asserts the
+    // keep-alive without a multi-second wall-clock wait (config::min_heartbeat_ms).
     req.heartbeat_ms = req
         .heartbeat_ms
-        .clamp(config::MIN_HEARTBEAT_MS, config::MAX_HEARTBEAT_MS);
+        .clamp(config::min_heartbeat_ms(), config::MAX_HEARTBEAT_MS);
 
     let lenient = super::query_bool(&params, "lenient", false);
     let states = state.engine.watch_box_states(&req.boxes, lenient)?;
@@ -494,11 +497,18 @@ pub async fn stream_watch(
 
     let engine = state.engine.clone();
     let shutdown = state.shutdown.clone();
+    // Capture the keep-alive cadence before `session` is moved into the stream.
+    let heartbeat_ms = session.req.heartbeat_ms;
     let stream = build_stream(engine, session, sse_guard, Some(stream_handle), shutdown);
 
+    // Drive the axum keep-alive `: hb` cadence from the session's (already
+    // clamped) `heartbeat_ms` rather than a hardcoded 15s, so a client that
+    // requests a faster heartbeat — and the SSE cadence test in particular —
+    // observes the comment on its chosen interval. Production sessions default to
+    // 15_000ms and are floored at 1000ms, so the wire behavior is unchanged.
     let sse = Sse::new(stream).keep_alive(
         KeepAlive::new()
-            .interval(Duration::from_secs(15))
+            .interval(Duration::from_millis(heartbeat_ms))
             .text(": hb"),
     );
 

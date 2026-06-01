@@ -15,4 +15,11 @@ pub mod limits;
 pub mod sched;
 pub mod serve;
 pub mod storage;
+
+/// Shared test utilities for the crash/fault integration corpus (tiered
+/// crash-point sweeps, …). Test-only: gated behind `cfg(test)` or the `test-fs`
+/// feature, so a release build never compiles it.
+#[cfg(any(test, feature = "test-fs"))]
+pub mod testutil;
+
 pub mod types;

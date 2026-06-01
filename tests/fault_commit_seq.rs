@@ -669,7 +669,9 @@ fn sweep_concurrent_durable_crash_points_oracle() {
     assert!(total_syncs >= 1, "workload issues at least one group fsync");
 
     let cap = total_syncs.min(4);
-    for crash_point in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xC0FFEE ^ crash_point);
         let trip = CrashAfter::new(disk.clone(), FaultOp::SyncData, crash_point);
         let acked = {

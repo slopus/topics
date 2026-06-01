@@ -388,7 +388,9 @@ fn sweep_durable_append_crash_points() {
     // durable `append` blocks on its own fsync, crashing mid-stream (via a fresh
     // disk re-run) at any point yields a dense prefix of whatever fsynced.
     let cap = total_writes.min(8);
-    for crash_after in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_after in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::new();
         let wal = Wal::open_at_with(disk.arc(), fast_cfg(&data_dir), 1, 0).unwrap();
         let w = wal.writer();

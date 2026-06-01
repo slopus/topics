@@ -54,6 +54,35 @@ pub const MAX_HEARTBEAT_MS: u64 = 60_000;
 /// EventSource reconnect backoff advertised via `retry:` (ms).
 pub const SSE_RETRY_MS: u64 = 2_000;
 
+/// The effective lower bound for a watch session's `heartbeat_ms`, applied when
+/// the request value is clamped (API §7.2).
+///
+/// In production this is always [`MIN_HEARTBEAT_MS`] (1000ms), so the wire
+/// contract is unchanged. The integration test suite sets
+/// `STREAMS_TEST_MIN_HEARTBEAT_MS` to a small value so the SSE heartbeat-cadence
+/// test can request a sub-second keep-alive interval and assert the cadence
+/// without a multi-second wall-clock wait.
+///
+/// The override is **lower-only and bounded**: the returned floor is always in
+/// `[1, MIN_HEARTBEAT_MS]`. It can never *raise* the floor above the production
+/// `MIN_HEARTBEAT_MS` (so it cannot widen the production heartbeat envelope), and
+/// because the result never exceeds `MIN_HEARTBEAT_MS < MAX_HEARTBEAT_MS` the
+/// `clamp(min_heartbeat_ms(), MAX_HEARTBEAT_MS)` at the call site can never be
+/// passed `min > max` (which would panic). It is itself floored at 1ms so the
+/// keep-alive timer can never be zero. A missing/unparsable/zero value leaves the
+/// production floor untouched.
+pub fn min_heartbeat_ms() -> u64 {
+    std::env::var("STREAMS_TEST_MIN_HEARTBEAT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        // Lower-only: an override may only *reduce* the floor (capped at the
+        // production `MIN_HEARTBEAT_MS`), and is itself floored at 1ms so the
+        // timer is never zero. This keeps `min <= MIN_HEARTBEAT_MS < MAX`, so the
+        // call-site `clamp(min, MAX_HEARTBEAT_MS)` can never panic.
+        .map(|v| v.clamp(1, MIN_HEARTBEAT_MS))
+        .unwrap_or(MIN_HEARTBEAT_MS)
+}
+
 /// Max router forwarding hops when `allow_cycle` is set (`$ttl_hops`).
 pub const MAX_ROUTER_HOPS: u8 = 8;
 
@@ -658,6 +687,39 @@ mod tests {
         assert!(cfg("0.0.0.0:4000", &["k"], false).startup_guard().is_ok());
         // Loopback with no keys ⇒ dev-friendly ok.
         assert!(cfg("127.0.0.1:4000", &[], false).startup_guard().is_ok());
+    }
+
+    #[test]
+    fn min_heartbeat_override_is_lower_only_and_bounded() {
+        // The production floor is returned when the override is unset. (We avoid
+        // mutating the shared process env here for an unset assertion since other
+        // tests may set it; the override-set cases below set+restore explicitly.)
+        let prev = std::env::var("STREAMS_TEST_MIN_HEARTBEAT_MS").ok();
+
+        // A small override lowers the floor (this is the test-suite use).
+        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "100");
+        assert_eq!(min_heartbeat_ms(), 100);
+
+        // 0 is floored to 1 (the timer can never be zero).
+        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "0");
+        assert_eq!(min_heartbeat_ms(), 1);
+
+        // An attempt to RAISE the floor above the production min is capped at
+        // MIN_HEARTBEAT_MS — the override is lower-only, so it can never widen the
+        // production envelope nor (crucially) exceed MAX_HEARTBEAT_MS and make the
+        // call-site clamp(min, MAX) panic.
+        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "999999");
+        assert_eq!(min_heartbeat_ms(), MIN_HEARTBEAT_MS);
+        assert!(min_heartbeat_ms() <= MAX_HEARTBEAT_MS, "never exceeds max");
+
+        // An unparsable value is ignored (production floor).
+        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "not-a-number");
+        assert_eq!(min_heartbeat_ms(), MIN_HEARTBEAT_MS);
+
+        match prev {
+            Some(v) => std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", v),
+            None => std::env::remove_var("STREAMS_TEST_MIN_HEARTBEAT_MS"),
+        }
     }
 
     #[test]

@@ -825,7 +825,9 @@ fn f_snap_checkpoint_flush_crash() {
     // interesting boundary of the snapshot flush while staying fast.
     let cap = snap_writes.max(1).min(8);
 
-    for crash_point in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0x5A0_0000 ^ crash_point);
         let mut model = RefModel::default();
 

@@ -613,9 +613,11 @@ fn f_sweep_snapshot_write() {
         "snapshot write issues several FS calls (M={total_calls})"
     );
 
-    // Sweep every crash point (bounded; the small workload + handful of FS calls
-    // keep this well under a second).
-    for crash_point in 0..=total_calls {
+    // Sweep crash points (bounded; the small workload + handful of FS calls keep
+    // this well under a second). Tiered (streams::testutil::crash_points): bounded
+    // deterministic sample by default, full `0..=total_calls` under
+    // STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(total_calls) {
         let disk = FakeDisk::new();
         let (id1, _) = build_preop(&disk);
 

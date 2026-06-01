@@ -482,27 +482,56 @@ fn stream_opens_with_retry_directive() {
 
 #[test]
 fn idle_stream_emits_heartbeat_comment() {
-    // The keep-alive cadence is 15s and fires only when the stream is idle, so
-    // this test waits on a bounded deadline for the `: hb` comment to appear on
-    // a drained (tailing) stream. Bounded + non-flaky: it returns as soon as the
-    // byte arrives, and can never hang.
+    // The keep-alive `: hb` comment fires only when the stream is idle. The
+    // server drives that cadence from the session's clamped `heartbeat_ms`, whose
+    // production floor is 1000ms; we lower the floor for the test process via
+    // `STREAMS_TEST_MIN_HEARTBEAT_MS` (config::min_heartbeat_ms) and request a
+    // sub-second heartbeat, so this asserts the *cadence* without the old ~15s
+    // wall-clock wait. Bounded + non-flaky: it returns as soon as the byte arrives
+    // and can never hang.
+    //
+    // The override is lower-only (capped at the production floor) and we RESTORE
+    // the prior value when done, via a drop guard so it is restored even if an
+    // assertion panics — so the process-global env mutation never leaks to other
+    // tests sharing this binary. A leak would in any case be harmless (other tests
+    // request the default 15_000ms heartbeat, far above any lowered floor), but
+    // restoring keeps the test hermetic.
+    struct EnvGuard(Option<String>);
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", v),
+                None => std::env::remove_var("STREAMS_TEST_MIN_HEARTBEAT_MS"),
+            }
+        }
+    }
+    let _env_guard = EnvGuard(std::env::var("STREAMS_TEST_MIN_HEARTBEAT_MS").ok());
+    std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "100");
+
     let h = Harness::start();
     write(&h, "quiet", json!({ "records": [{ "data": 1 }] }));
-    // Tail so the stream drains immediately to caught-up, then sits idle.
-    let (url, _) = create_watch(&h, json!({ "boxes": { "quiet": { "tail": true } } }));
+    // Tail so the stream drains immediately to caught-up, then sits idle, and ask
+    // for a 200ms keep-alive cadence (well above the 100ms floor we just set).
+    let (url, _) = create_watch(
+        &h,
+        json!({ "boxes": { "quiet": { "tail": true } }, "heartbeat_ms": 200 }),
+    );
 
+    // A 2s deadline still spans ~10 heartbeat intervals, so the comment must
+    // appear; if the cadence regressed back to 15s this would fail fast instead
+    // of silently passing after a long wait.
     let raw = raw_sse(
         &h,
         &url,
         "text/event-stream",
         None,
         Some(": hb"),
-        Duration::from_secs(20),
+        Duration::from_secs(2),
     );
     assert_eq!(raw.status, StatusCode::OK);
     assert!(
         raw.text.contains(": hb"),
-        "idle stream must emit a `: hb` heartbeat comment within 20s, got:\n{}",
+        "idle stream must emit a `: hb` heartbeat comment on its sub-second cadence, got:\n{}",
         raw.text
     );
 }

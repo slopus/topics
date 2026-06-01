@@ -791,9 +791,11 @@ fn disk_box_crash_loses_only_unfsynced_tail() {
     // Bounded sweep: cap the crash points well below the full call space so the
     // file stays fast + deterministic while still hitting the interesting
     // boundaries of the small workload (each iteration opens a fresh recovering
-    // engine + replays, so the cap bounds total wall time).
+    // engine + replays, so the cap bounds total wall time). The probed set is
+    // tiered (streams::testutil::crash_points): a bounded deterministic sample by
+    // DEFAULT, the full `0..=cap` matrix under `STREAMS_TEST_EXHAUSTIVE=1`.
     let cap = total_writes.min(10);
-    for crash_at in 0..=cap {
+    for crash_at in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xD15C_0000 ^ crash_at);
         let trip = CrashAfter::new(disk.clone(), crash_at);
         let mut model = RefModel::default();
@@ -917,8 +919,10 @@ fn fsync_box_sweep_acked_always_durable() {
         probe.seen.load(Ordering::SeqCst)
     };
 
+    // Tiered crash-point sweep (see the sibling sweep above): bounded
+    // deterministic sample by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
     let cap = total_writes.min(10);
-    for crash_at in 0..=cap {
+    for crash_at in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0x5EE0 ^ crash_at);
         let trip = CrashAfter::new(disk.clone(), crash_at);
         let mut model = RefModel::default();

@@ -470,7 +470,10 @@ fn f_sweep_segment_seal() {
         TornDamage::PrefixTruncate,
         TornDamage::Garble,
     ] {
-        for crash_point in 0..=total {
+        // Tiered sweep (streams::testutil::crash_points): bounded deterministic
+        // sample per damage mode by default, full `0..=total` under
+        // STREAMS_TEST_EXHAUSTIVE. The 3 torn-damage modes always run in full.
+        for crash_point in streams::testutil::crash_points(total) {
             // A FRESH disk whose pre-put durable image is empty; crash after exactly
             // `crash_point` FS mutating calls of the put.
             let disk = FakeDisk::with_seed(crash_point.wrapping_mul(0x9E37_79B9) ^ damage as u64);

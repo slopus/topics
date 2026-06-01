@@ -405,7 +405,9 @@ fn f_evict_floor_crash() {
     // workload became durable.
     let cap_points = total_writes.min(16);
     let mut fully_recovered = 0usize;
-    for crash_point in 0..=cap_points {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap_points` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(cap_points) {
         let disk = FakeDisk::with_seed(0xE71C_F100 ^ crash_point);
         let trip = CrashAfter::new(disk.clone(), FaultOp::WriteAt, crash_point);
         {

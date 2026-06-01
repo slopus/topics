@@ -458,50 +458,45 @@ fn diff_cap_eviction_emits_cap_tombstone() {
 }
 
 // ---------------------------------------------------------------------------
-// TTL-expiry tombstone (API §3.3, reason=ttl) over the live SystemClock.
+// TTL-expiry tombstone (API §3.3, reason=ttl) — driven by an injected TestClock.
 //
-// Non-flaky strategy: use a short real ttl_ms, write records, then POLL the box
-// state (bounded deadline) until expiry advances earliest_seq past them, then
-// assert the diff tombstone shape. We never assert on exact timing — only on the
-// eventual steady-state shape — so a slow CI box just polls a few more times.
+// Correctness without wall-clock: boot the harness on a `TestClock`
+// (`start_with_test_clock`) so the server's notion of "now" is advanced
+// deterministically past the TTL window — no real sleeps, no polling, no
+// flakiness. `enforce_retention` is lazy (runs on each write/state read), so
+// after advancing the clock we append seq 4 to trigger it, then read the box
+// state ONCE and assert the exact steady-state shape.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn diff_ttl_expiry_emits_ttl_tombstone() {
-    let h = Harness::start();
+    let h = Harness::start_with_test_clock();
     let ttl_ms = 150u64;
     let (status, _) = h.put("/v0/boxes/ttl", json!({ "ttl_ms": ttl_ms }));
     assert_eq!(status, StatusCode::CREATED);
 
-    // Write 3 records that will expire.
+    // Write 3 records (stamped at the clock's current time) that will expire.
     for i in 1..=3 {
         let (status, _) = h.post("/v0/boxes/ttl", json!({ "records": [{ "data": i }] }));
         assert_eq!(status, StatusCode::OK);
     }
 
-    // Let the TTL window pass for the first three records. enforce_retention is
-    // lazy (runs on each write/state read), so after the window we append seq 4
-    // to move the head, then poll box state until earliest_seq advances past the
-    // expired prefix. The poll is bounded by a generous deadline and asserts only
-    // the eventual steady state, so a slow CI box simply polls a few more times.
-    thread::sleep(Duration::from_millis(ttl_ms + 50));
+    // Advance the server's clock past the TTL window for those three records, then
+    // append seq 4 (stamped at the new time) to trigger the lazy retention sweep.
+    // Because the clock is injected, this is exact and instantaneous — the post
+    // and the state read below observe the post-advance retention with no race.
+    h.clock().advance((ttl_ms + 50) as i64);
     let (status, _) = h.post("/v0/boxes/ttl", json!({ "records": [{ "data": 4 }] }));
     assert_eq!(status, StatusCode::OK);
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let (_, state) = h.get("/v0/boxes/ttl");
-        if state["earliest_seq"].as_u64().unwrap() >= 4 {
-            assert_eq!(state["head_seq"], 4);
-            assert_eq!(state["count"], 1, "only seq 4 remains live");
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "TTL did not expire the prefix in time"
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
+    let (_, state) = h.get("/v0/boxes/ttl");
+    assert_eq!(
+        state["earliest_seq"].as_u64().unwrap(),
+        4,
+        "the expired prefix [1,3] is reclaimed; earliest advances to 4"
+    );
+    assert_eq!(state["head_seq"], 4);
+    assert_eq!(state["count"], 1, "only seq 4 remains live");
 
     // A consumer at from_seq=0 now crosses the TTL gap -> ttl tombstone.
     let (status, body) = h.post("/v0/boxes/ttl/diff", json!({ "from_seq": 0 }));

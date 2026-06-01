@@ -812,19 +812,24 @@ fn repeated_snapshots_keep_one_and_stay_consistent() {
 // and confirm an acked durable write is present after restart.
 // ===========================================================================
 
-/// Reserve an ephemeral TCP port (then release it for the child to rebind).
-fn pick_port() -> u16 {
-    let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+/// A spawned server: the child process plus the `base_url` it actually bound.
+struct Server {
+    child: std::process::Child,
+    base: String,
 }
 
-/// Spawn the `streams` binary on `port` with `data_dir`, return the child.
-fn spawn_server(port: u16, data_dir: &std::path::Path) -> std::process::Child {
-    std::process::Command::new(env!("CARGO_BIN_EXE_streams"))
+/// Spawn the `streams` binary on an EPHEMERAL port (`STREAMS_PORT=0`) with
+/// `data_dir`, then read the OS-assigned `host:port` the child wrote to its
+/// `STREAMS_PORT_FILE` and return it as the base URL. Robust under parallel
+/// spawn: the child holds the bound socket continuously, so (unlike a
+/// reserve-then-release scheme) nothing can steal the port between reservation
+/// and bind.
+fn spawn_server(data_dir: &std::path::Path, port_file: &std::path::Path) -> Server {
+    let _ = std::fs::remove_file(port_file); // avoid reading a stale prior boot.
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_streams"))
         .env("STREAMS_HOST", "127.0.0.1")
-        .env("STREAMS_PORT", port.to_string())
+        .env("STREAMS_PORT", "0") // OS-assigned ephemeral port (no bind race).
+        .env("STREAMS_PORT_FILE", port_file)
         .env("STREAMS_DATA_DIR", data_dir)
         // Pin a single WAL shard for a deterministic on-disk layout across the
         // restart (the default is num_cpus-based); these tests recover via the
@@ -835,7 +840,27 @@ fn spawn_server(port: u16, data_dir: &std::path::Path) -> std::process::Child {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("spawn streams binary")
+        .expect("spawn streams binary");
+    let base = read_port_file(port_file, Duration::from_secs(10));
+    Server { child, base }
+}
+
+/// Poll `port_file` until the child has written its resolved `host:port`, then
+/// return the `http://host:port` base URL. Panics after `deadline`.
+fn read_port_file(port_file: &std::path::Path, deadline: Duration) -> String {
+    let start = Instant::now();
+    loop {
+        if let Ok(s) = std::fs::read_to_string(port_file) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return format!("http://{s}");
+            }
+        }
+        if start.elapsed() > deadline {
+            panic!("server did not report its bound port within {deadline:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Block until `GET /v0/health` answers `200`, or panic after `deadline`.
@@ -857,15 +882,16 @@ fn wait_healthy(client: &reqwest::blocking::Client, base: &str, deadline: Durati
 #[test]
 fn kill_during_durable_write_survives_sigkill_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let port = pick_port();
-    let base = format!("http://127.0.0.1:{port}");
+    let pf = tempfile::NamedTempFile::new().unwrap();
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
 
     // --- Boot #1, write a DURABLE record, get an ack, then SIGKILL. ---------
-    let mut child = spawn_server(port, dir.path());
+    let server = spawn_server(dir.path(), pf.path());
+    let mut child = server.child;
+    let base = server.base;
     wait_healthy(&client, &base, Duration::from_secs(10));
 
     let (status, _b) = {
@@ -902,8 +928,11 @@ fn kill_during_durable_write_survives_sigkill_restart() {
     }
     let _ = child.wait();
 
-    // --- Boot #2 on the SAME data dir: the acked durable write is present. ---
-    let mut child2 = spawn_server(port, dir.path());
+    // --- Boot #2 on the SAME data dir: the acked durable write is present. The
+    // ephemeral port differs across boots, so rebind to the new base URL. ---
+    let server2 = spawn_server(dir.path(), pf.path());
+    let mut child2 = server2.child;
+    let base = server2.base;
     wait_healthy(&client, &base, Duration::from_secs(10));
 
     let st: serde_json::Value = client
@@ -967,14 +996,15 @@ unsafe fn libc_term(_pid: i32) {}
 #[test]
 fn graceful_shutdown_writes_snapshot() {
     let dir = tempfile::tempdir().unwrap();
-    let port = pick_port();
-    let base = format!("http://127.0.0.1:{port}");
+    let pf = tempfile::NamedTempFile::new().unwrap();
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
 
-    let mut child = spawn_server(port, dir.path());
+    let server = spawn_server(dir.path(), pf.path());
+    let mut child = server.child;
+    let base = server.base;
     wait_healthy(&client, &base, Duration::from_secs(10));
 
     // A durable box + a few writes.
@@ -1013,8 +1043,11 @@ fn graceful_shutdown_writes_snapshot() {
     let snaps = count_files(dir.path(), "meta", "snapshot-", ".bin");
     assert_eq!(snaps, 1, "graceful shutdown wrote exactly one snapshot");
 
-    // Reboot recovers the data (from the snapshot).
-    let mut child2 = spawn_server(port, dir.path());
+    // Reboot recovers the data (from the snapshot). The ephemeral port differs
+    // across boots, so rebind to the new base URL.
+    let server2 = spawn_server(dir.path(), pf.path());
+    let mut child2 = server2.child;
+    let base = server2.base;
     wait_healthy(&client, &base, Duration::from_secs(10));
     let st: serde_json::Value = client
         .get(format!("{base}/v0/boxes/jobs"))

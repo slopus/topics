@@ -483,7 +483,9 @@ fn f_sweep_cold_relocation() {
     // Cap the sweep so it stays well under a minute but still covers every FS
     // boundary of this small relocation.
     let cap = probe_m.min(24);
-    for crash_point in 0..=cap {
+    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    for crash_point in streams::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xC01D_5EE0 ^ crash_point);
 
         // Steady state: HOT-only durable segment.
