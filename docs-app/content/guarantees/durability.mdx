@@ -7,10 +7,26 @@ import { Callout } from 'nextra/components'
 
 # Durability Classes
 
-Durability in streams is a **per-topic** decision, not a server-wide mode. Each topic is one of
-three **commit classes** — `memory`, `disk`, or `fsync` — that trade write latency against
-crash survival. A best-effort `memory` cache topic, a group-committed pub/sub feed, and an
-`fsync`-gated job queue coexist in one process, and each pays for exactly the guarantee it uses.
+Durability in streams is a **per-topic** decision, not a server-wide mode. Each topic picks one
+of three **commit classes** — `memory`, `disk`, or `fsync` — and they form a weak → strong
+spectrum that trades write latency against crash survival.
+
+## Where "ok" lands
+
+Every write travels the same road — from your process, to the kernel, to the physical disk —
+and the three classes differ only in **how far along that road streams waits before it acks**:
+
+- **`memory`** acks immediately and makes **no durability promise**. Fastest; after a restart
+  its records may survive or be gone.
+- **`disk`** acks once the write is in the group-committed write-ahead log and on its way to the
+  kernel. It **survives a process crash**, minus the most recent un-fsynced tail. The default.
+- **`fsync`** waits for the data to be **fsynced to the platter** before acking, so it
+  **survives any crash, including power loss**.
+
+Pick the weakest class a topic can tolerate and it pays the least latency; reach for `fsync`
+only where an acknowledgment must be a promise you can never take back. Because the choice is
+per topic, a throwaway cache (`memory`), a pub/sub feed (`disk`), and a financial ledger
+(`fsync`) coexist in one process without taxing each other.
 
 The class is resolved from the topic's **current config** (`durability_class()`) and reported on
 every topic-state and topic-create response. The topic `type` is immutable, but durability/config can

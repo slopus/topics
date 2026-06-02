@@ -7,9 +7,18 @@ import { Callout, Cards } from 'nextra/components'
 
 # Core Guarantees
 
-streams is a durability-focused engine, so its guarantees are the product. This page states
-the one rule the whole data model is built to keep, then summarizes each guarantee and links
-to the page that specifies it in full.
+streams is a durability-focused engine, so its guarantees are the product. Two of them are the
+headline, and they answer the two questions that matter most about any log:
+
+- **How durable is a write?** Durability is a **dial you turn per topic** — `memory`
+  (best-effort), `disk` (survives a crash), or `fsync` (survives power loss). Weak where you
+  want speed, strong where an ack must be a promise. See [Durability Classes](/guarantees/durability).
+- **What happens when data is lost?** Loss is **always explicit, never silent** — anything you
+  didn't ask to lose, you are told about in band, with the exact range. That is the
+  load-bearing invariant stated next.
+
+This page states the rule the whole data model is built to keep, then summarizes each
+guarantee and links to the page that specifies it in full.
 
 ## The load-bearing invariant
 
