@@ -1,8 +1,8 @@
 {
-  "name": "streams-docs",
+  "name": "topics-docs",
   "version": "0.1.0",
   "private": true,
-  "description": "Documentation site for streams — a persistent event engine in a single binary.",
+  "description": "Documentation site for topics — a persistent event engine in a single binary.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

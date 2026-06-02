@@ -1,5 +1,5 @@
 export default {
-  index: 'Running streams',
+  index: 'Running topics',
   docker: 'Docker',
   configuration: 'Configuration',
   security: 'Security',

@@ -1,5 +1,5 @@
 ---
-title: streams — millions of events per second, with the simplicity of SQLite
+title: topics — millions of events per second, with the simplicity of SQLite
 description: A persistent event log that runs as one process on one machine — no cluster, no coordination, the way SQLite is one file instead of a database fleet — yet moves millions of events a second over a small HTTP/JSON API. Durability you choose per topic; loss that is always explicit.
 ---
 
@@ -15,7 +15,7 @@ import { withBase } from '../components/base'
 # Millions of events a second, with the simplicity of <span className="grad">SQLite</span>
 
 <p className="hero-sub">
-streams is a persistent event log that runs as **one process on one machine** — no cluster,
+topics is a persistent event log that runs as **one process on one machine** — no cluster,
 no coordination, the way SQLite is one file instead of a database fleet. Yet the engine
 moves **millions of events a second** over a small HTTP/JSON API. Write to a **topic**, read
 it back by **sequence number**, follow it live, delete what you're done with — and choose,
@@ -25,23 +25,23 @@ per topic, how durable each write should be. Nothing is ever lost without tellin
 <div className="hero-cta">
   <a className="btn btn-primary" href={withBase("/getting-started/quickstart")}>Quickstart<span className="btn-arrow">→</span></a>
   <a className="btn btn-ghost" href={withBase("/api")}>The API</a>
-  <a className="btn btn-ghost" href="https://github.com/slopus/streams" target="_blank" rel="noreferrer">GitHub</a>
+  <a className="btn btn-ghost" href="https://github.com/slopus/topics" target="_blank" rel="noreferrer">GitHub</a>
 </div>
 
 <div className="hero-terminal">
   <div className="term-bar"><i /><i /><i /><span className="term-title">bash — record an order, read it back</span></div>
 
 ```bash
-# Point $STREAMS at your server, then append an event. The topic is created
+# Point $TOPICS at your server, then append an event. The topic is created
 # on first write, and the server assigns the sequence number.
-export STREAMS=http://localhost:4000
-curl -X POST $STREAMS/v0/topics/orders \
+export TOPICS=http://localhost:4000
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "records": [ { "data": { "sku": "AEROPRESS-GO", "qty": 1, "total": 3499 } } ] }'
 # → { "topic": "orders", "seqs": [1], "head_seq": 1, ... }
 
 # Read everything after sequence 0. The sequence number is the cursor.
-curl -X POST $STREAMS/v0/topics/orders/diff -d '{ "from_seq": 0 }'
+curl -X POST $TOPICS/v0/topics/orders/diff -d '{ "from_seq": 0 }'
 # → { "records": [ { "$seq": 1, "$ts": 1748470000123, "data": { "sku": "AEROPRESS-GO", ... } } ],
 #     "next_from_seq": 1, "caught_up": true }
 ```
@@ -52,11 +52,11 @@ curl -X POST $STREAMS/v0/topics/orders/diff -d '{ "from_seq": 0 }'
 
 <section className="section">
 
-<span className="section-eyebrow">Why streams</span>
+<span className="section-eyebrow">Why topics</span>
 <h2 className="section-title">Three ideas. That's the whole pitch.</h2>
 <p className="section-lede">
 A persistent event log doesn't have to mean a distributed system to operate or an SDK to
-learn. streams makes three deliberate bets, and everything else follows from them.
+learn. topics makes three deliberate bets, and everything else follows from them.
 </p>
 
 <div className="card-grid">
@@ -91,7 +91,7 @@ learn. streams makes three deliberate bets, and everything else follows from the
 <span className="section-eyebrow">The API</span>
 <h2 className="section-title">The whole thing is a handful of HTTP calls</h2>
 <p className="section-lede">
-streams is a log you <code>POST</code> events to and read back by number. The server stamps
+topics is a log you <code>POST</code> events to and read back by number. The server stamps
 each event with a monotonic <code>seq</code>; reading is just "give me everything after this
 number." That sentence is the entire model — here is every verb it expands into.
 </p>
@@ -118,7 +118,7 @@ Read it at three levels of depth on the <a href={withBase("/api")}>API reference
 <h2 className="section-title">Like SQLite: huge capability, almost nothing to operate</h2>
 <p className="section-lede">
 SQLite became the most-deployed database on earth by refusing to be a server you run — it's
-a library and a file. streams brings that operating model to event streaming: a Kafka-shaped
+a library and a file. topics brings that operating model to event streaming: a Kafka-shaped
 job done with an SQLite-shaped footprint. It <em>is</em> a networked server, so every service
 can share it — but running it is one process and one directory, not a cluster to coordinate.
 </p>
@@ -137,7 +137,7 @@ can share it — but running it is one process and one directory, not a cluster 
   <a className="feature-card" href={withBase("/how-it-works/recovery")}>
     <span className="fc-icon"><IconClock /></span>
     <h3>Restarts, not orchestration</h3>
-    <p>The cost of one node is brief downtime on deploys, patches, and the rare crash. streams makes it cheap: it replays its write-ahead log and gates readiness until recovery finishes. You trade seconds of occasional downtime for a system you can hold in your head.</p>
+    <p>The cost of one node is brief downtime on deploys, patches, and the rare crash. topics makes it cheap: it replays its write-ahead log and gates readiness until recovery finishes. You trade seconds of occasional downtime for a system you can hold in your head.</p>
   </a>
 </div>
 
@@ -149,7 +149,7 @@ can share it — but running it is one process and one directory, not a cluster 
 <h2 className="section-title">Decide what an "ok" means — one topic at a time</h2>
 <p className="section-lede">
 Every write travels the same road: from your process, into the kernel, onto the physical
-disk. The only question is how far along that road streams waits before it answers "ok." You
+disk. The only question is how far along that road topics waits before it answers "ok." You
 decide <strong>per topic</strong>, so a throwaway cache and a financial ledger can live side
 by side in one process without paying for each other's guarantees.
 </p>
@@ -158,7 +158,7 @@ by side in one process without paying for each other's guarantees.
   <div className="dura">
     <span className="d-tag">memory</span>
     <h4>Fastest — no promise</h4>
-    <p>Acked the instant streams accepts it, with <strong>no durability guarantee</strong>: after a restart its records may survive or may be gone. For caches, scratch, and ephemeral fan-out where losing a little is fine.</p>
+    <p>Acked the instant topics accepts it, with <strong>no durability guarantee</strong>: after a restart its records may survive or may be gone. For caches, scratch, and ephemeral fan-out where losing a little is fine.</p>
   </div>
   <div className="dura">
     <span className="d-tag">disk</span>
@@ -184,7 +184,7 @@ the full contract on <a href={withBase("/guarantees/durability")}>Durability Cla
 <span className="section-eyebrow">Mental model</span>
 <h2 className="section-title">Five nouns and you know the system</h2>
 <p className="section-lede">
-streams is deliberately small. Learn five concepts and every endpoint is just one of them
+topics is deliberately small. Learn five concepts and every endpoint is just one of them
 doing its job.
 </p>
 
@@ -207,9 +207,9 @@ removal you did ask for is silent.</strong> Read it in full in the
 <section className="section">
 
 <span className="section-eyebrow">How it compares</span>
-<h2 className="section-title">SQLite is to a database cluster what streams is to Kafka</h2>
+<h2 className="section-title">SQLite is to a database cluster what topics is to Kafka</h2>
 <p className="section-lede">
-streams is a single-machine peer to Redis Streams, Kafka, NATS JetStream, and the cloud
+topics is a single-machine peer to Redis Streams, Kafka, NATS JetStream, and the cloud
 queues — trading horizontal scale for operational simplicity and an explicit, in-band loss
 signal none of them provide.
 </p>
@@ -217,7 +217,7 @@ signal none of them provide.
 <div className="card-grid">
   <a className="feature-card" href={withBase("/comparisons/vs-redis")}><h3>vs Redis Streams</h3><p>Per-write durability classes instead of one global <code>appendfsync</code>; gap tombstones where Redis trims silently.</p><span className="fc-more">Compare →</span></a>
   <a className="feature-card" href={withBase("/comparisons/vs-kafka")}><h3>vs Apache Kafka</h3><p>One process, no JVM, no cluster — and an in-band "you missed X..Y", which Kafka leaves to lag metrics.</p><span className="fc-more">Compare →</span></a>
-  <a className="feature-card" href={withBase("/comparisons/vs-nats")}><h3>vs NATS JetStream</h3><p>The closest single-machine peer. streams adds delivery-time gap signals and built-in dead-letter moves.</p><span className="fc-more">Compare →</span></a>
+  <a className="feature-card" href={withBase("/comparisons/vs-nats")}><h3>vs NATS JetStream</h3><p>The closest single-machine peer. topics adds delivery-time gap signals and built-in dead-letter moves.</p><span className="fc-more">Compare →</span></a>
   <a className="feature-card" href={withBase("/comparisons/vs-cloud-queues")}><h3>vs SQS / Kinesis / Pub/Sub</h3><p>Log + queue + fan-out in one self-hosted API, with fixed cost and full data locality.</p><span className="fc-more">Compare →</span></a>
 </div>
 
@@ -225,7 +225,7 @@ signal none of them provide.
 
 <div className="cta-band">
   <h2>A durable event log, up and running in a minute</h2>
-  <p>Start streams on one machine and write your first record before your coffee's cold. Turn the durability dial up only where you need it.</p>
+  <p>Start topics on one machine and write your first record before your coffee's cold. Turn the durability dial up only where you need it.</p>
   <div className="hero-cta">
     <a className="btn btn-primary" href={withBase("/getting-started/quickstart")}>Get started<span className="btn-arrow">→</span></a>
     <a className="btn btn-ghost" href={withBase("/guarantees")}>Read the guarantees</a>

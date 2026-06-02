@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use serial_test::serial;
 
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, MonitorFs, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::{Fs, OpenOpts};
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, MonitorFs, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::{Fs, OpenOpts};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -318,7 +318,7 @@ fn failpoint_wal_after_write_then_crash() {
 #[test]
 #[serial]
 fn monitorfs_passes_real_snapshot_write() {
-    use streams::storage::snapshot::{write_snapshot_with, Checkpoint, Snapshot};
+    use topics::storage::snapshot::{write_snapshot_with, Checkpoint, Snapshot};
     let disk = FakeDisk::new();
     let monitored: Arc<dyn Fs> = MonitorFs::new(disk.arc()).arc();
     let data_dir = PathBuf::from("/data");
@@ -341,7 +341,7 @@ fn monitorfs_passes_real_snapshot_write() {
     write_snapshot_with(&monitored, &data_dir, &snap).unwrap();
 
     // And the snapshot loads back through the same monitored FS.
-    let loaded = streams::storage::snapshot::load_latest_with(&monitored, &data_dir)
+    let loaded = topics::storage::snapshot::load_latest_with(&monitored, &data_dir)
         .unwrap()
         .expect("snapshot present");
     assert_eq!(loaded.checkpoint.last_checkpoint_seq, 7);
@@ -388,9 +388,9 @@ fn sweep_durable_append_crash_points() {
     // durable `append` blocks on its own fsync, crashing mid-stream (via a fresh
     // disk re-run) at any point yields a dense prefix of whatever fsynced.
     let cap = total_writes.min(8);
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_after in streams::testutil::crash_points(cap) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_after in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::new();
         let wal = Wal::open_at_with(disk.arc(), fast_cfg(&data_dir), 1, 0).unwrap();
         let w = wal.writer();

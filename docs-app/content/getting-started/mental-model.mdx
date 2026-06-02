@@ -7,7 +7,7 @@ import { Callout, Cards } from 'nextra/components'
 
 # Mental Model
 
-streams has five concepts, and they are the whole product: a **Topic** is a named
+topics has five concepts, and they are the whole product: a **Topic** is a named
 append-only log; a **Record** is one immutable event in it; **seq** is the cursor; a
 **Router** forwards records between topics; and a **Tombstone** is the explicit "you
 missed data" signal. One operation completes the picture — a **Delete** is a permanent,
@@ -43,7 +43,7 @@ both ways (pure passthrough). All times are integer milliseconds since the Unix 
 
 A **topic** is an append-only log of records ordered by a monotonic `seq`, plus a small
 config and a pair of derived watermarks. Think inbox/outbox. It is the unit of naming,
-durability, retention, and priority — almost every decision in streams is a per-topic
+durability, retention, and priority — almost every decision in topics is a per-topic
 decision.
 
 ### Identity & naming
@@ -349,7 +349,7 @@ log scan.
 
 ```bash
 # Cancel one job by exact tag.
-curl -X POST $STREAMS/v0/topics/transcode/delete \
+curl -X POST $TOPICS/v0/topics/transcode/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Eq", "transcode-9001"] }'
 ```
@@ -395,6 +395,6 @@ is a per-topic choice. Five concepts, one operation, one invariant.
     Every `/v0` endpoint — its body, its response, and its errors.
   </Cards.Card>
   <Cards.Card title="Guides" href="/guides" arrow>
-    Build a job queue, pub/sub, durable streams, or multi-master fan-out.
+    Build a job queue, pub/sub, durable topics, or multi-master fan-out.
   </Cards.Card>
 </Cards>

@@ -6,7 +6,7 @@
 //! Tiered storage (the Phase-6 milestone) keeps the active + recent sealed
 //! segments on fast NVMe (HOT, under the data dir) and relocates older sealed
 //! segments to a slower tier (COLD). v1's cold tier is a different configured
-//! folder (`STREAMS_COLD_DIR`); putting both behind one trait lets an object
+//! folder (`TOPICS_COLD_DIR`); putting both behind one trait lets an object
 //! store (S3) drop in later as another impl **without touching the engine**. The
 //! S3 impl is explicitly future work — only [`LocalSegmentStore`] exists now.
 //!
@@ -137,7 +137,7 @@ pub trait SegmentStore: Send + Sync {
 /// A [`SegmentStore`] backed by a local directory: each segment is the file pair
 /// `seg-<start_seq>.data` + `seg-<start_seq>.idx` under `root`. This is both the
 /// HOT store (a per-topic dir under the data dir) and v1's COLD store (a per-topic
-/// dir under `STREAMS_COLD_DIR`).
+/// dir under `TOPICS_COLD_DIR`).
 pub struct LocalSegmentStore {
     root: PathBuf,
     /// The filesystem seam every byte of segment I/O routes through. Production
@@ -373,7 +373,7 @@ fn read_exact_at(f: &dyn super::fs::File, offset: u64, buf: &mut [u8]) -> io::Re
 }
 
 /// A topic's two-tier segment storage: a required HOT store (fast NVMe, under the
-/// data dir) and an optional COLD store (`STREAMS_COLD_DIR`; `None` ⇒ tiering is
+/// data dir) and an optional COLD store (`TOPICS_COLD_DIR`; `None` ⇒ tiering is
 /// disabled and everything stays hot — the default in every existing test, so
 /// behavior is unchanged by construction).
 ///

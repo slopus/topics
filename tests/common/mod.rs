@@ -1,6 +1,6 @@
 //! Shared in-process integration harness (Phase-3 §2).
 //!
-//! Boots the *real* axum server (`streams::http::build_router`) on an ephemeral
+//! Boots the *real* axum server (`topics::http::build_router`) on an ephemeral
 //! `127.0.0.1:0` port inside a dedicated background tokio runtime/thread, waits
 //! for `/v0/health` to answer `200`, and exposes a small synchronous HTTP client
 //! built on `reqwest::blocking` so integration tests read top-to-bottom without
@@ -45,10 +45,10 @@ use reqwest::blocking::Client;
 pub use reqwest::StatusCode;
 use serde_json::Value;
 
-use streams::clock::{SharedClock, SystemClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::http;
+use topics::clock::{SharedClock, SystemClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::http;
 
 /// A booted in-process server plus a blocking HTTP client pointed at it.
 pub struct Harness {
@@ -155,7 +155,7 @@ impl Harness {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         let thread = thread::Builder::new()
-            .name("streams-harness".to_string())
+            .name("topics-harness".to_string())
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -166,7 +166,7 @@ impl Harness {
                     // Share the shutdown signal with the serve loop so in-flight SSE
                     // streams are wound down on shutdown, exactly as the binary does
                     // (M11). The harness exercises the production drain path.
-                    let sse_shutdown = std::sync::Arc::new(streams::serve::ShutdownSignal::new());
+                    let sse_shutdown = std::sync::Arc::new(topics::serve::ShutdownSignal::new());
                     let app = http::build_router_with_shutdown(engine, sse_shutdown.clone())
                         .expect("build router");
 
@@ -177,7 +177,7 @@ impl Harness {
                     // Same dual-protocol (HTTP/1.1 keep-alive + h2c prior-knowledge)
                     // serve loop the binary uses, so the harness exercises the exact
                     // production path under both protocols.
-                    let _ = streams::serve::serve_with_signal(
+                    let _ = topics::serve::serve_with_signal(
                         listener,
                         app,
                         async {

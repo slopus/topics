@@ -351,7 +351,7 @@ pub async fn create_watch(
 
     // Clamp heartbeat into the documented bounds (API §7.2). The lower bound is
     // `MIN_HEARTBEAT_MS` (1000ms) in production; the test suite can lower it via
-    // `STREAMS_TEST_MIN_HEARTBEAT_MS` so the SSE cadence test asserts the
+    // `TOPICS_TEST_MIN_HEARTBEAT_MS` so the SSE cadence test asserts the
     // keep-alive without a multi-second wall-clock wait (config::min_heartbeat_ms).
     req.heartbeat_ms = req
         .heartbeat_ms

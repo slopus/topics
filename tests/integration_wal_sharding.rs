@@ -1,4 +1,4 @@
-//! WAL sharding (STREAMS_WAL_SHARDS) integration tests: a multi-shard engine
+//! WAL sharding (TOPICS_WAL_SHARDS) integration tests: a multi-shard engine
 //! round-trips writes and recovers them; a topic always lands in exactly ONE shard
 //! within a run; recovery with a DIFFERENT shard count than was written still
 //! recovers ALL data (the shard-count-agnostic-replay property); and a stalled /
@@ -7,17 +7,17 @@
 //! These drive the engine directly (no HTTP) with a unique `tempfile::tempdir`
 //! per test. The shard count is set on the engine's `ServerConfig.wal_shards`,
 //! since the env-var default is process-global; the field is the same knob
-//! `STREAMS_WAL_SHARDS` populates.
+//! `TOPICS_WAL_SHARDS` populates.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::json;
-use streams::clock::{SharedClock, SystemClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::{shard_for_topic, WalReader};
-use streams::types::*;
+use topics::clock::{SharedClock, SystemClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::{shard_for_topic, WalReader};
+use topics::types::*;
 
 /// A `ServerConfig` pointed at `dir` with `shards` WAL shards.
 fn config_at(dir: &std::path::Path, shards: usize) -> ServerConfig {
@@ -596,8 +596,8 @@ enum WalRecordKind {
     Other,
 }
 
-fn classify(frame: &streams::storage::WalFrame) -> WalRecordKind {
-    use streams::storage::WalRecord;
+fn classify(frame: &topics::storage::WalFrame) -> WalRecordKind {
+    use topics::storage::WalRecord;
     match &frame.record {
         WalRecord::Append { topic_id, .. } => WalRecordKind::Append(*topic_id),
         _ => WalRecordKind::Other,

@@ -60,7 +60,7 @@ type ChatSocket = Socket<ClientToServerEvents, ServerToClientEvents, never, Sock
 type ServerHello = {
   serverId: string;
   clientId: string;
-  streamsUrl: string;
+  topicsUrl: string;
   topics: {
     ingress: string;
     client: string;
@@ -71,7 +71,7 @@ type ServerHello = {
 
 type ServerInfo = {
   serverId: string;
-  streamsUrl: string;
+  topicsUrl: string;
   ingressTopic: string;
 };
 
@@ -128,7 +128,7 @@ const appRoot = path.resolve(__dirname, "..");
 const publicDir = path.join(__dirname, "public");
 
 const args = new Set(process.argv.slice(2));
-const streamsUrl = trimTrailingSlash(process.env.STREAMS_URL ?? "http://127.0.0.1:4000");
+const topicsUrl = trimTrailingSlash(process.env.TOPICS_URL ?? "http://127.0.0.1:4000");
 const streamPrefix = process.env.STREAM_PREFIX ?? "socketio.chat";
 const ingressTopic = `${streamPrefix}.ingress`;
 const serverId =
@@ -173,7 +173,7 @@ async function main() {
     const url = `http://${host}:${address.port}`;
     console.log(`socketio-typescript server ${serverId}`);
     console.log(`web app: ${url}`);
-    console.log(`streams: ${streamsUrl}`);
+    console.log(`topics: ${topicsUrl}`);
     console.log(`ingress topic: ${ingressTopic}`);
     console.log("each browser client gets its own durable topic and router from ingress");
 
@@ -299,7 +299,7 @@ async function waitForStreams() {
   }
 
   const detail = lastError instanceof Error ? lastError.message : String(lastError);
-  throw new Error(`streams is not ready at ${streamsUrl}: ${detail}`);
+  throw new Error(`topics is not ready at ${topicsUrl}: ${detail}`);
 }
 
 async function appendToIngress(message: ChatMessage): Promise<WriteResponse> {
@@ -439,7 +439,7 @@ function historySnapshot(session: ClientSession): DeliveredMessage[] {
 function buildServerInfo(): ServerInfo {
   return {
     serverId,
-    streamsUrl,
+    topicsUrl,
     ingressTopic,
   };
 }
@@ -448,7 +448,7 @@ function buildHello(session: ClientSession): ServerHello {
   return {
     serverId,
     clientId: session.clientId,
-    streamsUrl,
+    topicsUrl,
     topics: {
       ingress: ingressTopic,
       client: session.clientTopic,
@@ -459,7 +459,7 @@ function buildHello(session: ClientSession): ServerHello {
 }
 
 async function streamsJson<T = unknown>(pathName: string, init: RequestInit): Promise<T> {
-  const url = new URL(pathName, `${streamsUrl}/`);
+  const url = new URL(pathName, `${topicsUrl}/`);
   const headers = new Headers(init.headers);
 
   if (init.body && !headers.has("content-type")) {

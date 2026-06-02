@@ -42,12 +42,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{
     DeleteRequest, DiffRequest, Filter, RecordIn, TopicConfig, TopicType, WriteRequest,
 };
 
@@ -400,10 +400,10 @@ fn assert_topic_contract(
             );
         }
         assert!(
-            dump.head <= model.head + streams::config::DISK_HEAD_RESERVE_AHEAD,
+            dump.head <= model.head + topics::config::DISK_HEAD_RESERVE_AHEAD,
             "{name}: disk recovered head {} exceeds reservation ceiling {}",
             dump.head,
-            model.head + streams::config::DISK_HEAD_RESERVE_AHEAD
+            model.head + topics::config::DISK_HEAD_RESERVE_AHEAD
         );
     }
 
@@ -631,9 +631,9 @@ fn f_rec_delete_before_append_order() {
     // append's fsync. At EVERY crash point the recovered state must be a dense
     // prefix of the model's live set with no fabrication and no gap.
     let cap = total.min(14);
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(cap) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xDE1E7E_u64.wrapping_mul(crash_point + 1));
         let trip = CrashAfter::new(disk.clone(), FaultOp::WriteAt, crash_point);
         let mut model = RefModel::default();

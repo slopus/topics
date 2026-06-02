@@ -1,8 +1,8 @@
 //! Phase-8B fault/crash batch — the four **segment-seal boundary** strategies
-//! from the catalog (`/tmp/streams-fault-catalog.json` / `docs/FAULT_TESTING.md`),
+//! from the catalog (`/tmp/topics-fault-catalog.json` / `docs/FAULT_TESTING.md`),
 //! each one test fn named after its catalog id. Every test asserts the CORRECT
 //! crash-consistency behavior via the durability contract, reusing the Phase-8A
-//! harness (`FakeDisk` / `FaultFs` from `streams::storage::testfs`, the real WAL +
+//! harness (`FakeDisk` / `FaultFs` from `topics::storage::testfs`, the real WAL +
 //! recovery via the `*_with` constructors, the real `SegmentWriter` + segment
 //! store wired through an injectable `Arc<dyn Fs>`).
 //!
@@ -39,12 +39,12 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::SegmentConfig;
-use streams::engine::segwriter::{SealedResolve, SegmentWriter};
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::{Fs, LocalSegmentStore, TopicTier};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::SegmentConfig;
+use topics::engine::segwriter::{SealedResolve, SegmentWriter};
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::{Fs, LocalSegmentStore, TopicTier};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_wal_append_b.rs)

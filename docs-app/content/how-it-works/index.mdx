@@ -1,13 +1,13 @@
 ---
 title: Architecture Overview
-description: How streams is built — the design principles, the layered HTTP → engine → WAL → segments shape, and where to read the internals in depth.
+description: How topics is built — the design principles, the layered HTTP → engine → WAL → segments shape, and where to read the internals in depth.
 ---
 
 import { Callout, Cards } from 'nextra/components'
 
 # Architecture Overview
 
-streams is a single Rust process on a single machine: an append-only log engine that
+topics is a single Rust process on a single machine: an append-only log engine that
 keeps a **write-ahead log** as its durability boundary and materializes everything else —
 the in-memory index, the per-topic segment files, the metadata snapshots — as a derivable
 cache of that log. This page covers the design principles the whole system is built on
@@ -58,7 +58,7 @@ advances synchronously, while disk reclaim happens off the hot path. See
 
 Seqs are mostly-sequential `u64`, so the seq→location map is a base+offset vector, not a
 hash map — O(1) lookup with no hashing on the read path. The WAL is **sharded**
-(`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`) into independent ordered shard writers —
+(`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`) into independent ordered shard writers —
 each shard is a single sequential stream matching the hardware (trivial group commit, no
 write-side lock contention), and a topic maps to one shard so per-topic ordering still holds.
 Topics are also sharded across cores for delivery work.

@@ -26,12 +26,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::{MatchSel, TopicConfigOp, Wal, WalConfig, WalRecord};
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::{MatchSel, TopicConfigOp, Wal, WalConfig, WalRecord};
+use topics::types::{
     DeleteRequest, DiffRequest, Filter, RecordIn, TopicConfig, TopicType, WriteRequest,
 };
 

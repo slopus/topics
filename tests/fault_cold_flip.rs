@@ -44,8 +44,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::{
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::{
     decode_data_frame, lookup, LocalSegmentStore, SegmentBuilder, SegmentPart, SegmentRecord, Tier,
     TopicTier,
 };
@@ -131,7 +131,7 @@ fn read_record(tier: &TopicTier, id: u64, seq: u64) -> Vec<u8> {
 /// + drop the hot copy. The "durable pointer" IS the cold copy's existence, so a
 /// crash between the two steps is what every strategy probes.
 fn copy_to_cold(tier: &Arc<TopicTier>, id: u64) {
-    streams::engine::segwriter::copy_segment_to_cold(tier, id).expect("cold copy");
+    topics::engine::segwriter::copy_segment_to_cold(tier, id).expect("cold copy");
 }
 
 /// After `copy_to_cold` + the cold copy durable, "flip + drop hot" the way the
@@ -244,9 +244,9 @@ fn f_cold_resolve_prefers_hot() {
         // torn on crash — modelling "cold .data torn during copy".
         let cold = tier.cold().unwrap();
         // Use a complete idx but a torn data: write data un-fsynced.
-        let data_path = PathBuf::from(COLD_DIR).join(streams::storage::data_name(id));
+        let data_path = PathBuf::from(COLD_DIR).join(topics::storage::data_name(id));
         {
-            use streams::storage::OpenOpts;
+            use topics::storage::OpenOpts;
             let mut f = disk
                 .arc()
                 .open(&data_path, OpenOpts::create_truncate())
@@ -427,9 +427,9 @@ fn f_compound_relocate_during_recovery() {
 /// sweep's "not registered" test is governed purely by the `live_floor` argument —
 /// exactly what recovery passes after rebuilding the registry).
 fn run_orphan_sweep(tier: &Arc<TopicTier>, live_floor: u64) -> usize {
-    use streams::clock::{SharedClock, TestClock};
-    use streams::config::SegmentConfig;
-    use streams::engine::segwriter::SegmentWriter;
+    use topics::clock::{SharedClock, TestClock};
+    use topics::config::SegmentConfig;
+    use topics::engine::segwriter::SegmentWriter;
     let cfg = SegmentConfig {
         max_events: 1,
         max_bytes: 0,
@@ -483,9 +483,9 @@ fn f_sweep_cold_relocation() {
     // Cap the sweep so it stays well under a minute but still covers every FS
     // boundary of this small relocation.
     let cap = probe_m.min(24);
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(cap) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xC01D_5EE0 ^ crash_point);
 
         // Steady state: HOT-only durable segment.
@@ -504,7 +504,7 @@ fn f_sweep_cold_relocation() {
             let tier = Arc::new(TopicTier::new(Box::new(hot), Some(Box::new(cold))));
             // copy (may crash partway), dir fsync, flip+drop (may crash partway).
             // All FS calls past the trip point land on a frozen device and are lost.
-            let _ = streams::engine::segwriter::copy_segment_to_cold(&tier, id);
+            let _ = topics::engine::segwriter::copy_segment_to_cold(&tier, id);
             let _ = tier.hot().delete(id);
             let _ = trip; // ensure the wrapper lives across the relocation.
         }
@@ -566,7 +566,7 @@ fn f_sweep_cold_relocation() {
         // from hot (when hot survives); if only cold survived, it is already the
         // single copy.
         let tier = Arc::new(rederive(&disk));
-        let _ = streams::engine::segwriter::copy_segment_to_cold(&tier, id);
+        let _ = topics::engine::segwriter::copy_segment_to_cold(&tier, id);
         // Only drop hot if a complete cold copy now exists (the engine's invariant:
         // never delete hot before the cold copy is durable).
         if tier.cold().unwrap().exists(id, SegmentPart::Data)
@@ -595,7 +595,7 @@ fn f_sweep_cold_relocation() {
 // ===========================================================================
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use streams::storage::{File, Fs, OpenOpts};
+use topics::storage::{File, Fs, OpenOpts};
 
 /// Counts FS *mutating* calls (write_at / set_len / rename / sync_dir /
 /// remove_file) over an inner `Fs`, to probe the crash-point space M.

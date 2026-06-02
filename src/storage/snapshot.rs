@@ -136,7 +136,7 @@ pub struct SnapshotRouter {
 /// # Why positions are keyed by physical group, not bare shard index
 ///
 /// A bare numeric shard index conflates physically-distinct WAL groups across a
-/// `STREAMS_WAL_SHARDS` reconfigure: a multi-shard snapshot records `shards[0]` for
+/// `TOPICS_WAL_SHARDS` reconfigure: a multi-shard snapshot records `shards[0]` for
 /// `shard-00/`, but a later single-shard run writes to the FLAT `wal/` group (also
 /// "index 0"). Applying `shard-00`'s old offset to the flat group's freshly-written
 /// frames would skip acked frames or regress control state (codex P0 #1/#3). Keying

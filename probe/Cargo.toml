@@ -1,11 +1,11 @@
 [package]
-name = "streams-probe"
+name = "topics-probe"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 
 [[bin]]
-name = "streams-probe"
+name = "topics-probe"
 path = "src/main.rs"
 
 [dependencies]

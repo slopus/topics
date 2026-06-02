@@ -94,9 +94,9 @@ immutable. A segment seals when any one of three triggers fires:
 
 | Trigger | Env var | Default |
 |---|---|---|
-| Record count | `STREAMS_SEGMENT_MAX_EVENTS` | `10000` |
-| Byte size of `.data` | `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) |
-| Age of an idle/partial segment | `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h); `0` disables |
+| Record count | `TOPICS_SEGMENT_MAX_EVENTS` | `10000` |
+| Byte size of `.data` | `TOPICS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) |
+| Age of an idle/partial segment | `TOPICS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h); `0` disables |
 
 Sealing matters because it is the granularity of two lazy operations: cap/TTL eviction drops
 whole **sealed** segments whose highest seq is below `earliest_seq` (the active segment is
@@ -170,20 +170,20 @@ previous file is removed only after the new one is durably in place.
 
 ## On-disk layout
 
-Putting it together: the WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`)
-into N independent ordered streams — each topic maps to one shard, and each shard (when shards >
+Putting it together: the WAL is **sharded** (`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`)
+into N independent ordered topics — each topic maps to one shard, and each shard (when shards >
 1) is its own `wal/shard-NN/` directory with its own `CURRENT` + files. Segments are per-topic
 (independent eviction, per-topic mmap, locality for diff reads). Topic directories are named by the
 interned `topic_id` (hex), never the topic name — so there is no path traversal from a user-supplied
 name.
 
 <FileTree>
-  <FileTree.Folder name="streams-data" defaultOpen>
+  <FileTree.Folder name="topics-data" defaultOpen>
     <FileTree.Folder name="meta" defaultOpen>
       <FileTree.File name="snapshot-7.bin (latest atomic snapshot)" />
       <FileTree.File name="snapshot-6.bin (previous, kept until next fsync)" />
     </FileTree.Folder>
-    <FileTree.Folder name="wal (sharded; STREAMS_WAL_SHARDS, default min(num_cpus,8))" defaultOpen>
+    <FileTree.Folder name="wal (sharded; TOPICS_WAL_SHARDS, default min(num_cpus,8))" defaultOpen>
       <FileTree.Folder name="shard-00 (one dir per shard when shards>1; shards==1 ⇒ flat wal/)">
         <FileTree.File name="CURRENT (names this shard's active wal file)" />
         <FileTree.File name="wal-0000000000001024.log (preallocated, mixed-topic)" />
@@ -203,7 +203,7 @@ name.
   </FileTree.Folder>
 </FileTree>
 
-When `STREAMS_COLD_DIR` is set, older sealed segments relocate to a mirror of the per-topic
+When `TOPICS_COLD_DIR` is set, older sealed segments relocate to a mirror of the per-topic
 layout under that directory, keeping the same `seg-<first_seq>` identity. When it is unset
 (the default), tiering is disabled and nothing relocates — everything stays hot, behavior
 unchanged by construction. See [Storage & Tiering](/deployment/storage-and-tiering).
@@ -216,4 +216,4 @@ unchanged by construction. See [Storage & Tiering](/deployment/storage-and-tieri
   reclaim.
 - [Storage & Tiering](/deployment/storage-and-tiering) — hot/cold tiers and the segment
   config knobs.
-- [Configuration](/deployment/configuration) — the full `STREAMS_*` env var set.
+- [Configuration](/deployment/configuration) — the full `TOPICS_*` env var set.

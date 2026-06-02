@@ -1,20 +1,20 @@
 ---
-title: Running streams
+title: Running topics
 description: How the durable single binary starts, recovers, binds, and shuts down — plus where to go for Docker, configuration, security, storage, and observability.
 ---
 
 import { Callout, Steps, Cards } from 'nextra/components'
 
-# Running streams
+# Running topics
 
-streams runs as one **self-contained server**: the complete `/v0` API backed by a
+topics runs as one **self-contained server**: the complete `/v0` API backed by a
 write-ahead log on local disk, with no external dependencies — no database, no broker, no
 sidecar. You build it once, point it at a data directory, and run it. This page covers
 what the process does on start, how it binds and authenticates, and how it shuts down.
 
 ## Build and run
 
-The binary is named `streams`. Build it with a Rust toolchain, then run it. On a loopback
+The binary is named `topics`. Build it with a Rust toolchain, then run it. On a loopback
 bind with no keys configured it starts in **dev mode** (auth disabled) — the default — so
 the [Quickstart](/getting-started/quickstart) commands work verbatim.
 
@@ -23,8 +23,8 @@ the [Quickstart](/getting-started/quickstart) commands work verbatim.
 cargo build --release
 
 # Run it. Defaults: bind 127.0.0.1:4000 (loopback), auth disabled (dev mode);
-# WAL + segments + snapshots live under ./streams-data.
-./target/release/streams
+# WAL + segments + snapshots live under ./topics-data.
+./target/release/topics
 ```
 
 If you'd rather not build from source, run the published container image instead — see
@@ -38,7 +38,7 @@ The process is a state machine that **recovers before it serves**. On start it:
 
 ### Opens the data directory
 
-It opens `STREAMS_DATA_DIR` (default `./streams-data`), which holds the WAL, segment
+It opens `TOPICS_DATA_DIR` (default `./topics-data`), which holds the WAL, segment
 files, and snapshots. A missing or empty directory is a clean first start.
 
 ### Loads the latest snapshot
@@ -74,19 +74,19 @@ completes it returns **200** `{ "status": "ready", "wal_replay_complete": true, 
 The default bind is **loopback** (`127.0.0.1:4000`), so an unconfigured server is never
 accidentally a public, unauthenticated event store. Two rules follow from that:
 
-- On a loopback bind with **no** `STREAMS_API_KEYS`, the server runs in **dev mode** with
+- On a loopback bind with **no** `TOPICS_API_KEYS`, the server runs in **dev mode** with
   auth disabled. This is the local-development default.
 - Binding a **non-loopback** address (anything other than `127.0.0.1`) with **no** keys
   makes the server **refuse to start** — it logs the reason loudly — unless you set
-  `STREAMS_ALLOW_INSECURE_NO_AUTH=1`. That flag is for local/dev only; never set it on a
+  `TOPICS_ALLOW_INSECURE_NO_AUTH=1`. That flag is for local/dev only; never set it on a
   network-exposed deployment.
 
-Set `STREAMS_HOST`, `STREAMS_PORT`, and `STREAMS_API_KEYS` to bind elsewhere and turn auth
+Set `TOPICS_HOST`, `TOPICS_PORT`, and `TOPICS_API_KEYS` to bind elsewhere and turn auth
 on. See [Configuration](/deployment/configuration) for every variable and
 [Security](/deployment/security) for the key, scope, and prefix-allowlist model.
 
 <Callout type="warning">
-  streams speaks **plain HTTP** — it does not terminate TLS, by design. For any non-loopback
+  topics speaks **plain HTTP** — it does not terminate TLS, by design. For any non-loopback
   exposure, run it behind a TLS-terminating reverse proxy, or bind loopback and tunnel. Native
   TLS is out of scope — terminate it at the proxy. See [Security](/deployment/security).
 </Callout>
@@ -111,7 +111,7 @@ guarantee either way; its config always survives — see [Durability](/guarantee
     The GHCR multi-arch image, run commands, the `/data` volume, and the tag-driven release flow.
   </Cards.Card>
   <Cards.Card title="Configuration" href="/deployment/configuration" arrow>
-    Every `STREAMS_*` environment variable, its exact default, and what it controls.
+    Every `TOPICS_*` environment variable, its exact default, and what it controls.
   </Cards.Card>
   <Cards.Card title="Security" href="/deployment/security" arrow>
     Bearer keys hashed at rest, per-key scopes, the topic-name prefix allowlist, and resource limits.

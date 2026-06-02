@@ -1,7 +1,7 @@
 //! Phase-8B fault catalog — **boundary: wal-fsync** (group A).
 //!
 //! Implements 5 fault/crash strategies from `docs/FAULT_TESTING.md` /
-//! `/tmp/streams-fault-catalog.json`, each driving the *real* durability layer
+//! `/tmp/topics-fault-catalog.json`, each driving the *real* durability layer
 //! (the WAL writer with its single-fsync-per-group-commit barrier, or the fully
 //! wired [`Engine`]) through the Phase-8A hostile-FS harness ([`FakeDisk`] +
 //! [`FaultFs`]) and asserting the crash-consistency contract:
@@ -42,13 +42,13 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::Fs;
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::Fs;
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs — reused, not reinvented).
@@ -118,7 +118,7 @@ fn recovered_seqs(engine: &Engine, name: &str) -> (Vec<u64>, u64) {
         let d = engine
             .diff(
                 name,
-                streams::types::DiffRequest {
+                topics::types::DiffRequest {
                     from_seq: from,
                     limit: 1000,
                     node: None,

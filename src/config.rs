@@ -5,26 +5,26 @@
 // Hard limits (API §2 batching limits, §3, §5, §7, DESIGN §1.2)
 // ---------------------------------------------------------------------------
 
-/// Max records per write request (`STREAMS_MAX_BATCH_RECORDS`).
+/// Max records per write request (`TOPICS_MAX_BATCH_RECORDS`).
 pub const MAX_BATCH_RECORDS: usize = 10_000;
-/// Max single record `data`+`meta` canonical bytes (`STREAMS_MAX_RECORD_BYTES`).
+/// Max single record `data`+`meta` canonical bytes (`TOPICS_MAX_RECORD_BYTES`).
 pub const MAX_RECORD_BYTES: usize = 1 << 20; // 1 MiB
-/// Max total request body (`STREAMS_MAX_BODY_BYTES`).
+/// Max total request body (`TOPICS_MAX_BODY_BYTES`).
 pub const MAX_BODY_BYTES: usize = 64 << 20; // 64 MiB
-/// Max `meta` per record (`STREAMS_MAX_META_BYTES`).
+/// Max `meta` per record (`TOPICS_MAX_META_BYTES`).
 pub const MAX_META_BYTES: usize = 16 << 10; // 16 KiB
 /// Max number of `meta` keys per record.
 pub const MAX_META_KEYS: usize = 64;
-/// Max `tag` length in bytes (`STREAMS_MAX_TAG_BYTES`).
+/// Max `tag` length in bytes (`TOPICS_MAX_TAG_BYTES`).
 pub const MAX_TAG_BYTES: usize = 256;
-/// Max `node` length in bytes (`STREAMS_MAX_NODE_BYTES`).
+/// Max `node` length in bytes (`TOPICS_MAX_NODE_BYTES`).
 pub const MAX_NODE_BYTES: usize = 128;
 /// Max `idempotency_key` length in characters.
 pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 256;
 
 /// Default diff batch limit.
 pub const DEFAULT_LIMIT: u32 = 256;
-/// Max diff batch limit (`STREAMS_MAX_LIMIT`) — clamped, not rejected.
+/// Max diff batch limit (`TOPICS_MAX_LIMIT`) — clamped, not rejected.
 pub const MAX_LIMIT: u32 = 1000;
 /// Max `wait_ms` long-poll — clamped, not rejected.
 pub const MAX_WAIT_MS: u32 = 30_000;
@@ -44,7 +44,7 @@ pub const DEFAULT_PAGE_SIZE: usize = 100;
 /// Max list page size.
 pub const MAX_PAGE_SIZE: usize = 1000;
 
-/// Max topics per watch subscription (`STREAMS_MAX_WATCH_TOPICS`).
+/// Max topics per watch subscription (`TOPICS_MAX_WATCH_TOPICS`).
 pub const MAX_WATCH_TOPICS: usize = 256;
 /// Watch session TTL after no active GET (ms).
 pub const SESSION_TTL_MS: u64 = 300_000;
@@ -59,7 +59,7 @@ pub const SSE_RETRY_MS: u64 = 2_000;
 ///
 /// In production this is always [`MIN_HEARTBEAT_MS`] (1000ms), so the wire
 /// contract is unchanged. The integration test suite sets
-/// `STREAMS_TEST_MIN_HEARTBEAT_MS` to a small value so the SSE heartbeat-cadence
+/// `TOPICS_TEST_MIN_HEARTBEAT_MS` to a small value so the SSE heartbeat-cadence
 /// test can request a sub-second keep-alive interval and assert the cadence
 /// without a multi-second wall-clock wait.
 ///
@@ -72,7 +72,7 @@ pub const SSE_RETRY_MS: u64 = 2_000;
 /// keep-alive timer can never be zero. A missing/unparsable/zero value leaves the
 /// production floor untouched.
 pub fn min_heartbeat_ms() -> u64 {
-    std::env::var("STREAMS_TEST_MIN_HEARTBEAT_MS")
+    std::env::var("TOPICS_TEST_MIN_HEARTBEAT_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         // Lower-only: an override may only *reduce* the floor (capped at the
@@ -105,14 +105,14 @@ pub const ROUTER_BATCH: usize = 1024;
 /// deterministic re-materialization and no silent loss.
 ///
 /// The legacy synchronous in-line `forward_from` path remains available as an
-/// explicit **opt-out** via `STREAMS_FORWARD_V2=0` (also `false`/`no`/`off`). The
+/// explicit **opt-out** via `TOPICS_FORWARD_V2=0` (also `false`/`no`/`off`). The
 /// legacy path is durable-by-construction (each forwarded dest record is its own
 /// WAL append) but WAL-amplified (N WAL writes for an N-way fan-out, on the ack
 /// path) and permits multi-source fan-in into a single dest; under the v2 default a
 /// derived dest is single-owner (a second router with a different source into the
 /// same dest is refused with `router_dest_fan_in`).
 pub fn forward_v2_enabled() -> bool {
-    std::env::var("STREAMS_FORWARD_V2")
+    std::env::var("TOPICS_FORWARD_V2")
         // Explicit opt-out values disable v2 (back to the legacy synchronous path);
         // anything else (incl. unset) leaves the v2 default ON.
         .map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off"))
@@ -123,7 +123,7 @@ pub fn forward_v2_enabled() -> bool {
 // Queue limits (API §10)
 // ---------------------------------------------------------------------------
 
-/// Max jobs leased/acked/nacked per claim or ack/nack call (`STREAMS_MAX_CLAIM`).
+/// Max jobs leased/acked/nacked per claim or ack/nack call (`TOPICS_MAX_CLAIM`).
 pub const MAX_CLAIM: u32 = 1000;
 /// Lease duration clamp bounds (ms): `[100, 86400000]` (API §10.2/§10.6).
 pub const MIN_LEASE_MS: u64 = 100;
@@ -138,11 +138,11 @@ pub const MAX_NACK_DELAY_MS: u64 = 86_400_000;
 /// `Notify`) is reflected promptly (API §10.8).
 pub const WORK_POLL_MS: u64 = 250;
 
-/// Default data directory for the WAL/segments when `STREAMS_DATA_DIR` is unset
+/// Default data directory for the WAL/segments when `TOPICS_DATA_DIR` is unset
 /// (phase 4 durability layer; see [`crate::storage`]).
-pub const DEFAULT_DATA_DIR: &str = "./streams-data";
+pub const DEFAULT_DATA_DIR: &str = "./topics-data";
 
-/// Hard ceiling on the number of WAL shards (`STREAMS_WAL_SHARDS`). The default
+/// Hard ceiling on the number of WAL shards (`TOPICS_WAL_SHARDS`). The default
 /// (`from_env`) picks `min(num_cpus, MAX_WAL_SHARDS)`. The cap bounds the writer
 /// thread / file-descriptor / preallocation footprint: each shard owns a dedicated
 /// OS writer thread and a preallocated active WAL file, so more shards trade fixed
@@ -151,7 +151,7 @@ pub const DEFAULT_DATA_DIR: &str = "./streams-data";
 /// per-shard preallocation (64 MiB each by default) and thread count grow linearly.
 pub const MAX_WAL_SHARDS: usize = 8;
 
-/// The default WAL shard count when `STREAMS_WAL_SHARDS` is unset: `min(num_cpus,
+/// The default WAL shard count when `TOPICS_WAL_SHARDS` is unset: `min(num_cpus,
 /// MAX_WAL_SHARDS)`, at least 1. Sharding the single ordered WAL writer scales
 /// durable write throughput ~linearly with shard count (each shard is an
 /// independent thread / mpsc / fsync stream with no shared hot-path contention),
@@ -168,24 +168,24 @@ pub fn default_wal_shards() -> usize {
 // Tiered / segment storage (Phase 6; ARCHITECTURE §3, §6)
 // ---------------------------------------------------------------------------
 
-/// Seal (roll a new) segment after this many events (`STREAMS_SEGMENT_MAX_EVENTS`,
+/// Seal (roll a new) segment after this many events (`TOPICS_SEGMENT_MAX_EVENTS`,
 /// default 10k). The active segment rolls to a sealed/immutable one once it holds
 /// this many records.
 pub const SEGMENT_MAX_EVENTS: u64 = 10_000;
-/// Also seal on this many bytes (`STREAMS_SEGMENT_MAX_BYTES`, default 64 MiB), so
+/// Also seal on this many bytes (`TOPICS_SEGMENT_MAX_BYTES`, default 64 MiB), so
 /// a topic of big payloads does not build one giant segment.
 pub const SEGMENT_MAX_BYTES: u64 = 64 << 20;
 /// Also seal a partially-filled active segment after this much wall-clock age
-/// (`STREAMS_SEGMENT_MAX_AGE_MS`, default 1 h), so an idle topic still seals and its
+/// (`TOPICS_SEGMENT_MAX_AGE_MS`, default 1 h), so an idle topic still seals and its
 /// data can age out / relocate. `0` disables the age trigger.
 pub const SEGMENT_MAX_AGE_MS: u64 = 3_600_000; // 1 hour
 
 /// Hot-retention: keep at most this many most-recent sealed segments HOT before
-/// relocating older ones to the cold tier (`STREAMS_HOT_RETAIN_SEGMENTS`). The
+/// relocating older ones to the cold tier (`TOPICS_HOT_RETAIN_SEGMENTS`). The
 /// active segment is always hot and not counted. `0` ⇒ relocate every sealed
 /// segment as soon as a cold tier exists.
 pub const HOT_RETAIN_SEGMENTS: u64 = 4;
-/// Alternatively bound hot sealed-segment bytes (`STREAMS_HOT_RETAIN_BYTES`); the
+/// Alternatively bound hot sealed-segment bytes (`TOPICS_HOT_RETAIN_BYTES`); the
 /// stricter of the two retention bounds wins. `0` ⇒ only the segment-count bound
 /// applies.
 pub const HOT_RETAIN_BYTES: u64 = 0;
@@ -276,16 +276,16 @@ impl Default for SegmentConfig {
 
 impl SegmentConfig {
     /// Build from environment, falling back to the defaults for any unset/unparsable
-    /// var: `STREAMS_SEGMENT_MAX_EVENTS`, `STREAMS_SEGMENT_MAX_BYTES`,
-    /// `STREAMS_SEGMENT_MAX_AGE_MS`, `STREAMS_HOT_RETAIN_SEGMENTS`,
-    /// `STREAMS_HOT_RETAIN_BYTES`.
+    /// var: `TOPICS_SEGMENT_MAX_EVENTS`, `TOPICS_SEGMENT_MAX_BYTES`,
+    /// `TOPICS_SEGMENT_MAX_AGE_MS`, `TOPICS_HOT_RETAIN_SEGMENTS`,
+    /// `TOPICS_HOT_RETAIN_BYTES`.
     pub fn from_env() -> Self {
         let mut c = SegmentConfig::default();
-        env_u64("STREAMS_SEGMENT_MAX_EVENTS", &mut c.max_events);
-        env_u64("STREAMS_SEGMENT_MAX_BYTES", &mut c.max_bytes);
-        env_u64("STREAMS_SEGMENT_MAX_AGE_MS", &mut c.max_age_ms);
-        env_u64("STREAMS_HOT_RETAIN_SEGMENTS", &mut c.hot_retain_segments);
-        env_u64("STREAMS_HOT_RETAIN_BYTES", &mut c.hot_retain_bytes);
+        env_u64("TOPICS_SEGMENT_MAX_EVENTS", &mut c.max_events);
+        env_u64("TOPICS_SEGMENT_MAX_BYTES", &mut c.max_bytes);
+        env_u64("TOPICS_SEGMENT_MAX_AGE_MS", &mut c.max_age_ms);
+        env_u64("TOPICS_HOT_RETAIN_SEGMENTS", &mut c.hot_retain_segments);
+        env_u64("TOPICS_HOT_RETAIN_BYTES", &mut c.hot_retain_bytes);
         // A zero max_events would seal every record into its own segment; clamp to
         // at least 1 so the active segment can hold a record.
         c.max_events = c.max_events.max(1);
@@ -312,7 +312,7 @@ pub struct ServerConfig {
     /// Bind address. Defaults to `127.0.0.1:4000` (loopback) so an unconfigured
     /// server is never accidentally a public, unauthenticated event store; bind a
     /// non-loopback address explicitly (and set keys, or
-    /// `STREAMS_ALLOW_INSECURE_NO_AUTH=1`) to expose it.
+    /// `TOPICS_ALLOW_INSECURE_NO_AUTH=1`) to expose it.
     pub bind_addr: String,
     /// Accepted bearer API keys, in **plaintext** — the build-time *input* only.
     /// This is consumed by [`ServerConfig::finalize_keys`], which parses it into
@@ -333,22 +333,22 @@ pub struct ServerConfig {
     /// struct-update syntax; set it via [`finalize_keys`](Self::finalize_keys).
     #[doc(hidden)]
     pub key_count: usize,
-    /// Escape hatch (`STREAMS_ALLOW_INSECURE_NO_AUTH=1`): permit binding a
+    /// Escape hatch (`TOPICS_ALLOW_INSECURE_NO_AUTH=1`): permit binding a
     /// NON-loopback address with NO api keys configured. Off by default so the
     /// insecure combination refuses to start (see [`ServerConfig::startup_guard`]).
     pub allow_insecure_no_auth: bool,
-    /// Whether health/ready/metrics probes require auth (`STREAMS_PROBE_AUTH`).
+    /// Whether health/ready/metrics probes require auth (`TOPICS_PROBE_AUTH`).
     pub probe_auth: bool,
     /// Max total request body before parse (`413`).
     pub max_body_bytes: usize,
-    /// Data directory for the WAL/segments (`STREAMS_DATA_DIR`, default
-    /// [`DEFAULT_DATA_DIR`] = `./streams-data`). The storage layer
+    /// Data directory for the WAL/segments (`TOPICS_DATA_DIR`, default
+    /// [`DEFAULT_DATA_DIR`] = `./topics-data`). The storage layer
     /// ([`crate::storage`]) writes the WAL under `<data_dir>/wal`; a missing/empty
     /// dir is a fresh start. [`crate::engine::Engine::with_data_dir`] opens it,
     /// replays the WAL on startup, and fsync-gates `durable:true` writes. `None`
     /// selects pure in-memory mode (engine/property unit tests).
     pub data_dir: Option<String>,
-    /// Cold tier directory (`STREAMS_COLD_DIR`, Phase 6). When set, older sealed
+    /// Cold tier directory (`TOPICS_COLD_DIR`, Phase 6). When set, older sealed
     /// segments relocate here off the hot path; when `None` (the default in every
     /// existing test) tiering is disabled and every segment stays hot — behavior
     /// is unchanged by construction. A future S3 store plugs into the same
@@ -358,7 +358,7 @@ pub struct ServerConfig {
     /// are transparent: with no `cold_dir`, sealing still happens but nothing
     /// relocates.
     pub segment: SegmentConfig,
-    /// Number of WAL shards (`STREAMS_WAL_SHARDS`): the single ordered WAL writer
+    /// Number of WAL shards (`TOPICS_WAL_SHARDS`): the single ordered WAL writer
     /// is split into this many independent shards (own thread / mpsc / fsync stream
     /// / file set) to scale durable write throughput. Each topic routes to exactly
     /// one shard by a stable hash of its interned id, so per-topic ordering and every
@@ -402,20 +402,20 @@ impl ServerConfig {
     pub fn from_env() -> Self {
         let mut cfg = ServerConfig::default();
 
-        if let Ok(host) = std::env::var("STREAMS_HOST") {
-            // STREAMS_HOST may be a full host:port or just a host.
+        if let Ok(host) = std::env::var("TOPICS_HOST") {
+            // TOPICS_HOST may be a full host:port or just a host.
             if host.contains(':') {
                 cfg.bind_addr = host;
             } else {
-                let port = std::env::var("STREAMS_PORT").unwrap_or_else(|_| "4000".into());
+                let port = std::env::var("TOPICS_PORT").unwrap_or_else(|_| "4000".into());
                 cfg.bind_addr = format!("{host}:{port}");
             }
-        } else if let Ok(port) = std::env::var("STREAMS_PORT") {
+        } else if let Ok(port) = std::env::var("TOPICS_PORT") {
             // Port-only: keep the loopback default host (see `bind_addr` doc).
             cfg.bind_addr = format!("127.0.0.1:{port}");
         }
 
-        if let Ok(keys) = std::env::var("STREAMS_API_KEYS") {
+        if let Ok(keys) = std::env::var("TOPICS_API_KEYS") {
             cfg.api_keys = keys
                 .split(',')
                 .map(str::trim)
@@ -424,15 +424,15 @@ impl ServerConfig {
                 .collect();
         }
 
-        cfg.probe_auth = std::env::var("STREAMS_PROBE_AUTH")
+        cfg.probe_auth = std::env::var("TOPICS_PROBE_AUTH")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
 
-        cfg.allow_insecure_no_auth = std::env::var("STREAMS_ALLOW_INSECURE_NO_AUTH")
+        cfg.allow_insecure_no_auth = std::env::var("TOPICS_ALLOW_INSECURE_NO_AUTH")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(false);
 
-        if let Ok(v) = std::env::var("STREAMS_MAX_BODY_BYTES") {
+        if let Ok(v) = std::env::var("TOPICS_MAX_BODY_BYTES") {
             if let Ok(n) = v.parse() {
                 cfg.max_body_bytes = n;
             }
@@ -440,7 +440,7 @@ impl ServerConfig {
 
         // The WAL/segments live under this directory; the engine opens it and
         // replays the WAL on startup (durability layer). Unset ⇒ DEFAULT_DATA_DIR.
-        if let Ok(dir) = std::env::var("STREAMS_DATA_DIR") {
+        if let Ok(dir) = std::env::var("TOPICS_DATA_DIR") {
             let dir = dir.trim();
             if !dir.is_empty() {
                 cfg.data_dir = Some(dir.to_string());
@@ -449,7 +449,7 @@ impl ServerConfig {
 
         // Cold tier directory (Phase 6). Set ⇒ enable relocation off the hot path;
         // unset ⇒ tiering disabled (everything stays hot — the unchanged default).
-        if let Ok(dir) = std::env::var("STREAMS_COLD_DIR") {
+        if let Ok(dir) = std::env::var("TOPICS_COLD_DIR") {
             let dir = dir.trim();
             if !dir.is_empty() {
                 cfg.cold_dir = Some(dir.to_string());
@@ -459,11 +459,11 @@ impl ServerConfig {
         cfg.segment = SegmentConfig::from_env();
         cfg.limits = crate::limits::Limits::from_env();
 
-        // WAL sharding (`STREAMS_WAL_SHARDS`): split the single ordered WAL writer
+        // WAL sharding (`TOPICS_WAL_SHARDS`): split the single ordered WAL writer
         // into N independent shards to scale durable write throughput. Unset (or
         // unparsable / `0`) ⇒ the num_cpus-based default. Clamped to at least 1
         // (`1` is the single-writer / flat-layout back-compat path).
-        cfg.wal_shards = match std::env::var("STREAMS_WAL_SHARDS") {
+        cfg.wal_shards = match std::env::var("TOPICS_WAL_SHARDS") {
             Ok(v) => match v.trim().parse::<usize>() {
                 Ok(n) if n >= 1 => n,
                 _ => default_wal_shards(),
@@ -605,7 +605,7 @@ impl ServerConfig {
 
     /// Refuse an insecure public exposure: a NON-loopback bind with NO api keys
     /// configured turns the server into an accidental public, unauthenticated
-    /// event store. Returns `Err(message)` unless `STREAMS_ALLOW_INSECURE_NO_AUTH=1`
+    /// event store. Returns `Err(message)` unless `TOPICS_ALLOW_INSECURE_NO_AUTH=1`
     /// is set (the documented escape hatch). Loopback with no keys stays
     /// dev-friendly (returns `Ok`).
     ///
@@ -616,9 +616,9 @@ impl ServerConfig {
         }
         Err(format!(
             "REFUSING TO START: bind address `{}` is non-loopback but no API keys are set \
-             (STREAMS_API_KEYS is empty) — this would expose an unauthenticated event store \
-             to the network. Set STREAMS_API_KEYS, bind a loopback address (127.0.0.1), or, \
-             to override deliberately, set STREAMS_ALLOW_INSECURE_NO_AUTH=1.",
+             (TOPICS_API_KEYS is empty) — this would expose an unauthenticated event store \
+             to the network. Set TOPICS_API_KEYS, bind a loopback address (127.0.0.1), or, \
+             to override deliberately, set TOPICS_ALLOW_INSECURE_NO_AUTH=1.",
             self.bind_addr
         ))
     }
@@ -704,40 +704,40 @@ mod tests {
         // The production floor is returned when the override is unset. (We avoid
         // mutating the shared process env here for an unset assertion since other
         // tests may set it; the override-set cases below set+restore explicitly.)
-        let prev = std::env::var("STREAMS_TEST_MIN_HEARTBEAT_MS").ok();
+        let prev = std::env::var("TOPICS_TEST_MIN_HEARTBEAT_MS").ok();
 
         // A small override lowers the floor (this is the test-suite use).
-        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "100");
+        std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", "100");
         assert_eq!(min_heartbeat_ms(), 100);
 
         // 0 is floored to 1 (the timer can never be zero).
-        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "0");
+        std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", "0");
         assert_eq!(min_heartbeat_ms(), 1);
 
         // An attempt to RAISE the floor above the production min is capped at
         // MIN_HEARTBEAT_MS — the override is lower-only, so it can never widen the
         // production envelope nor (crucially) exceed MAX_HEARTBEAT_MS and make the
         // call-site clamp(min, MAX) panic.
-        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "999999");
+        std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", "999999");
         assert_eq!(min_heartbeat_ms(), MIN_HEARTBEAT_MS);
         assert!(min_heartbeat_ms() <= MAX_HEARTBEAT_MS, "never exceeds max");
 
         // An unparsable value is ignored (production floor).
-        std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "not-a-number");
+        std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", "not-a-number");
         assert_eq!(min_heartbeat_ms(), MIN_HEARTBEAT_MS);
 
         match prev {
-            Some(v) => std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", v),
-            None => std::env::remove_var("STREAMS_TEST_MIN_HEARTBEAT_MS"),
+            Some(v) => std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", v),
+            None => std::env::remove_var("TOPICS_TEST_MIN_HEARTBEAT_MS"),
         }
     }
 
     #[test]
     fn forward_v2_is_the_default_and_opt_out_works() {
-        let prev = std::env::var("STREAMS_FORWARD_V2").ok();
+        let prev = std::env::var("TOPICS_FORWARD_V2").ok();
 
         // Unset ⇒ the async + derived path is the SHIPPED DEFAULT (ON).
-        std::env::remove_var("STREAMS_FORWARD_V2");
+        std::env::remove_var("TOPICS_FORWARD_V2");
         assert!(
             forward_v2_enabled(),
             "async + derived forwarding must be the default when the env var is unset"
@@ -745,7 +745,7 @@ mod tests {
 
         // Only the explicit opt-out values disable it (back to the legacy path).
         for v in ["0", "false", "no", "off"] {
-            std::env::set_var("STREAMS_FORWARD_V2", v);
+            std::env::set_var("TOPICS_FORWARD_V2", v);
             assert!(
                 !forward_v2_enabled(),
                 "`{v}` must opt out to the legacy path"
@@ -753,13 +753,13 @@ mod tests {
         }
         // Any other value (incl. the historical "1"/"true") keeps v2 on.
         for v in ["1", "true", "yes", "on", "anything"] {
-            std::env::set_var("STREAMS_FORWARD_V2", v);
+            std::env::set_var("TOPICS_FORWARD_V2", v);
             assert!(forward_v2_enabled(), "`{v}` must leave v2 enabled");
         }
 
         match prev {
-            Some(v) => std::env::set_var("STREAMS_FORWARD_V2", v),
-            None => std::env::remove_var("STREAMS_FORWARD_V2"),
+            Some(v) => std::env::set_var("TOPICS_FORWARD_V2", v),
+            None => std::env::remove_var("TOPICS_FORWARD_V2"),
         }
     }
 

@@ -25,12 +25,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use streams::clock::{SharedClock, TestClock};
-use streams::config::SegmentConfig;
-use streams::engine::segwriter::SegmentWriter;
-use streams::engine::topic_state::{StoredRecord, TopicState};
-use streams::storage::{File, Fs, LocalSegmentStore, OpenOpts, RealFs, TopicTier};
-use streams::types::TopicConfig;
+use topics::clock::{SharedClock, TestClock};
+use topics::config::SegmentConfig;
+use topics::engine::segwriter::SegmentWriter;
+use topics::engine::topic_state::{StoredRecord, TopicState};
+use topics::storage::{File, Fs, LocalSegmentStore, OpenOpts, RealFs, TopicTier};
+use topics::types::TopicConfig;
 
 /// An `Fs` wrapper that BLOCKS the first `rename` whose destination is a segment
 /// `.data`/`.idx` file (the atomic-publish step of a segment `put`/seal) until

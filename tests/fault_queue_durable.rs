@@ -46,12 +46,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::Fs;
-use streams::types::{Durability, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::Fs;
+use topics::types::{Durability, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Engine build / clock / data-dir plumbing through a FakeDisk (mirrors
@@ -149,7 +149,7 @@ fn live_seqs(engine: &Engine, name: &str) -> BTreeSet<u64> {
         let d = engine
             .diff(
                 name,
-                streams::types::DiffRequest {
+                topics::types::DiffRequest {
                     from_seq: from,
                     limit: 1000,
                     node: None,
@@ -251,11 +251,11 @@ impl GatedSyncFail {
 }
 
 struct GatedFile {
-    inner: Box<dyn streams::storage::File>,
+    inner: Box<dyn topics::storage::File>,
     owner: GatedSyncFail,
 }
 
-impl streams::storage::File for GatedFile {
+impl topics::storage::File for GatedFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read_at(offset, buf)
     }
@@ -289,8 +289,8 @@ impl Fs for GatedSyncFail {
     fn open(
         &self,
         path: &Path,
-        opts: streams::storage::OpenOpts,
-    ) -> std::io::Result<Box<dyn streams::storage::File>> {
+        opts: topics::storage::OpenOpts,
+    ) -> std::io::Result<Box<dyn topics::storage::File>> {
         let inner = self.inner.open(path, opts)?;
         Ok(Box::new(GatedFile {
             inner,
@@ -511,7 +511,7 @@ fn dead_letter_then_crash_preserves_job_in_dl_or_source() {
     let d = engine
         .diff(
             "dlq",
-            streams::types::DiffRequest {
+            topics::types::DiffRequest {
                 from_seq: 0,
                 limit: 10,
                 node: None,
@@ -770,11 +770,11 @@ impl CrashAfter {
 }
 
 struct CrashAfterFile {
-    inner: Box<dyn streams::storage::File>,
+    inner: Box<dyn topics::storage::File>,
     owner: CrashAfter,
 }
 
-impl streams::storage::File for CrashAfterFile {
+impl topics::storage::File for CrashAfterFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read_at(offset, buf)
     }
@@ -804,8 +804,8 @@ impl Fs for CrashAfter {
     fn open(
         &self,
         path: &Path,
-        opts: streams::storage::OpenOpts,
-    ) -> std::io::Result<Box<dyn streams::storage::File>> {
+        opts: topics::storage::OpenOpts,
+    ) -> std::io::Result<Box<dyn topics::storage::File>> {
         let inner = self.disk.open(path, opts)?;
         Ok(Box::new(CrashAfterFile {
             inner,
@@ -878,9 +878,9 @@ fn sweep_durable_claim_ack_crash_points_no_loss() {
     // the suite budget.
     let cap = total_writes.min(7);
 
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(cap) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(crash_point);
         let trip = CrashAfter::new(disk.clone(), crash_point);
         let acked_seqs: Vec<u64>;

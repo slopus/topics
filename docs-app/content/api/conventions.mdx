@@ -20,8 +20,8 @@ http://{host}:{port}/v0/...
 
 The API version is the **first path segment** (`/v0`). The default bind is
 `127.0.0.1:4000`, so a local server is `http://localhost:4000/v0/...`. There is no region
-or tenant in the host — streams is single-machine. Examples across these docs use
-`$STREAMS` for the base URL — set it with `export STREAMS=http://localhost:4000` (or your
+or tenant in the host — topics is single-machine. Examples across these docs use
+`$TOPICS` for the base URL — set it with `export TOPICS=http://localhost:4000` (or your
 server's address).
 
 Breaking changes would ship as a new prefix (`/v1`) that may run concurrently. Within a
@@ -35,12 +35,12 @@ contract.
 Authorization: Bearer <API_KEY>
 ```
 
-A plain bearer token. Keys are supplied at startup via `STREAMS_API_KEYS`
+A plain bearer token. Keys are supplied at startup via `TOPICS_API_KEYS`
 (comma-separated). A missing or unknown key returns `401 unauthorized`. If the server starts
 with **no** keys configured, auth is disabled (single-tenant dev mode) and the header is
 ignored — logged loudly at boot. The default loopback bind keeps that dev mode safe; a
 non-loopback bind with no keys **refuses to start** unless you set
-`STREAMS_ALLOW_INSECURE_NO_AUTH=1`.
+`TOPICS_ALLOW_INSECURE_NO_AUTH=1`.
 
 Keys are **hashed at rest** (SHA-256) — only the digest is kept in memory, never the
 plaintext, which is zeroized after parse and never logged. The comparison is
@@ -56,7 +56,7 @@ names a topic outside its allowlist, returns `403 forbidden`.
 </Callout>
 
 <Callout type="warning">
-  streams speaks **plain HTTP** and does not terminate TLS. Bearer keys are secrets: a token
+  topics speaks **plain HTTP** and does not terminate TLS. Bearer keys are secrets: a token
   sent over plain HTTP, or in a URL query string, can be observed in transit or in logs. For
   any non-loopback exposure, run behind a TLS-terminating reverse proxy. See
   [Security](/deployment/security).

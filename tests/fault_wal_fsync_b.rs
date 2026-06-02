@@ -44,12 +44,12 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Reference model (the oracle) — copied from tests/crash_oracle.rs, trimmed to
@@ -372,10 +372,10 @@ fn assert_topic_contract(
             );
         }
         assert!(
-            dump.head <= model.head + streams::config::DISK_HEAD_RESERVE_AHEAD,
+            dump.head <= model.head + topics::config::DISK_HEAD_RESERVE_AHEAD,
             "{name}: disk recovered head {} exceeds reservation ceiling {}",
             dump.head,
-            model.head + streams::config::DISK_HEAD_RESERVE_AHEAD
+            model.head + topics::config::DISK_HEAD_RESERVE_AHEAD
         );
     }
 
@@ -833,9 +833,9 @@ fn f_snap_checkpoint_flush_crash() {
     // interesting boundary of the snapshot flush while staying fast.
     let cap = snap_writes.max(1).min(8);
 
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(cap) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0x5A0_0000 ^ crash_point);
         let mut model = RefModel::default();
 

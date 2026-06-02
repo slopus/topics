@@ -19,7 +19,7 @@ const els = {
 };
 
 const defaultName = `guest-${clientId.slice(-4)}`;
-els.user.value = localStorage.getItem("streams-socketio-chat-user") || defaultName;
+els.user.value = localStorage.getItem("topics-socketio-chat-user") || defaultName;
 setFormEnabled(false);
 
 const messagesById = new Map();
@@ -39,7 +39,7 @@ socket.on("server:hello", (hello) => {
   els.clientTopic.textContent = hello.topics.client;
   els.cursor.textContent = String(hello.cursor);
   els.subtitle.textContent = `Client ${hello.clientId} is subscribed to ${hello.topics.ingress}`;
-  setStatus(els.streamStatus, "streams ready", "ok");
+  setStatus(els.streamStatus, "topics ready", "ok");
   setFormEnabled(true);
 });
 
@@ -75,7 +75,7 @@ els.form.addEventListener("submit", async (event) => {
   }
 
   const user = els.user.value.trim() || defaultName;
-  localStorage.setItem("streams-socketio-chat-user", user);
+  localStorage.setItem("topics-socketio-chat-user", user);
   els.message.value = "";
   setFormEnabled(false);
 
@@ -157,7 +157,7 @@ function setFormEnabled(enabled) {
 }
 
 function getOrCreateClientId() {
-  const key = "streams-socketio-chat-client-id";
+  const key = "topics-socketio-chat-client-id";
   const existing = localStorage.getItem(key);
   if (existing) {
     return existing;

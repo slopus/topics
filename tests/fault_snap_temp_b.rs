@@ -9,7 +9,7 @@
 //! > and `load_latest` falls back to an older valid snapshot or to a full WAL
 //! > replay — never decoded as state, never an OOB read, never a panic.
 //!
-//! Strategies (see `docs/FAULT_TESTING.md` / `/tmp/streams-fault-catalog.json`):
+//! Strategies (see `docs/FAULT_TESTING.md` / `/tmp/topics-fault-catalog.json`):
 //!
 //! - `F-SNAP-BAD-MAGIC` — magic bytes `0..4` corrupted ⇒ Framing ⇒ skipped.
 //! - `F-SNAP-VERSION-MISMATCH` — version field `4..8` bumped to an unsupported
@@ -45,15 +45,15 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::snapshot::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::snapshot::{
     load_latest_with, write_snapshot_with, Checkpoint, Snapshot, SnapshotRecord, SnapshotTopic,
 };
-use streams::storage::testfs::FakeDisk;
-use streams::storage::{Fs, OpenOpts};
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::storage::testfs::FakeDisk;
+use topics::storage::{Fs, OpenOpts};
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ---------------------------------------------------------------------------
 // On-disk snapshot framing layout (mirrors src/storage/snapshot.rs; the

@@ -1,6 +1,6 @@
 //! Phase-4 Stage-5 crash-recovery acceptance tests.
 //!
-//! These spawn the **real `streams` release/debug binary as a subprocess** with
+//! These spawn the **real `topics` release/debug binary as a subprocess** with
 //! a unique `tempfile::tempdir` data dir, drive it over HTTP, then `kill -9`
 //! (SIGKILL) the process — no graceful shutdown, no drop handlers, nothing
 //! flushed beyond what the WAL fsync already durably committed. A second boot on
@@ -44,9 +44,9 @@ struct Server {
     base: String,
 }
 
-/// Spawn the `streams` binary on an EPHEMERAL port (`STREAMS_PORT=0`) with
+/// Spawn the `topics` binary on an EPHEMERAL port (`TOPICS_PORT=0`) with
 /// `data_dir`, then read the OS-assigned `host:port` the child wrote to its
-/// `STREAMS_PORT_FILE`. This is robust under parallel spawn: the child holds the
+/// `TOPICS_PORT_FILE`. This is robust under parallel spawn: the child holds the
 /// bound socket continuously, so unlike a reserve-then-release scheme nothing can
 /// steal the port between reservation and bind. Logs silenced.
 ///
@@ -55,20 +55,20 @@ struct Server {
 fn spawn_server(data_dir: &std::path::Path, port_file: &std::path::Path) -> Server {
     // Start clean so a stale file from a prior boot on the same path is never read.
     let _ = std::fs::remove_file(port_file);
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_streams"))
-        .env("STREAMS_HOST", "127.0.0.1")
-        .env("STREAMS_PORT", "0") // OS-assigned ephemeral port (no bind race).
-        .env("STREAMS_PORT_FILE", port_file)
-        .env("STREAMS_DATA_DIR", data_dir)
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_topics"))
+        .env("TOPICS_HOST", "127.0.0.1")
+        .env("TOPICS_PORT", "0") // OS-assigned ephemeral port (no bind race).
+        .env("TOPICS_PORT_FILE", port_file)
+        .env("TOPICS_DATA_DIR", data_dir)
         // Pin a single WAL shard so the on-disk layout is the flat
         // `wal/wal-<idx>.log` these tests inspect/poke directly (the default is
         // num_cpus-based, which would spread frames across `shard-NN/` subdirs).
-        .env("STREAMS_WAL_SHARDS", "1")
+        .env("TOPICS_WAL_SHARDS", "1")
         .env("RUST_LOG", "error")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("spawn streams binary");
+        .expect("spawn topics binary");
     let base = read_port_file(port_file, Duration::from_secs(10));
     Server { child, base }
 }
@@ -488,7 +488,7 @@ fn sigkill_during_nondurable_burst_recovers_clean_prefix() {
     // acked seq (no reuse) and never exceeds the reservation block.
     assert!(head >= count, "head never below the live count (no reuse)");
     assert!(
-        head <= count + streams::config::DISK_HEAD_RESERVE_AHEAD,
+        head <= count + topics::config::DISK_HEAD_RESERVE_AHEAD,
         "head {head} within the reservation block of count {count}"
     );
     assert!(count >= 1, "at least some prefix survived");
@@ -612,7 +612,7 @@ fn torn_tail_on_subprocess_wal_recovers_clean() {
     let active = files.last().unwrap().clone();
 
     use std::io::{Seek, SeekFrom, Write};
-    let data_end = streams::storage::WalReader::open(&active)
+    let data_end = topics::storage::WalReader::open(&active)
         .unwrap()
         .count_valid_len();
     {

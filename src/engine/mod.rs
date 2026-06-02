@@ -56,7 +56,7 @@ mod data_dir_lock {
     impl DataDirLock {
         pub(super) fn acquire(dir: &Path) -> io::Result<Self> {
             std::fs::create_dir_all(dir)?;
-            let path = dir.join(".streams.lock");
+            let path = dir.join(".topics.lock");
             let mut file = OpenOptions::new()
                 .create(true)
                 .truncate(false)
@@ -183,7 +183,7 @@ pub struct Engine {
     pub started_at: Instant,
     /// Whether the ASYNC + derived (compact-WAL, cursor-driven, no-silent-loss)
     /// forwarding path is active for this engine. Captured ONCE at construction
-    /// from [`config::forward_v2_enabled`] (env `STREAMS_FORWARD_V2`) so the flag is
+    /// from [`config::forward_v2_enabled`] (env `TOPICS_FORWARD_V2`) so the flag is
     /// stable for the engine's lifetime and not re-read per op. When `false`
     /// (default) the live synchronous `forward_from` path runs unchanged. When
     /// `true` the write/ack path stops forwarding; a background worker +
@@ -2626,7 +2626,7 @@ impl Engine {
     // -----------------------------------------------------------------------
     // Async + derived forwarding (docs/ASYNC_ROUTER_DESIGN.md)
     //
-    // Active only when `self.forward_v2` is set (env `STREAMS_FORWARD_V2`). The
+    // Active only when `self.forward_v2` is set (env `TOPICS_FORWARD_V2`). The
     // write/ack path then stops forwarding entirely; these are the idempotent,
     // cursor-driven step the two drivers (read-path catch-up + background worker)
     // share. Forwarded dest records are DERIVED off the source log + per-router
@@ -3431,7 +3431,7 @@ impl Engine {
                     format!(
                         "topic {:?} is already the destination of another router with a \
                          different source; a derived dest is single-owner (no multi-source \
-                         fan-in) while STREAMS_FORWARD_V2 is on",
+                         fan-in) while TOPICS_FORWARD_V2 is on",
                         req.dest
                     ),
                 )

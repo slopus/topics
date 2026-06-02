@@ -7,7 +7,7 @@ import { Callout, Cards } from 'nextra/components'
 
 # API Reference
 
-streams is a persistent event log exposed as a **JSON-first HTTP API**: every operation is a
+topics is a persistent event log exposed as a **JSON-first HTTP API**: every operation is a
 plain request with a JSON body and a JSON response, so `curl` is a complete client. No SDK,
 no binary framing, no connection modes.
 
@@ -21,7 +21,7 @@ the conventions that hold across all of it.
 > event a monotonic **`seq`**; reading is "give me everything after `from_seq`," and
 > advancing your stored `from_seq` is the ack.
 
-If you remember only that, you can use streams. Everything below is that idea expanded.
+If you remember only that, you can use topics. Everything below is that idea expanded.
 
 ## Level 2 — the six everyday operations
 
@@ -52,7 +52,7 @@ http://{host}:{port}/v0/...
 
 The API version is the **first path segment** (`/v0`). The default bind is
 `127.0.0.1:4000`, so a local server lives at `http://localhost:4000/v0/...`. There is no
-region or tenant in the host — streams is single-machine.
+region or tenant in the host — topics is single-machine.
 
 Breaking changes would ship as a new prefix (`/v1`) that may run concurrently. Within a
 version, changes are strictly **additive**: new optional request fields, new response

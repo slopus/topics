@@ -13,12 +13,12 @@
 //!
 //! | Limit | Env var | Default | Enforced on |
 //! |---|---|---|---|
-//! | Max topics | `STREAMS_MAX_TOPICS` | `100_000` | every topic creation ([`crate::engine::Engine::put_topic`], auto-create) |
-//! | Max routers | `STREAMS_MAX_ROUTERS` | `10_000` | every router creation ([`crate::engine::Engine::put_router`]) |
-//! | Max watch sessions | `STREAMS_MAX_WATCH_SESSIONS` | `10_000` | `POST /v0/watch` |
-//! | Max SSE conns (global) | `STREAMS_MAX_SSE_CONNECTIONS` | `10_000` | every SSE stream GET (`/v0/watch/:wid`, `/v0/topics/:q/work`) |
-//! | Max SSE conns / key | `STREAMS_MAX_SSE_CONNECTIONS_PER_KEY` | `1_000` | same, per authenticated key |
-//! | Max in-flight requests / key | `STREAMS_MAX_INFLIGHT_PER_KEY` | `1_000` | every request (concurrency cap in the auth middleware) |
+//! | Max topics | `TOPICS_MAX_TOPICS` | `100_000` | every topic creation ([`crate::engine::Engine::put_topic`], auto-create) |
+//! | Max routers | `TOPICS_MAX_ROUTERS` | `10_000` | every router creation ([`crate::engine::Engine::put_router`]) |
+//! | Max watch sessions | `TOPICS_MAX_WATCH_SESSIONS` | `10_000` | `POST /v0/watch` |
+//! | Max SSE conns (global) | `TOPICS_MAX_SSE_CONNECTIONS` | `10_000` | every SSE stream GET (`/v0/watch/:wid`, `/v0/topics/:q/work`) |
+//! | Max SSE conns / key | `TOPICS_MAX_SSE_CONNECTIONS_PER_KEY` | `1_000` | same, per authenticated key |
+//! | Max in-flight requests / key | `TOPICS_MAX_INFLIGHT_PER_KEY` | `1_000` | every request (concurrency cap in the auth middleware) |
 //!
 //! # How it fails
 //!
@@ -40,23 +40,23 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// Default cap on the number of topics (`STREAMS_MAX_TOPICS`). `0` ⇒ unlimited.
+/// Default cap on the number of topics (`TOPICS_MAX_TOPICS`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_TOPICS: u64 = 100_000;
-/// Default cap on the number of routers (`STREAMS_MAX_ROUTERS`). `0` ⇒ unlimited.
+/// Default cap on the number of routers (`TOPICS_MAX_ROUTERS`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_ROUTERS: u64 = 10_000;
-/// Default cap on live watch sessions (`STREAMS_MAX_WATCH_SESSIONS`). `0` ⇒ unlimited.
+/// Default cap on live watch sessions (`TOPICS_MAX_WATCH_SESSIONS`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_WATCH_SESSIONS: u64 = 10_000;
 /// Default cap on concurrent SSE connections, server-wide
-/// (`STREAMS_MAX_SSE_CONNECTIONS`). `0` ⇒ unlimited.
+/// (`TOPICS_MAX_SSE_CONNECTIONS`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_SSE_CONNECTIONS: u64 = 10_000;
 /// Default cap on concurrent SSE connections per api key
-/// (`STREAMS_MAX_SSE_CONNECTIONS_PER_KEY`). `0` ⇒ unlimited.
+/// (`TOPICS_MAX_SSE_CONNECTIONS_PER_KEY`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_SSE_CONNECTIONS_PER_KEY: u64 = 1_000;
 /// Default cap on concurrent in-flight requests per api key
-/// (`STREAMS_MAX_INFLIGHT_PER_KEY`). `0` ⇒ unlimited.
+/// (`TOPICS_MAX_INFLIGHT_PER_KEY`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_INFLIGHT_PER_KEY: u64 = 1_000;
 /// Default cap on the **total retained record bytes** across all topics
-/// (`STREAMS_MAX_TOTAL_BYTES`). `0` ⇒ unlimited (the default, so back-compat /
+/// (`TOPICS_MAX_TOTAL_BYTES`). `0` ⇒ unlimited (the default, so back-compat /
 /// existing suites are unaffected). Bounds disk/RAM growth from authenticated
 /// writers (codex HIGH #5); when set, a write that would push the live total over
 /// the cap is refused with `429 throttled` (the client can shed/delete and retry).
@@ -110,16 +110,16 @@ impl Limits {
     /// var. A literal `0` disables that specific limit (unlimited).
     pub fn from_env() -> Self {
         let mut l = Limits::default();
-        env_u64("STREAMS_MAX_TOPICS", &mut l.max_topics);
-        env_u64("STREAMS_MAX_ROUTERS", &mut l.max_routers);
-        env_u64("STREAMS_MAX_WATCH_SESSIONS", &mut l.max_watch_sessions);
-        env_u64("STREAMS_MAX_SSE_CONNECTIONS", &mut l.max_sse_connections);
+        env_u64("TOPICS_MAX_TOPICS", &mut l.max_topics);
+        env_u64("TOPICS_MAX_ROUTERS", &mut l.max_routers);
+        env_u64("TOPICS_MAX_WATCH_SESSIONS", &mut l.max_watch_sessions);
+        env_u64("TOPICS_MAX_SSE_CONNECTIONS", &mut l.max_sse_connections);
         env_u64(
-            "STREAMS_MAX_SSE_CONNECTIONS_PER_KEY",
+            "TOPICS_MAX_SSE_CONNECTIONS_PER_KEY",
             &mut l.max_sse_connections_per_key,
         );
-        env_u64("STREAMS_MAX_INFLIGHT_PER_KEY", &mut l.max_inflight_per_key);
-        env_u64("STREAMS_MAX_TOTAL_BYTES", &mut l.max_total_bytes);
+        env_u64("TOPICS_MAX_INFLIGHT_PER_KEY", &mut l.max_inflight_per_key);
+        env_u64("TOPICS_MAX_TOTAL_BYTES", &mut l.max_total_bytes);
         l
     }
 

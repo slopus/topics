@@ -18,7 +18,7 @@
 //! `Append` records, sealed at a size/event/age cap. [`segstore`] defines the
 //! [`SegmentStore`] trait and its [`LocalSegmentStore`], plus a per-topic
 //! [`TopicTier`] = a HOT store (fast NVMe, under the data dir) and an optional COLD
-//! store (`STREAMS_COLD_DIR`). Cold reads / relocation run on a blocking pool off
+//! store (`TOPICS_COLD_DIR`). Cold reads / relocation run on a blocking pool off
 //! the hot path so they never block writes or live delivery. When no cold tier is
 //! configured (the default), nothing relocates and behavior is unchanged. An S3
 //! store is a future impl of the same trait. Stage 1 builds the trait, format,

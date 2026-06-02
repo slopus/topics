@@ -10,14 +10,14 @@ import 'nextra-theme-docs/style.css'
 
 export const metadata: Metadata = {
   title: {
-    default: 'streams — a persistent event engine in a single binary',
-    template: '%s — streams'
+    default: 'topics — a persistent event engine in a single binary',
+    template: '%s — topics'
   },
   description:
-    'streams is an append-only log service over a clean, JSON-first HTTP API. Topics, routers, multiplexed SSE, lease queues, and per-topic durability — one static binary, one machine. Data loss is always explicit, never silent.'
+    'topics is an append-only log service over a clean, JSON-first HTTP API. Topics, routers, multiplexed SSE, lease queues, and per-topic durability — one static binary, one machine. Data loss is always explicit, never silent.'
 }
 
-const GITHUB_URL = 'https://github.com/slopus/streams'
+const GITHUB_URL = 'https://github.com/slopus/topics'
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const pageMap = await getPageMap()
@@ -64,7 +64,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
       </div>
       <div className="footer-base">
         <span>MIT licensed.</span>
-        <span>© {new Date().getFullYear()} the streams authors.</span>
+        <span>© {new Date().getFullYear()} the topics authors.</span>
       </div>
     </Footer>
   )

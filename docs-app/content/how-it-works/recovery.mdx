@@ -1,13 +1,13 @@
 ---
 title: Crash Recovery
-description: How streams rebuilds in-memory state on restart — load the snapshot, replay the WAL from the checkpoint, truncate a torn tail, and reclaim orphan segments — so an acked durable write is never lost.
+description: How topics rebuilds in-memory state on restart — load the snapshot, replay the WAL from the checkpoint, truncate a torn tail, and reclaim orphan segments — so an acked durable write is never lost.
 ---
 
 import { Callout, Steps } from 'nextra/components'
 
 # Crash Recovery
 
-On every restart — clean or after a crash — streams rebuilds all in-memory state from
+On every restart — clean or after a crash — topics rebuilds all in-memory state from
 disk, loses only data that never reached the WAL, and tolerates a crash at any instant.
 Recovery is a single deterministic pass: load the latest metadata snapshot, replay the
 **write-ahead log** from the last checkpoint, truncate any torn tail at the first invalid

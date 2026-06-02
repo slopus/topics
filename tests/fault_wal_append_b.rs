@@ -1,8 +1,8 @@
 //! Phase-8B fault/crash batch — 5 `wal-append` boundary strategies from the
-//! catalog (`/tmp/streams-fault-catalog.json`), each one test fn named after its
+//! catalog (`/tmp/topics-fault-catalog.json`), each one test fn named after its
 //! catalog id. Every test asserts the CORRECT crash-consistency behavior via the
 //! durability contract / the model oracle, reusing the Phase-8A harness
-//! (`FakeDisk` / `FaultFs` from `streams::storage::testfs`, the real WAL +
+//! (`FakeDisk` / `FaultFs` from `topics::storage::testfs`, the real WAL +
 //! recovery wired through `Engine::with_data_dir_fs` and the `*_with`
 //! constructors).
 //!
@@ -39,13 +39,13 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalError, WalReader, WalRecord};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalError, WalReader, WalRecord};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_batch1.rs)
@@ -713,7 +713,7 @@ fn f_nfs_estale_wal_fd() {
     // stale handle), so the 2 prior acked frames are intact and the ESTALE'd write
     // left no trace.
     let engine = open_engine(&disk);
-    use streams::types::DiffRequest;
+    use topics::types::DiffRequest;
     let d = engine
         .diff(
             "p",

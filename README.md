@@ -1,12 +1,12 @@
-# streams
+# topics
 
-**Millions of events a second, with the simplicity of SQLite.** streams is a persistent,
-append-only event log exposed over a clean, JSON-first HTTP API: write events to named
-**topics**, read them back by sequence, fan them out with **routers**, and watch many
-topics at once over a single Server-Sent Events connection. It runs as one process on one
-machine — no cluster, no coordination, the way SQLite is one file instead of a database
-fleet — backed by a write-ahead log on local NVMe. It's the persistence layer for queues,
-pub/sub, and durable event streams, and data loss is **always explicit, never silent**.
+A persistent event engine in a single binary. **topics** is an append-only log
+service exposed over a clean, JSON-first HTTP API: write events to named **topics**,
+read them back by sequence, fan them out with **routers**, and watch many topics at
+once over a single Server-Sent Events connection — all from one static binary on one
+machine, backed by a write-ahead log on local NVMe. It is the persistence layer for
+job queues, pub/sub, and durable event streams, with a design that makes data loss
+**always explicit, never silent**.
 
 Three deliberate bets define it:
 
@@ -73,14 +73,14 @@ across a purely-deleted gap is silent while reading below an evicted floor tombs
 
 ## Goals & constraints
 
-What streams **aims** for — the design targets the implementation is built and tuned against:
+What topics **aims** for — the design targets the implementation is built and tuned against:
 
 - **Throughput: millions of events/sec.** The in-process engine appends and projects records
   at **millions a second** (micro-benchmarks: ~5.6–5.9 M appends/s, ~12–13 M diff
   projections/s); over HTTP the realistic ceiling is the request/serialization path and the
   durability class, with the often-quoted ~1 M/s reached in aggregate via batching and
   sharding. Writes are batched (a single `POST`
-  carries up to thousands of records) and the WAL is **sharded** (`STREAMS_WAL_SHARDS`,
+  carries up to thousands of records) and the WAL is **sharded** (`TOPICS_WAL_SHARDS`,
   default `min(num_cpus, 8)`) into independent ordered writers, each with **adaptive group
   commit** — one `fsync` amortized across a whole batch of concurrent durable writers — so
   the per-event cost approaches the cost of a sequential disk append and durable throughput
@@ -118,14 +118,14 @@ topic's class).
 
 ## Quickstart
 
-Point `$STREAMS` at the server (`export STREAMS=http://localhost:4000`), running with auth
+Point `$TOPICS` at the server (`export TOPICS=http://localhost:4000`), running with auth
 disabled (dev mode — the default on a loopback bind). These commands record an online
 store's orders.
 
 ### 1. Create a topic (optional — first write auto-creates it)
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/orders \
+curl -X PUT $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "durable": true, "cap_records": 0, "ttl_ms": 0 }'
 ```
@@ -142,7 +142,7 @@ curl -X PUT $STREAMS/v0/topics/orders \
 ### 2. Write records (server assigns the seqs)
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "records": [
           { "data": { "sku": "AEROPRESS-GO", "qty": 1, "total": 3499 }, "tag": "order-7731" },
@@ -159,7 +159,7 @@ curl -X POST $STREAMS/v0/topics/orders \
 ### 3. Read current state (head, earliest, count, config)
 
 ```bash
-curl $STREAMS/v0/topics/orders
+curl $TOPICS/v0/topics/orders
 ```
 
 ```json
@@ -171,7 +171,7 @@ curl $STREAMS/v0/topics/orders
 ### 4. Read the difference from a cursor (batched, with tombstones)
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders/diff \
+curl -X POST $TOPICS/v0/topics/orders/diff \
   -H 'content-type: application/json' \
   -d '{ "from_seq": 0, "limit": 500 }'
 ```
@@ -198,7 +198,7 @@ that's how mirrored nodes stay echo-free (loop prevention).
 
 ```bash
 # Step 1: create the watch session (carries the full subscription)
-curl -X POST $STREAMS/v0/watch \
+curl -X POST $TOPICS/v0/watch \
   -H 'content-type: application/json' \
   -d '{ "topics": { "orders": { "from_seq": 0 }, "notifications": { "tail": true } } }'
 # -> { "wid": "wid_BuRguGorNdVFWNQULz-rrw", "stream_url": "/v0/watch/wid_BuRguGorNdVFWNQULz-rrw", ... }
@@ -208,7 +208,7 @@ curl -X POST $STREAMS/v0/watch \
 # a leaked wid is not a credential; the stream can never exceed the creator's scope.
 
 # Step 2: open the stream (EventSource-compatible)
-curl -N $STREAMS/v0/watch/wid_BuRguGorNdVFWNQULz-rrw
+curl -N $TOPICS/v0/watch/wid_BuRguGorNdVFWNQULz-rrw
 ```
 
 ```
@@ -229,7 +229,7 @@ data: {"topic":"orders","head_seq":2}
 
 ```bash
 # cancel one order (exact tag match — removes records present right now)
-curl -X POST $STREAMS/v0/topics/orders/delete \
+curl -X POST $TOPICS/v0/topics/orders/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Eq", "order-7731"] }'
 ```
@@ -249,14 +249,14 @@ is *not* deleted. Three patterns:
 
 ```bash
 # Snapshot / compaction: drop everything before a seq (e.g. after a checkpoint)
-curl -X POST $STREAMS/v0/topics/orders/delete -d '{ "before_seq": 480000 }'
+curl -X POST $TOPICS/v0/topics/orders/delete -d '{ "before_seq": 480000 }'
 
 # Message update: publish v2, then delete the prior version but keep the new one
-curl -X POST $STREAMS/v0/topics/chat:general/delete \
+curl -X POST $TOPICS/v0/topics/chat:general/delete \
   -d '{ "match": ["tag", "Eq", "user-1042:msg-5"], "before_seq": 5012 }'   # 5012 = seq of v2
 
 # Chat revoke: a kicked user's whole sub-stream (prefix), point-in-time
-curl -X POST $STREAMS/v0/topics/chat:general/delete \
+curl -X POST $TOPICS/v0/topics/chat:general/delete \
   -d '{ "match": ["tag", "Glob", "user-1042:*"] }'
 ```
 
@@ -264,7 +264,7 @@ curl -X POST $STREAMS/v0/topics/chat:general/delete \
 
 ## Running it
 
-streams is one self-contained server with no external dependencies — no database, no
+topics is one self-contained server with no external dependencies — no database, no
 broker, no sidecar: the complete `/v0` API backed by a write-ahead log on local disk. On
 start it opens the data directory, loads the latest snapshot, and **replays the WAL
 forward** (truncating any torn tail) before serving — so an acknowledged durable write
@@ -276,21 +276,21 @@ survives a restart. The readiness gate (`GET /v0/ready`) returns `503` during re
 cargo build --release
 
 # run it (defaults to 127.0.0.1:4000 loopback, auth disabled in dev mode;
-# WAL + segments + snapshots live under ./streams-data)
-./target/release/streams
+# WAL + segments + snapshots live under ./topics-data)
+./target/release/topics
 ```
 
 ### Running with Docker
 
-A multi-arch image is published to GHCR at `ghcr.io/slopus/streams`. The image
+A multi-arch image is published to GHCR at `ghcr.io/slopus/topics`. The image
 binds `0.0.0.0:4000` and stores durable state in the `/data` volume. Because the
 server refuses to start on a non-loopback bind with no API keys, pass
-`STREAMS_API_KEYS=...` (or, for local/dev only, `STREAMS_ALLOW_INSECURE_NO_AUTH=1`):
+`TOPICS_API_KEYS=...` (or, for local/dev only, `TOPICS_ALLOW_INSECURE_NO_AUTH=1`):
 
 ```bash
-docker run --rm -p 4000:4000 -v streams-data:/data \
-  -e STREAMS_API_KEYS=replace-with-a-real-secret \
-  ghcr.io/slopus/streams:latest
+docker run --rm -p 4000:4000 -v topics-data:/data \
+  -e TOPICS_API_KEYS=replace-with-a-real-secret \
+  ghcr.io/slopus/topics:latest
 ```
 
 See [RELEASING.md](RELEASING.md) for the full run/release details.
@@ -299,28 +299,28 @@ Configuration is read from the environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `STREAMS_HOST` | `127.0.0.1` | Bind host (loopback-only by default; may also be a full `host:port`). |
-| `STREAMS_PORT` | `4000` | Listen port. |
-| `STREAMS_API_KEYS` | _(unset)_ | Comma-separated bearer keys. **Hashed at rest** (SHA-256) and constant-time compared. Each entry may carry optional scopes + a topic-name prefix allowlist: `key` \| `key:scopes` \| `key:scopes:prefixes` (§0.2). A bare `key` = full access. Unset ⇒ **auth disabled** (dev mode). |
-| `STREAMS_ALLOW_INSECURE_NO_AUTH` | `0` | Required to start on a **non-loopback** bind with **no** keys — otherwise the server refuses to start (it would be an open, unauthenticated event store). |
-| `STREAMS_PROBE_AUTH` | `0` | Require auth on the health/ready/metrics probes too (`/v0/health`, `/v0/ready`, `/v0/metrics`). Off ⇒ probes are unauthenticated. |
-| `STREAMS_MAX_BODY_BYTES` | `67108864` (64 MiB) | Max total request body before parse; larger ⇒ `413`. |
-| `STREAMS_DATA_DIR` | `./streams-data` | Directory for the WAL, segments, and snapshots. Replayed on start; a missing/empty dir is a fresh start. |
-| `STREAMS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread / file set / group-commit). Each topic maps to one shard by a stable hash of its id, so per-topic ordering + durability still hold; recovery is shard-count-agnostic (replays all shards by `topic_id`), so this may change between restarts. `1` = the flat single-writer layout. |
-| `STREAMS_COLD_DIR` | _(unset)_ | Optional cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path; unset ⇒ tiering disabled (everything stays hot). Cold reads never affect writes or delivery. |
-| `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal (roll) the active segment after this many records. |
-| `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Also seal a segment after this many `.data` bytes. |
-| `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Also seal a partially-filled active segment after this wall-clock age. `0` disables the age trigger. |
-| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Keep at most this many most-recent sealed segments hot before relocating older ones to the cold tier (the active segment is always hot). |
-| `STREAMS_HOT_RETAIN_BYTES` | `0` (count-only) | Optionally bound hot sealed-segment bytes; the stricter of the two retention bounds wins. |
-| `STREAMS_FORWARD_V2` | `1` (on) | The async + derived router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged, single-source-per-dest) described in [Routers](#features) is now the **default**: one WAL append per source append regardless of fan-out, off the source ack path. Set `STREAMS_FORWARD_V2=0` (`false`/`no`/`off`) to **opt out** back to the legacy synchronous in-line forward (durable-by-construction but WAL-amplified — N WAL writes per N-way fan-out, on the ack path — and it permits multi-source fan-in into one dest). |
-| `STREAMS_MAX_TOPICS` | `100000` | Max topics (DoS hardening). `0` = unlimited. Creating past it ⇒ `429 throttled`. |
-| `STREAMS_MAX_ROUTERS` | `10000` | Max routers. `0` = unlimited. |
-| `STREAMS_MAX_WATCH_SESSIONS` | `10000` | Max live watch sessions. `0` = unlimited. |
-| `STREAMS_MAX_SSE_CONNECTIONS` | `10000` | Max concurrent SSE connections, server-wide. `0` = unlimited. |
-| `STREAMS_MAX_SSE_CONNECTIONS_PER_KEY` | `1000` | Max concurrent SSE connections per api key. `0` = unlimited. |
-| `STREAMS_MAX_INFLIGHT_PER_KEY` | `1000` | Max concurrent in-flight requests per api key. `0` = unlimited. |
-| `STREAMS_MAX_TOTAL_BYTES` | `0` (unlimited) | Global quota on total retained record bytes across all topics. A write past it ⇒ `429 throttled`. |
+| `TOPICS_HOST` | `127.0.0.1` | Bind host (loopback-only by default; may also be a full `host:port`). |
+| `TOPICS_PORT` | `4000` | Listen port. |
+| `TOPICS_API_KEYS` | _(unset)_ | Comma-separated bearer keys. **Hashed at rest** (SHA-256) and constant-time compared. Each entry may carry optional scopes + a topic-name prefix allowlist: `key` \| `key:scopes` \| `key:scopes:prefixes` (§0.2). A bare `key` = full access. Unset ⇒ **auth disabled** (dev mode). |
+| `TOPICS_ALLOW_INSECURE_NO_AUTH` | `0` | Required to start on a **non-loopback** bind with **no** keys — otherwise the server refuses to start (it would be an open, unauthenticated event store). |
+| `TOPICS_PROBE_AUTH` | `0` | Require auth on the health/ready/metrics probes too (`/v0/health`, `/v0/ready`, `/v0/metrics`). Off ⇒ probes are unauthenticated. |
+| `TOPICS_MAX_BODY_BYTES` | `67108864` (64 MiB) | Max total request body before parse; larger ⇒ `413`. |
+| `TOPICS_DATA_DIR` | `./topics-data` | Directory for the WAL, segments, and snapshots. Replayed on start; a missing/empty dir is a fresh start. |
+| `TOPICS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread / file set / group-commit). Each topic maps to one shard by a stable hash of its id, so per-topic ordering + durability still hold; recovery is shard-count-agnostic (replays all shards by `topic_id`), so this may change between restarts. `1` = the flat single-writer layout. |
+| `TOPICS_COLD_DIR` | _(unset)_ | Optional cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path; unset ⇒ tiering disabled (everything stays hot). Cold reads never affect writes or delivery. |
+| `TOPICS_SEGMENT_MAX_EVENTS` | `10000` | Seal (roll) the active segment after this many records. |
+| `TOPICS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Also seal a segment after this many `.data` bytes. |
+| `TOPICS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Also seal a partially-filled active segment after this wall-clock age. `0` disables the age trigger. |
+| `TOPICS_HOT_RETAIN_SEGMENTS` | `4` | Keep at most this many most-recent sealed segments hot before relocating older ones to the cold tier (the active segment is always hot). |
+| `TOPICS_HOT_RETAIN_BYTES` | `0` (count-only) | Optionally bound hot sealed-segment bytes; the stricter of the two retention bounds wins. |
+| `TOPICS_FORWARD_V2` | `1` (on) | The async + derived router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged, single-source-per-dest) described in [Routers](#features) is now the **default**: one WAL append per source append regardless of fan-out, off the source ack path. Set `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) to **opt out** back to the legacy synchronous in-line forward (durable-by-construction but WAL-amplified — N WAL writes per N-way fan-out, on the ack path — and it permits multi-source fan-in into one dest). |
+| `TOPICS_MAX_TOPICS` | `100000` | Max topics (DoS hardening). `0` = unlimited. Creating past it ⇒ `429 throttled`. |
+| `TOPICS_MAX_ROUTERS` | `10000` | Max routers. `0` = unlimited. |
+| `TOPICS_MAX_WATCH_SESSIONS` | `10000` | Max live watch sessions. `0` = unlimited. |
+| `TOPICS_MAX_SSE_CONNECTIONS` | `10000` | Max concurrent SSE connections, server-wide. `0` = unlimited. |
+| `TOPICS_MAX_SSE_CONNECTIONS_PER_KEY` | `1000` | Max concurrent SSE connections per api key. `0` = unlimited. |
+| `TOPICS_MAX_INFLIGHT_PER_KEY` | `1000` | Max concurrent in-flight requests per api key. `0` = unlimited. |
+| `TOPICS_MAX_TOTAL_BYTES` | `0` (unlimited) | Global quota on total retained record bytes across all topics. A write past it ⇒ `429 throttled`. |
 | `RUST_LOG` | `info` | Tracing filter. |
 
 Durability is **per topic**, in three commit classes (`durability`, §0.10) — the
@@ -342,14 +342,14 @@ of class, **an acknowledged write is published; a
 write that fails to commit publishes nothing visible** (no readable-but-not-durable
 state). The server shuts down gracefully on `SIGINT`/`SIGTERM`, writing a final
 snapshot so a clean restart starts from a current checkpoint. The quickstart
-commands above work verbatim once `$STREAMS` points at your server.
+commands above work verbatim once `$TOPICS` points at your server.
 
 ### Security
 
 - **Default bind is loopback** (`127.0.0.1:4000`), so an unconfigured server is never
   accidentally a public, unauthenticated event store. Binding a **non-loopback** address with
-  **no** `STREAMS_API_KEYS` makes the server **refuse to start** unless you set
-  `STREAMS_ALLOW_INSECURE_NO_AUTH=1` (it logs the reason loudly).
+  **no** `TOPICS_API_KEYS` makes the server **refuse to start** unless you set
+  `TOPICS_ALLOW_INSECURE_NO_AUTH=1` (it logs the reason loudly).
 - **Bearer keys are hashed at rest** (SHA-256 — the plaintext is parsed once at startup, then
   **zeroized and dropped**; only the digest is kept in memory, and tokens are never logged) and
   **constant-time** compared with no early-exit.
@@ -372,7 +372,7 @@ commands above work verbatim once `$STREAMS` points at your server.
   alone is not a credential, so a leaked `wid` cannot be opened by a holder who lacks the key —
   and can never exceed the creator's scope. The `?token=` query fallback is accepted **only on
   the SSE stream GETs** and leaks via logs — prefer the `Authorization` header.
-- **streams speaks plain HTTP** (no built-in TLS, by design). For any non-loopback exposure,
+- **topics speaks plain HTTP** (no built-in TLS, by design). For any non-loopback exposure,
   run it behind a **TLS-terminating reverse proxy** (or bind loopback). Native TLS is **out of
   scope** — terminate it at the proxy. See `docs/API.md` §0.2 / §0.11.
 
@@ -396,19 +396,19 @@ instead of ~30:
   cadence, TTL/lease expiry) are driven by an injected `TestClock` or a short
   configurable interval, so there are no real-time waits for correctness.
 - **Opt-in exhaustive matrix.** To replay the **full** `0..=M` crash matrix for
-  every boundary, set `STREAMS_TEST_EXHAUSTIVE=1`:
+  every boundary, set `TOPICS_TEST_EXHAUSTIVE=1`:
 
   ```bash
-  STREAMS_TEST_EXHAUSTIVE=1 cargo test --features test-fs,failpoints
+  TOPICS_TEST_EXHAUSTIVE=1 cargo test --features test-fs,failpoints
   ```
 
   This runs nightly (and on demand) in CI — see `.github/workflows/ci.yml`'s
   `exhaustive-crash-matrix` job — so full crash-consistency coverage is always
   exercised even though it is not on the per-PR critical path.
-  `STREAMS_TEST_SAMPLE=N` is a middle ground: a wider but still bounded sample.
+  `TOPICS_TEST_SAMPLE=N` is a middle ground: a wider but still bounded sample.
 
 Subprocess crash-recovery tests spawn the real binary on an **ephemeral port**
-(`STREAMS_PORT=0`; the child reports its OS-assigned port via `STREAMS_PORT_FILE`),
+(`TOPICS_PORT=0`; the child reports its OS-assigned port via `TOPICS_PORT_FILE`),
 so the suite runs at full `--test-threads` with no port-bind races.
 
 ---
@@ -418,7 +418,7 @@ so the suite runs at full `--test-threads` with no port-bind races.
 ### Job queue (Bull-style)
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/transcode -d '{ "durable": true, "cap_records": 0 }'
+curl -X PUT $TOPICS/v0/topics/transcode -d '{ "durable": true, "cap_records": 0 }'
 ```
 Producers `POST /v0/topics/transcode`. Each worker calls
 `POST /v0/topics/transcode/diff {from_seq, node:"transcode-1", limit:50}`, processes the
@@ -435,10 +435,10 @@ if not acked, and optionally dead-lettered. See [docs/API.md](docs/API.md) §10.
 ### Pub/sub (Redis-style, weak guarantees)
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/notifications \
+curl -X PUT $TOPICS/v0/topics/notifications \
   -d '{ "ttl_ms": 5000, "cap_records": 10000, "discard": "old", "durable": false }'
-curl -X PUT $STREAMS/v0/routers/notifications-to-web    -d '{ "source":"notifications", "dest":"notifications:web" }'
-curl -X PUT $STREAMS/v0/routers/notifications-to-mobile -d '{ "source":"notifications", "dest":"notifications:mobile" }'
+curl -X PUT $TOPICS/v0/routers/notifications-to-web    -d '{ "source":"notifications", "dest":"notifications:web" }'
+curl -X PUT $TOPICS/v0/routers/notifications-to-mobile -d '{ "source":"notifications", "dest":"notifications:mobile" }'
 ```
 Subscribers `POST /v0/watch` on `notifications:web` / `notifications:mobile` with `tail: true`.
 Small cap + TTL keep memory bounded; subscribers tolerate gaps, which arrive as explicit
@@ -447,7 +447,7 @@ Small cap + TTL keep memory bounded; subscribers tolerate gaps, which arrive as 
 ### Strong delivery / replay
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/ledger \
+curl -X PUT $TOPICS/v0/topics/ledger \
   -d '{ "durable": true, "cap_records": 0, "ttl_ms": 0, "discard": "reject" }'
 ```
 Unbounded + durable + `discard:"reject"` means eviction is impossible and TTL is off, so
@@ -479,7 +479,7 @@ cursor and replay from the last acked `from_seq`. If a cap is ever configured an
   a hop cap. A derived destination is **single-source**: a second router with a *different*
   source into the same dest is rejected with `409 topic_exists_incompatible`
   (`error.detail.reason: "router_dest_fan_in"`). This async/derived model is the
-  **shipped default**; set `STREAMS_FORWARD_V2=0` to opt out to the legacy synchronous
+  **shipped default**; set `TOPICS_FORWARD_V2=0` to opt out to the legacy synchronous
   in-line forward (durable-by-construction but WAL-amplified, on the ack path, and it
   permits multi-source fan-in) — see the config table.
 - **Lease-based queues** — set `type: "queue"` to layer claim/ack/nack/extend (and a
@@ -509,7 +509,7 @@ partial or planned):
 
 - **Implemented:** the full `/v0` API (topics, batched diff reads, permanent deletes,
   routers, multiplexed SSE, lease-based queues); the **sharded** WAL with adaptive group
-  commit (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`, shard-count-agnostic recovery);
+  commit (`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`, shard-count-agnostic recovery);
   **async + derived router forwarding** (off the write/ack path, forwarded copies not
   WAL-logged so one source append is one WAL write, durable per-router cursor with
   replay-from-cursor recovery, single-source-per-dest enforced via `409 topic_exists_incompatible`

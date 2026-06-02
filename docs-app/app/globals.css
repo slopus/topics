@@ -1,64 +1,64 @@
 /* ============================================================================
-   streams docs — design system
+   topics docs — design system
    Built on top of nextra-theme-docs. Defines the accent palette, the logo,
    the landing page (hero, feature cards, code panels), comparison tables,
    and the footer. Tuned for both light and dark, mobile and desktop.
    ========================================================================== */
 
 :root {
-  --streams-accent: #6d5cff;
-  --streams-accent-2: #18c5d6;
-  --streams-accent-soft: rgba(109, 92, 255, 0.12);
-  --streams-ink: #0b0c10;
-  --streams-grid: rgba(15, 16, 24, 0.05);
-  --streams-card-bg: #ffffff;
-  --streams-card-border: rgba(15, 16, 24, 0.09);
-  --streams-card-shadow: 0 1px 2px rgba(16, 18, 38, 0.04), 0 8px 24px rgba(16, 18, 38, 0.05);
-  --streams-muted: #5b6071;
-  --streams-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  --topics-accent: #6d5cff;
+  --topics-accent-2: #18c5d6;
+  --topics-accent-soft: rgba(109, 92, 255, 0.12);
+  --topics-ink: #0b0c10;
+  --topics-grid: rgba(15, 16, 24, 0.05);
+  --topics-card-bg: #ffffff;
+  --topics-card-border: rgba(15, 16, 24, 0.09);
+  --topics-card-shadow: 0 1px 2px rgba(16, 18, 38, 0.04), 0 8px 24px rgba(16, 18, 38, 0.05);
+  --topics-muted: #5b6071;
+  --topics-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
 html.dark {
-  --streams-accent: #8b7bff;
-  --streams-accent-2: #34d6e6;
-  --streams-accent-soft: rgba(139, 123, 255, 0.16);
-  --streams-grid: rgba(255, 255, 255, 0.045);
-  --streams-card-bg: #14151c;
-  --streams-card-border: rgba(255, 255, 255, 0.09);
-  --streams-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 40px rgba(0, 0, 0, 0.35);
-  --streams-muted: #9aa0b4;
+  --topics-accent: #8b7bff;
+  --topics-accent-2: #34d6e6;
+  --topics-accent-soft: rgba(139, 123, 255, 0.16);
+  --topics-grid: rgba(255, 255, 255, 0.045);
+  --topics-card-bg: #14151c;
+  --topics-card-border: rgba(255, 255, 255, 0.09);
+  --topics-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 40px rgba(0, 0, 0, 0.35);
+  --topics-muted: #9aa0b4;
 }
 
 /* ----------------------------------------------------------------- Logo --- */
-.streams-logo {
+.topics-logo {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
-.streams-logo-mark {
+.topics-logo-mark {
   flex: none;
-  filter: drop-shadow(0 1px 6px var(--streams-accent-soft));
+  filter: drop-shadow(0 1px 6px var(--topics-accent-soft));
 }
-.streams-wordmark {
+.topics-wordmark {
   font-size: 1.12rem;
-  background: linear-gradient(92deg, var(--streams-accent-2), var(--streams-accent));
+  background: linear-gradient(92deg, var(--topics-accent-2), var(--topics-accent));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
-.streams-logo--sm .streams-wordmark {
+.topics-logo--sm .topics-wordmark {
   font-size: 1rem;
 }
 .nav-extra-link {
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   padding: 0 0.35rem;
 }
 .nav-extra-link:hover {
-  color: var(--streams-accent);
+  color: var(--topics-accent);
 }
 
 /* ===========================================================================
@@ -85,9 +85,9 @@ html.dark {
   inset: -40% -20% auto -20%;
   height: 140%;
   background:
-    radial-gradient(60% 55% at 50% 0%, var(--streams-accent-soft), transparent 70%),
-    linear-gradient(var(--streams-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--streams-grid) 1px, transparent 1px);
+    radial-gradient(60% 55% at 50% 0%, var(--topics-accent-soft), transparent 70%),
+    linear-gradient(var(--topics-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--topics-grid) 1px, transparent 1px);
   background-size: 100% 100%, 36px 36px, 36px 36px;
   mask-image: radial-gradient(70% 60% at 50% 20%, #000 35%, transparent 80%);
   z-index: -1;
@@ -102,17 +102,17 @@ html.dark {
   letter-spacing: 0.01em;
   padding: 0.32rem 0.7rem;
   border-radius: 999px;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
-  color: var(--streams-muted);
-  box-shadow: var(--streams-card-shadow);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
+  color: var(--topics-muted);
+  box-shadow: var(--topics-card-shadow);
 }
 .hero-badge .dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--streams-accent-2);
-  box-shadow: 0 0 0 3px var(--streams-accent-soft);
+  background: var(--topics-accent-2);
+  box-shadow: 0 0 0 3px var(--topics-accent-soft);
 }
 .hero h1 {
   font-size: clamp(2.3rem, 6vw, 4rem);
@@ -123,7 +123,7 @@ html.dark {
   max-width: 17ch;
 }
 .hero h1 .grad {
-  background: linear-gradient(100deg, var(--streams-accent-2), var(--streams-accent) 60%);
+  background: linear-gradient(100deg, var(--topics-accent-2), var(--topics-accent) 60%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -132,7 +132,7 @@ html.dark {
   margin: 1.25rem 0 0;
   font-size: clamp(1.02rem, 2.2vw, 1.22rem);
   line-height: 1.6;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   max-width: 60ch;
 }
 .hero-cta {
@@ -158,17 +158,17 @@ html.dark {
 }
 .btn-primary {
   color: #fff !important;
-  background: linear-gradient(100deg, var(--streams-accent), #5847e0);
-  box-shadow: 0 6px 20px var(--streams-accent-soft);
+  background: linear-gradient(100deg, var(--topics-accent), #5847e0);
+  box-shadow: 0 6px 20px var(--topics-accent-soft);
 }
 .btn-primary:hover {
-  box-shadow: 0 10px 28px var(--streams-accent-soft);
+  box-shadow: 0 10px 28px var(--topics-accent-soft);
 }
 .btn-ghost {
   color: inherit !important;
-  background: var(--streams-card-bg);
-  border-color: var(--streams-card-border);
-  box-shadow: var(--streams-card-shadow);
+  background: var(--topics-card-bg);
+  border-color: var(--topics-card-border);
+  box-shadow: var(--topics-card-shadow);
 }
 .btn-arrow {
   transition: transform 0.15s ease;
@@ -181,9 +181,9 @@ html.dark {
 .hero-terminal {
   margin-top: 2.4rem;
   border-radius: 0.9rem;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
-  box-shadow: var(--streams-card-shadow);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
+  box-shadow: var(--topics-card-shadow);
   overflow: hidden;
 }
 .hero-terminal .term-bar {
@@ -191,19 +191,19 @@ html.dark {
   align-items: center;
   gap: 0.45rem;
   padding: 0.7rem 0.9rem;
-  border-bottom: 1px solid var(--streams-card-border);
+  border-bottom: 1px solid var(--topics-card-border);
 }
 .hero-terminal .term-bar i {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  background: var(--streams-card-border);
+  background: var(--topics-card-border);
 }
 .hero-terminal .term-title {
   margin-left: 0.5rem;
   font-size: 0.76rem;
-  color: var(--streams-muted);
-  font-family: var(--streams-mono);
+  color: var(--topics-muted);
+  font-family: var(--topics-mono);
 }
 .hero-terminal pre {
   margin: 0 !important;
@@ -215,14 +215,14 @@ html.dark {
 /* Section scaffolding ------------------------------------------------------- */
 .section {
   padding: clamp(2.5rem, 6vw, 4rem) 0;
-  border-top: 1px solid var(--streams-card-border);
+  border-top: 1px solid var(--topics-card-border);
 }
 .section-eyebrow {
   font-size: 0.76rem;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--streams-accent);
+  color: var(--topics-accent);
 }
 .section-title {
   font-size: clamp(1.5rem, 3.4vw, 2.1rem);
@@ -233,7 +233,7 @@ html.dark {
 }
 .section-lede {
   margin: 0.8rem 0 0;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   font-size: 1.02rem;
   line-height: 1.6;
   max-width: 62ch;
@@ -251,9 +251,9 @@ html.dark {
   position: relative;
   padding: 1.25rem;
   border-radius: 0.85rem;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
-  box-shadow: var(--streams-card-shadow);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
+  box-shadow: var(--topics-card-shadow);
   text-decoration: none !important;
   color: inherit !important;
   transition: transform 0.14s ease, border-color 0.2s ease, box-shadow 0.2s ease;
@@ -261,8 +261,8 @@ html.dark {
 }
 a.feature-card:hover {
   transform: translateY(-3px);
-  border-color: color-mix(in srgb, var(--streams-accent) 45%, var(--streams-card-border));
-  box-shadow: 0 14px 40px var(--streams-accent-soft);
+  border-color: color-mix(in srgb, var(--topics-accent) 45%, var(--topics-card-border));
+  box-shadow: 0 14px 40px var(--topics-accent-soft);
 }
 .feature-card .fc-icon {
   display: inline-flex;
@@ -271,8 +271,8 @@ a.feature-card:hover {
   width: 38px;
   height: 38px;
   border-radius: 0.6rem;
-  background: var(--streams-accent-soft);
-  color: var(--streams-accent);
+  background: var(--topics-accent-soft);
+  color: var(--topics-accent);
   font-size: 1.1rem;
   margin-bottom: 0.85rem;
 }
@@ -286,13 +286,13 @@ a.feature-card:hover {
   margin: 0.4rem 0 0;
   font-size: 0.9rem;
   line-height: 1.55;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
 }
 .feature-card .fc-more {
   margin-top: 0.7rem;
   font-size: 0.82rem;
   font-weight: 600;
-  color: var(--streams-accent);
+  color: var(--topics-accent);
 }
 
 /* Mental-model concept row -------------------------------------------------- */
@@ -305,20 +305,20 @@ a.feature-card:hover {
 .concept {
   padding: 1rem;
   border-radius: 0.75rem;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
 }
 .concept .c-name {
-  font-family: var(--streams-mono);
+  font-family: var(--topics-mono);
   font-size: 0.82rem;
   font-weight: 600;
-  color: var(--streams-accent);
+  color: var(--topics-accent);
 }
 .concept .c-desc {
   margin: 0.35rem 0 0;
   font-size: 0.86rem;
   line-height: 1.5;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
 }
 
 /* Durability class strip ---------------------------------------------------- */
@@ -331,18 +331,18 @@ a.feature-card:hover {
 .dura {
   padding: 1.15rem;
   border-radius: 0.8rem;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
-  box-shadow: var(--streams-card-shadow);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
+  box-shadow: var(--topics-card-shadow);
 }
 .dura .d-tag {
-  font-family: var(--streams-mono);
+  font-family: var(--topics-mono);
   font-size: 0.8rem;
   font-weight: 700;
   padding: 0.16rem 0.5rem;
   border-radius: 0.4rem;
-  background: var(--streams-accent-soft);
-  color: var(--streams-accent);
+  background: var(--topics-accent-soft);
+  color: var(--topics-accent);
 }
 .dura h4 {
   margin: 0.7rem 0 0;
@@ -351,7 +351,7 @@ a.feature-card:hover {
 .dura p {
   margin: 0.35rem 0 0;
   font-size: 0.86rem;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   line-height: 1.5;
 }
 
@@ -360,11 +360,11 @@ a.feature-card:hover {
   margin: clamp(2.5rem, 6vw, 4rem) 0 1rem;
   padding: clamp(1.8rem, 5vw, 3rem);
   border-radius: 1.1rem;
-  border: 1px solid var(--streams-card-border);
+  border: 1px solid var(--topics-card-border);
   background:
-    radial-gradient(70% 120% at 100% 0%, var(--streams-accent-soft), transparent 60%),
-    var(--streams-card-bg);
-  box-shadow: var(--streams-card-shadow);
+    radial-gradient(70% 120% at 100% 0%, var(--topics-accent-soft), transparent 60%),
+    var(--topics-card-bg);
+  box-shadow: var(--topics-card-shadow);
   text-align: center;
 }
 .cta-band h2 {
@@ -374,7 +374,7 @@ a.feature-card:hover {
 }
 .cta-band p {
   margin: 0.7rem auto 0;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   max-width: 52ch;
 }
 .cta-band .hero-cta {
@@ -393,12 +393,12 @@ a.feature-card:hover {
 .pill {
   font-size: 0.76rem;
   font-weight: 600;
-  font-family: var(--streams-mono);
+  font-family: var(--topics-mono);
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
-  color: var(--streams-muted);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
+  color: var(--topics-muted);
 }
 .pill.method-get { color: #2f9e57; }
 .pill.method-post { color: #2f6fe0; }
@@ -414,9 +414,9 @@ a.feature-card:hover {
   margin: 1.1rem 0 0.4rem;
   padding: 0.6rem 0.8rem;
   border-radius: 0.6rem;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
-  font-family: var(--streams-mono);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
+  font-family: var(--topics-mono);
   font-size: 0.92rem;
   overflow-x: auto;
 }
@@ -444,10 +444,10 @@ a.feature-card:hover {
 .verdict {
   padding: 1.1rem 1.2rem;
   border-radius: 0.8rem;
-  border: 1px solid var(--streams-card-border);
-  background: var(--streams-card-bg);
+  border: 1px solid var(--topics-card-border);
+  background: var(--topics-card-bg);
 }
-.verdict.win { border-top: 3px solid var(--streams-accent-2); }
+.verdict.win { border-top: 3px solid var(--topics-accent-2); }
 .verdict.lose { border-top: 3px solid #d98a3d; }
 .verdict h4 {
   margin: 0 0 0.5rem;
@@ -458,7 +458,7 @@ a.feature-card:hover {
   padding-left: 1.1rem;
   font-size: 0.88rem;
   line-height: 1.55;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
 }
 
 /* ===========================================================================
@@ -476,7 +476,7 @@ a.feature-card:hover {
   margin: 0.7rem 0 0;
   font-size: 0.86rem;
   line-height: 1.55;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   max-width: 32ch;
 }
 .footer-cols {
@@ -490,7 +490,7 @@ a.feature-card:hover {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-weight: 700;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
   margin-bottom: 0.6rem;
 }
 .footer-cols a {
@@ -502,7 +502,7 @@ a.feature-card:hover {
   opacity: 0.85;
 }
 .footer-cols a:hover {
-  color: var(--streams-accent);
+  color: var(--topics-accent);
   opacity: 1;
 }
 .footer-base {
@@ -510,12 +510,12 @@ a.feature-card:hover {
   max-width: 1180px;
   margin: 1.8rem auto 0;
   padding-top: 1.2rem;
-  border-top: 1px solid var(--streams-card-border);
+  border-top: 1px solid var(--topics-card-border);
   display: flex;
   justify-content: space-between;
   gap: 1rem;
   font-size: 0.8rem;
-  color: var(--streams-muted);
+  color: var(--topics-muted);
 }
 
 /* ===========================================================================

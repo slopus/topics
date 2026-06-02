@@ -35,8 +35,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::{
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::{
     data_name, decode_data_frame, idx_entry_at, idx_len, idx_name, lookup, Fs, LocalSegmentStore,
     OpenOpts, SegmentBuilder, SegmentId, SegmentPart, SegmentRecord, SegmentStore, StoreError,
     IDX_STRIDE,

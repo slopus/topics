@@ -13,9 +13,9 @@ mod common;
 
 use common::{Harness, StatusCode};
 use serde_json::{json, Value};
-use streams::config::ServerConfig;
+use topics::config::ServerConfig;
 
-/// Boot an auth-enabled server with the given `STREAMS_API_KEYS`-style entries
+/// Boot an auth-enabled server with the given `TOPICS_API_KEYS`-style entries
 /// (each entry is `key` | `key:scopes` | `key:scopes:prefixes`).
 fn scoped_harness(entries: &[&str]) -> Harness {
     let cfg = ServerConfig {
@@ -248,14 +248,14 @@ fn invalid_scope_token_in_config_does_not_panic_router_build() {
     // A malformed scope token aborts router construction (fail-closed). The
     // checked builder surfaces the error rather than booting with bad auth.
     use std::sync::Arc;
-    use streams::clock::SystemClock;
-    use streams::engine::Engine;
+    use topics::clock::SystemClock;
+    use topics::engine::Engine;
     let cfg = ServerConfig {
         api_keys: vec!["k:bogusscope".to_string()],
         ..Default::default()
     };
     let engine = Engine::new(cfg, Arc::new(SystemClock));
-    let r = streams::http::build_router_checked(engine);
+    let r = topics::http::build_router_checked(engine);
     assert!(r.is_err(), "malformed scope must fail router build");
 }
 

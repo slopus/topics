@@ -1,18 +1,18 @@
 ---
 title: Configuration
-description: The complete reference for every STREAMS_* environment variable — networking and auth, storage and tiering, resource limits — with exact defaults and behavior.
+description: The complete reference for every TOPICS_* environment variable — networking and auth, storage and tiering, resource limits — with exact defaults and behavior.
 ---
 
 import { Callout } from 'nextra/components'
 
 # Configuration
 
-streams is configured entirely from the **environment** — there is no config file. This
-page is the complete reference: every `STREAMS_*` variable plus `RUST_LOG`, with its exact
+topics is configured entirely from the **environment** — there is no config file. This
+page is the complete reference: every `TOPICS_*` variable plus `RUST_LOG`, with its exact
 default and what it controls. Unset variables fall back to the defaults shown here.
 
 <Callout type="info">
-  Every `STREAMS_MAX_*` limit accepts `0` to mean **unlimited**. Exceeding a configured cap
+  Every `TOPICS_MAX_*` limit accepts `0` to mean **unlimited**. Exceeding a configured cap
   returns **429 `throttled`** with the offending bound in `error.detail.limit`. See
   [Resource limits](#resource-limits) below and [Errors](/api/errors).
 </Callout>
@@ -24,15 +24,15 @@ is **loopback**, so an unconfigured server is never accidentally public.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `STREAMS_HOST` | `127.0.0.1` | Bind host (loopback by default). May also be a full `host:port` — in which case it carries the port and `STREAMS_PORT` is ignored. |
-| `STREAMS_PORT` | `4000` | Listen port. Used unless `STREAMS_HOST` is a full address. |
-| `STREAMS_API_KEYS` | _(unset)_ | Comma-separated bearer keys, hashed SHA-256 at rest. Each entry is `key` \| `key:scopes` \| `key:scopes:prefixes` \| `key::prefixes`. Unset ⇒ **auth disabled** (dev mode). |
-| `STREAMS_ALLOW_INSECURE_NO_AUTH` | `0` | Required to start on a **non-loopback** bind with **no** keys — otherwise the server refuses to start. Local/dev only. |
-| `STREAMS_PROBE_AUTH` | `false` | When `true`, require auth on the `/v0/health`, `/v0/ready`, and `/v0/metrics` probes too. By default probes skip auth. |
+| `TOPICS_HOST` | `127.0.0.1` | Bind host (loopback by default). May also be a full `host:port` — in which case it carries the port and `TOPICS_PORT` is ignored. |
+| `TOPICS_PORT` | `4000` | Listen port. Used unless `TOPICS_HOST` is a full address. |
+| `TOPICS_API_KEYS` | _(unset)_ | Comma-separated bearer keys, hashed SHA-256 at rest. Each entry is `key` \| `key:scopes` \| `key:scopes:prefixes` \| `key::prefixes`. Unset ⇒ **auth disabled** (dev mode). |
+| `TOPICS_ALLOW_INSECURE_NO_AUTH` | `0` | Required to start on a **non-loopback** bind with **no** keys — otherwise the server refuses to start. Local/dev only. |
+| `TOPICS_PROBE_AUTH` | `false` | When `true`, require auth on the `/v0/health`, `/v0/ready`, and `/v0/metrics` probes too. By default probes skip auth. |
 
 <Callout type="warning">
-  On a non-loopback bind with no `STREAMS_API_KEYS`, the server **refuses to start** unless
-  `STREAMS_ALLOW_INSECURE_NO_AUTH=1` — it would otherwise be an open, unauthenticated event
+  On a non-loopback bind with no `TOPICS_API_KEYS`, the server **refuses to start** unless
+  `TOPICS_ALLOW_INSECURE_NO_AUTH=1` — it would otherwise be an open, unauthenticated event
   store. Never set that flag on a network-exposed deployment. The key entry syntax (scopes
   and the topic-name prefix allowlist) is documented in full on the
   [Security](/deployment/security) page.
@@ -48,22 +48,22 @@ is enforced on paths, request bodies, and list results.
 ## Storage & tiering
 
 Where durable state lives, when segments are sealed, and the optional cold tier.
-`STREAMS_DATA_DIR` is the hot-tier root; the segment-sealing knobs control segment
+`TOPICS_DATA_DIR` is the hot-tier root; the segment-sealing knobs control segment
 rotation; the hot-retention knobs govern when sealed segments relocate to cold storage.
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `STREAMS_DATA_DIR` | `./streams-data` | Root for the WAL, segments, and snapshots (the hot tier). Replayed on start; a missing/empty dir is a fresh start. |
-| `STREAMS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread, file set, and group-commit loop). Each topic maps to one shard by a stable hash of its id, so per-topic ordering + durability still hold; recovery is **shard-count-agnostic** (replays all shards by `topic_id`), so this may change between restarts. `1` = the flat single-writer layout. |
-| `STREAMS_COLD_DIR` | _(unset)_ | Cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path. Unset ⇒ tiering disabled (everything stays hot). |
-| `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal the active segment after this many records. |
-| `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Seal after this many `.data` bytes. |
-| `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Seal an idle/partial segment after this age. `0` disables age-based sealing. |
-| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Number of newest sealed segments kept hot before relocating older ones to cold. |
-| `STREAMS_HOT_RETAIN_BYTES` | `0` (off) | Optional hot sealed-byte bound. When both this and `STREAMS_HOT_RETAIN_SEGMENTS` are set, the **stricter** of the two wins. |
+| `TOPICS_DATA_DIR` | `./topics-data` | Root for the WAL, segments, and snapshots (the hot tier). Replayed on start; a missing/empty dir is a fresh start. |
+| `TOPICS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread, file set, and group-commit loop). Each topic maps to one shard by a stable hash of its id, so per-topic ordering + durability still hold; recovery is **shard-count-agnostic** (replays all shards by `topic_id`), so this may change between restarts. `1` = the flat single-writer layout. |
+| `TOPICS_COLD_DIR` | _(unset)_ | Cold-tier directory. Set ⇒ sealed segments past the hot-retention bound relocate here off the hot path. Unset ⇒ tiering disabled (everything stays hot). |
+| `TOPICS_SEGMENT_MAX_EVENTS` | `10000` | Seal the active segment after this many records. |
+| `TOPICS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Seal after this many `.data` bytes. |
+| `TOPICS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Seal an idle/partial segment after this age. `0` disables age-based sealing. |
+| `TOPICS_HOT_RETAIN_SEGMENTS` | `4` | Number of newest sealed segments kept hot before relocating older ones to cold. |
+| `TOPICS_HOT_RETAIN_BYTES` | `0` (off) | Optional hot sealed-byte bound. When both this and `TOPICS_HOT_RETAIN_SEGMENTS` are set, the **stricter** of the two wins. |
 
 <Callout type="info">
-  Tiering is opt-in: with `STREAMS_COLD_DIR` unset, every segment stays in the hot tier and
+  Tiering is opt-in: with `TOPICS_COLD_DIR` unset, every segment stays in the hot tier and
   the retention knobs have no effect. Cold reads run on a separate I/O pool and **never block
   writes or live SSE delivery**. See [Storage & Tiering](/deployment/storage-and-tiering).
 </Callout>
@@ -72,7 +72,7 @@ rotation; the hot-retention knobs govern when sealed segments relocate to cold s
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `STREAMS_FORWARD_V2` | `1` (on) | The **async + derived** router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged so one source append is one WAL write regardless of fan-out, single-source-per-dest, replay-from-cursor recovery) described in [Routers](/api/routers) is now the **default**. Set `STREAMS_FORWARD_V2=0` (`false`/`no`/`off`) to **opt out** to the legacy synchronous in-line forward: durable-by-construction but **WAL-amplified** (N WAL writes per N-way fan-out, on the source ack path) and it permits multi-source fan-in into one dest. |
+| `TOPICS_FORWARD_V2` | `1` (on) | The **async + derived** router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged so one source append is one WAL write regardless of fan-out, single-source-per-dest, replay-from-cursor recovery) described in [Routers](/api/routers) is now the **default**. Set `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) to **opt out** to the legacy synchronous in-line forward: durable-by-construction but **WAL-amplified** (N WAL writes per N-way fan-out, on the source ack path) and it permits multi-source fan-in into one dest. |
 
 ## Resource limits
 
@@ -81,14 +81,14 @@ crossing a cap returns **429 `throttled`** carrying the bound in `error.detail.l
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `STREAMS_MAX_BODY_BYTES` | `67108864` (64 MiB) | Maximum request body size. |
-| `STREAMS_MAX_TOPICS` | `100000` | Maximum number of topics. |
-| `STREAMS_MAX_ROUTERS` | `10000` | Maximum number of routers. |
-| `STREAMS_MAX_WATCH_SESSIONS` | `10000` | Maximum live watch sessions. |
-| `STREAMS_MAX_SSE_CONNECTIONS` | `10000` | Maximum concurrent SSE connections, server-wide. |
-| `STREAMS_MAX_SSE_CONNECTIONS_PER_KEY` | `1000` | Maximum concurrent SSE connections per key. |
-| `STREAMS_MAX_INFLIGHT_PER_KEY` | `1000` | Maximum concurrent in-flight requests per key. |
-| `STREAMS_MAX_TOTAL_BYTES` | `0` (unlimited) | Global quota on total retained record bytes across all topics. A write past it ⇒ `429 throttled`. |
+| `TOPICS_MAX_BODY_BYTES` | `67108864` (64 MiB) | Maximum request body size. |
+| `TOPICS_MAX_TOPICS` | `100000` | Maximum number of topics. |
+| `TOPICS_MAX_ROUTERS` | `10000` | Maximum number of routers. |
+| `TOPICS_MAX_WATCH_SESSIONS` | `10000` | Maximum live watch sessions. |
+| `TOPICS_MAX_SSE_CONNECTIONS` | `10000` | Maximum concurrent SSE connections, server-wide. |
+| `TOPICS_MAX_SSE_CONNECTIONS_PER_KEY` | `1000` | Maximum concurrent SSE connections per key. |
+| `TOPICS_MAX_INFLIGHT_PER_KEY` | `1000` | Maximum concurrent in-flight requests per key. |
+| `TOPICS_MAX_TOTAL_BYTES` | `0` (unlimited) | Global quota on total retained record bytes across all topics. A write past it ⇒ `429 throttled`. |
 
 <Callout type="info">
   An over-cap request returns `429 throttled`, distinct from the *elastic* throttling the
@@ -101,7 +101,7 @@ crossing a cap returns **429 `throttled`** carrying the bound in `error.detail.l
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `RUST_LOG` | `info` | Tracing filter. Standard Rust `tracing` syntax (e.g. `RUST_LOG=streams=debug,info`) — not streams-specific. |
+| `RUST_LOG` | `info` | Tracing filter. Standard Rust `tracing` syntax (e.g. `RUST_LOG=topics=debug,info`) — not topics-specific. |
 
 ## A worked example
 
@@ -109,22 +109,22 @@ A production-style invocation that binds a non-loopback address, turns auth on, 
 dedicated data directory with a cold tier, and tightens a couple of limits:
 
 ```bash
-STREAMS_HOST=0.0.0.0 \
-STREAMS_PORT=4000 \
-STREAMS_API_KEYS="prod-key:rw:tenant42:,admin-key:a" \
-STREAMS_DATA_DIR=/var/lib/streams \
-STREAMS_COLD_DIR=/mnt/cold/streams \
-STREAMS_MAX_TOPICS=50000 \
-STREAMS_MAX_TOTAL_BYTES=10737418240 \
-./target/release/streams
+TOPICS_HOST=0.0.0.0 \
+TOPICS_PORT=4000 \
+TOPICS_API_KEYS="prod-key:rw:tenant42:,admin-key:a" \
+TOPICS_DATA_DIR=/var/lib/topics \
+TOPICS_COLD_DIR=/mnt/cold/topics \
+TOPICS_MAX_TOPICS=50000 \
+TOPICS_MAX_TOTAL_BYTES=10737418240 \
+./target/release/topics
 ```
 
-Run this behind a TLS-terminating reverse proxy — streams speaks plain HTTP. The same
+Run this behind a TLS-terminating reverse proxy — topics speaks plain HTTP. The same
 variables apply to the container image; see [Docker](/deployment/docker).
 
 ## See also
 
 - [Security](/deployment/security) — the key entry syntax, scopes, the prefix allowlist, and the resource model.
 - [Storage & Tiering](/deployment/storage-and-tiering) — the data directory, segment sealing, and hot→cold relocation.
-- [Running streams](/deployment) — start, recovery, binding, and graceful shutdown.
+- [Running topics](/deployment) — start, recovery, binding, and graceful shutdown.
 - [Docker](/deployment/docker) — passing these variables to the published image.

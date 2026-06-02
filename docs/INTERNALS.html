@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>streams — Internals: Data, Disk &amp; Durability</title>
+<title>topics — Internals: Data, Disk &amp; Durability</title>
 <style>
   :root {
     --bg: #0f1117;
@@ -244,7 +244,7 @@
 <div class="layout">
 
 <nav class="toc">
-  <div class="brand">streams<span class="dot">.</span></div>
+  <div class="brand">topics<span class="dot">.</span></div>
   <div class="sub">Internals — data, disk &amp; durability</div>
 
   <a class="section" href="#overview">Overview</a>
@@ -283,7 +283,7 @@
 <main>
 <header class="hero anchor-pad" id="overview">
   <div class="tag">single binary · pure Rust · axum + tokio</div>
-  <h1>How <strong>streams</strong> persists data &amp; survives disk failure</h1>
+  <h1>How <strong>topics</strong> persists data &amp; survives disk failure</h1>
   <p class="lede">A top-to-bottom tour of the storage engine: the path a write takes from an HTTP
   request down to fsynced bytes, the on-disk formats that hold it, and the exact mechanics by
   which a crash, a torn write, or a bad disk sector loses nothing it promised to keep.</p>
@@ -292,7 +292,7 @@
 <!-- ============================================================= -->
 <h2 class="anchor-pad" id="mental-model"><span class="num">00</span>The one-line mental model</h2>
 
-<p><strong>streams</strong> is a persistent event engine. You <code>POST</code> records into a named
+<p><strong>topics</strong> is a persistent event engine. You <code>POST</code> records into a named
 <em class="term">topic</em> (a log or a queue) and read them back in order, durably, across restarts.
 Everything about its disk story collapses to a single sentence:</p>
 
@@ -665,7 +665,7 @@ the unit of tiering.</p>
 
 <p>Sealed segments live in a <strong>HOT</strong> tier (local, fast) and can be relocated to a
 <strong>COLD</strong> tier (a cheaper/larger store — a local folder today, object storage later) when configured
-via <code>STREAMS_COLD_DIR</code>. The rule that makes this safe:</p>
+via <code>TOPICS_COLD_DIR</code>. The rule that makes this safe:</p>
 
 <div class="call guarantee">
   <span class="lbl">Cold relocation is all-or-nothing, and never blocks the write path</span>

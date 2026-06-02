@@ -1,6 +1,6 @@
 //! Phase-8B fault catalog — **cold-copy** boundary (HOT → COLD relocation copy).
 //!
-//! Four strategies from `docs/FAULT_TESTING.md` / `/tmp/streams-fault-catalog.json`,
+//! Four strategies from `docs/FAULT_TESTING.md` / `/tmp/topics-fault-catalog.json`,
 //! all on the `copy_segment_to_cold` step of a relocation (the slow off-lock COPY
 //! that precedes the FLIP+DROP). The contract the engine relies on
 //! (ARCHITECTURE §3.6, oracle invariant #9 COLD RELOCATION ALL-OR-NOTHING):
@@ -36,8 +36,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::{
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::{
     decode_data_frame, lookup, Fs, LocalSegmentStore, SegmentBuilder, SegmentId, SegmentPart,
     SegmentRecord, SegmentStore, Tier, TopicTier,
 };
@@ -108,8 +108,8 @@ fn assert_record_readable(tier: &TopicTier, seq: u64) {
 /// Drive the real relocation COPY step against `tier` for `SEG_ID`, as the engine
 /// does on its blocking pool (`relocate_topic_cold` step 2). Returns the copy
 /// result so the caller can assert it failed/succeeded.
-fn copy_to_cold(tier: &Arc<TopicTier>) -> Result<(), streams::storage::StoreError> {
-    streams::engine::segwriter::copy_segment_to_cold(tier, SEG_ID)
+fn copy_to_cold(tier: &Arc<TopicTier>) -> Result<(), topics::storage::StoreError> {
+    topics::engine::segwriter::copy_segment_to_cold(tier, SEG_ID)
 }
 
 // ===========================================================================

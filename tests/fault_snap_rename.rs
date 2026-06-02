@@ -52,14 +52,14 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::{
     load_latest_with, next_snapshot_id_with, write_snapshot_with, Checkpoint, Fs, Snapshot,
 };
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 const DATA_DIR: &str = "/data";
 
@@ -256,11 +256,11 @@ impl CrashAfterSnap {
 }
 
 struct CrashAfterSnapFile {
-    inner: Box<dyn streams::storage::File>,
+    inner: Box<dyn topics::storage::File>,
     owner: CrashAfterSnap,
 }
 
-impl streams::storage::File for CrashAfterSnapFile {
+impl topics::storage::File for CrashAfterSnapFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read_at(offset, buf)
     }
@@ -296,8 +296,8 @@ impl Fs for CrashAfterSnap {
     fn open(
         &self,
         path: &Path,
-        opts: streams::storage::OpenOpts,
-    ) -> std::io::Result<Box<dyn streams::storage::File>> {
+        opts: topics::storage::OpenOpts,
+    ) -> std::io::Result<Box<dyn topics::storage::File>> {
         let inner = self.disk.open(path, opts)?;
         // A create-truncate open of the `.tmp` is itself a mutating namespace op.
         if opts.create || opts.truncate {
@@ -614,10 +614,10 @@ fn f_sweep_snapshot_write() {
     );
 
     // Sweep crash points (bounded; the small workload + handful of FS calls keep
-    // this well under a second). Tiered (streams::testutil::crash_points): bounded
+    // this well under a second). Tiered (topics::testutil::crash_points): bounded
     // deterministic sample by default, full `0..=total_calls` under
-    // STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(total_calls) {
+    // TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(total_calls) {
         let disk = FakeDisk::new();
         let (id1, _) = build_preop(&disk);
 

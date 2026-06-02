@@ -36,11 +36,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Plumbing (mirrors tests/crash_oracle.rs)
@@ -79,7 +79,7 @@ fn write_one(
     name: &str,
     data: &str,
     idempotency_key: Option<&str>,
-) -> streams::types::WriteResponse {
+) -> topics::types::WriteResponse {
     let req = WriteRequest {
         records: vec![RecordIn {
             data: json!({ "v": data }),

@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use streams::clock::{SharedClock, SystemClock, TestClock};
-use streams::config::{SegmentConfig, ServerConfig};
-use streams::engine::Engine;
-use streams::types::*;
+use topics::clock::{SharedClock, SystemClock, TestClock};
+use topics::config::{SegmentConfig, ServerConfig};
+use topics::engine::Engine;
+use topics::types::*;
 
 /// A `ServerConfig` pointed at `dir` (durable mode).
 fn config_at(dir: &std::path::Path) -> ServerConfig {
@@ -202,7 +202,7 @@ fn nondurable_writes_survive_clean_teardown() {
         st.head_seq
     );
     assert!(
-        st.head_seq <= 3 + streams::config::DISK_HEAD_RESERVE_AHEAD,
+        st.head_seq <= 3 + topics::config::DISK_HEAD_RESERVE_AHEAD,
         "head within the reservation block, got {}",
         st.head_seq
     );
@@ -353,7 +353,7 @@ fn torn_tail_is_truncated_not_read_as_data() {
     // write a half-written next frame right after it (an oversized frame_len with
     // only a few bytes following ⇒ length overrun / CRC failure ⇒ torn tail).
     use std::io::{Seek, SeekFrom, Write};
-    let data_end = streams::storage::WalReader::open(&active)
+    let data_end = topics::storage::WalReader::open(&active)
         .unwrap()
         .count_valid_len();
     let mut f = std::fs::OpenOptions::new()
@@ -538,7 +538,7 @@ fn ready_request(engine: Arc<Engine>) -> (u16, serde_json::Value) {
         .build()
         .unwrap();
     rt.block_on(async move {
-        let app = streams::http::build_router(engine);
+        let app = topics::http::build_router(engine);
         let resp = app
             .oneshot(
                 Request::builder()
@@ -808,7 +808,7 @@ fn repeated_snapshots_keep_one_and_stay_consistent() {
 }
 
 // ===========================================================================
-// The real acceptance criterion: SIGKILL the actual `streams` binary mid-life
+// The real acceptance criterion: SIGKILL the actual `topics` binary mid-life
 // and confirm an acked durable write is present after restart.
 // ===========================================================================
 
@@ -818,29 +818,29 @@ struct Server {
     base: String,
 }
 
-/// Spawn the `streams` binary on an EPHEMERAL port (`STREAMS_PORT=0`) with
+/// Spawn the `topics` binary on an EPHEMERAL port (`TOPICS_PORT=0`) with
 /// `data_dir`, then read the OS-assigned `host:port` the child wrote to its
-/// `STREAMS_PORT_FILE` and return it as the base URL. Robust under parallel
+/// `TOPICS_PORT_FILE` and return it as the base URL. Robust under parallel
 /// spawn: the child holds the bound socket continuously, so (unlike a
 /// reserve-then-release scheme) nothing can steal the port between reservation
 /// and bind.
 fn spawn_server(data_dir: &std::path::Path, port_file: &std::path::Path) -> Server {
     let _ = std::fs::remove_file(port_file); // avoid reading a stale prior boot.
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_streams"))
-        .env("STREAMS_HOST", "127.0.0.1")
-        .env("STREAMS_PORT", "0") // OS-assigned ephemeral port (no bind race).
-        .env("STREAMS_PORT_FILE", port_file)
-        .env("STREAMS_DATA_DIR", data_dir)
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_topics"))
+        .env("TOPICS_HOST", "127.0.0.1")
+        .env("TOPICS_PORT", "0") // OS-assigned ephemeral port (no bind race).
+        .env("TOPICS_PORT_FILE", port_file)
+        .env("TOPICS_DATA_DIR", data_dir)
         // Pin a single WAL shard for a deterministic on-disk layout across the
         // restart (the default is num_cpus-based); these tests recover via the
         // shard-agnostic engine, so this only keeps the layout stable for any
         // direct file inspection.
-        .env("STREAMS_WAL_SHARDS", "1")
+        .env("TOPICS_WAL_SHARDS", "1")
         .env("RUST_LOG", "error")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .expect("spawn streams binary");
+        .expect("spawn topics binary");
     let base = read_port_file(port_file, Duration::from_secs(10));
     Server { child, base }
 }
@@ -1992,7 +1992,7 @@ fn cap_eviction_reclaims_a_relocated_cold_segment() {
 /// the product guarantees regardless of forwarding mode. Under the v2 default
 /// (async + derived) recovery RE-DERIVES the copy from the still-retained source
 /// record + the durable per-router cursor (the forwarded copy is never separately
-/// WAL-logged); the legacy opt-out (`STREAMS_FORWARD_V2=0`) instead replays the
+/// WAL-logged); the legacy opt-out (`TOPICS_FORWARD_V2=0`) instead replays the
 /// dest's own Append frame. Either way the survivor is the same single record — the
 /// legacy-specific "durable dest WAL frame" mechanism is exercised by
 /// `legacy_forwarded_copy_recovers_from_dest_wal_frame` in `integration_legacy_forward.rs`.
@@ -2261,7 +2261,7 @@ fn disk_topic_survives_clean_restart_and_is_not_fsync_gated() {
         st.head_seq
     );
     assert!(
-        st.head_seq <= 4 + streams::config::DISK_HEAD_RESERVE_AHEAD,
+        st.head_seq <= 4 + topics::config::DISK_HEAD_RESERVE_AHEAD,
         "head within the reservation block, got {}",
         st.head_seq
     );

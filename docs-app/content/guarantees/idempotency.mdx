@@ -7,7 +7,7 @@ import { Callout } from 'nextra/components'
 
 # Idempotency
 
-streams offers two complementary idempotency mechanisms and **no** global idempotency-token
+topics offers two complementary idempotency mechanisms and **no** global idempotency-token
 service. The **control plane is idempotent by construction** (create/configure is an
 upsertable `PUT`, `DELETE` of an absent resource is a benign `200`). **Writes** carry an
 optional `idempotency_key` with a per-topic time window: a retried write with the same key
@@ -30,7 +30,7 @@ The control plane (create, configure, delete) is idempotent without you doing an
 
 ```bash
 # Identical PUTs are no-ops; safe to retry.
-curl -X PUT $STREAMS/v0/topics/orders \
+curl -X PUT $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "durable": true, "cap_records": 1000000 }'
 ```
@@ -55,7 +55,7 @@ key, to the same topic, **within the window** returns the **original** seqs with
 `"deduped": true` and does **not** append again.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "node": "checkout-1",
         "idempotency_key": "client-batch-7f3a",
@@ -103,7 +103,7 @@ The key may be supplied either as the body field `idempotency_key` or as the HTT
 convenient for clients that attach an idempotency key uniformly across requests.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -H 'Idempotency-Key: client-batch-7f3a' \
   -d '{ "records": [ { "data": { "sku": "AEROPRESS-GO", "qty": 1, "total": 3499 } } ] }'

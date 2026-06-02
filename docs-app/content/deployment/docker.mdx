@@ -7,8 +7,8 @@ import { Callout, Tabs } from 'nextra/components'
 
 # Docker
 
-streams is published as a single container image to the GitHub Container Registry at
-**`ghcr.io/slopus/streams`**. The image is **multi-arch** (`linux/amd64` and
+topics is published as a single container image to the GitHub Container Registry at
+**`ghcr.io/slopus/topics`**. The image is **multi-arch** (`linux/amd64` and
 `linux/arm64`), runs as a non-root user, and stores all durable state in a `/data` volume.
 This page covers running it and how releases are cut.
 
@@ -16,8 +16,8 @@ This page covers running it and how releases are cut.
 
 The image binds `0.0.0.0:4000` inside the container. Because the server **refuses to start
 on a non-loopback bind with no API keys** — it would be an open, unauthenticated event
-store — you must pass either `STREAMS_API_KEYS` (any real deployment) or, for local/dev
-only, `STREAMS_ALLOW_INSECURE_NO_AUTH=1`.
+store — you must pass either `TOPICS_API_KEYS` (any real deployment) or, for local/dev
+only, `TOPICS_ALLOW_INSECURE_NO_AUTH=1`.
 
 <Tabs items={['Production', 'Local']}>
   <Tabs.Tab>
@@ -25,9 +25,9 @@ only, `STREAMS_ALLOW_INSECURE_NO_AUTH=1`.
 # Production: bearer auth on. Clients send `Authorization: Bearer <key>`.
 docker run --rm \
   -p 4000:4000 \
-  -v streams-data:/data \
-  -e STREAMS_API_KEYS=replace-with-a-real-secret \
-  ghcr.io/slopus/streams:latest
+  -v topics-data:/data \
+  -e TOPICS_API_KEYS=replace-with-a-real-secret \
+  ghcr.io/slopus/topics:latest
 ```
 
 ```bash
@@ -41,16 +41,16 @@ curl -fsS http://127.0.0.1:4000/v0/health
 # it leaves the event store open and unauthenticated.
 docker run --rm \
   -p 4000:4000 \
-  -v streams-data:/data \
-  -e STREAMS_ALLOW_INSECURE_NO_AUTH=1 \
-  ghcr.io/slopus/streams:latest
+  -v topics-data:/data \
+  -e TOPICS_ALLOW_INSECURE_NO_AUTH=1 \
+  ghcr.io/slopus/topics:latest
 ```
   </Tabs.Tab>
 </Tabs>
 
 <Callout type="warning">
-  `STREAMS_ALLOW_INSECURE_NO_AUTH=1` exists only so you can run the `0.0.0.0`-binding image
-  locally without keys. On anything reachable from a network, set `STREAMS_API_KEYS`
+  `TOPICS_ALLOW_INSECURE_NO_AUTH=1` exists only so you can run the `0.0.0.0`-binding image
+  locally without keys. On anything reachable from a network, set `TOPICS_API_KEYS`
   instead. See [Security](/deployment/security).
 </Callout>
 
@@ -59,13 +59,13 @@ What each flag does:
 | Flag | Purpose |
 |---|---|
 | `-p 4000:4000` | Maps the container's listen port (`EXPOSE 4000`) to the host. |
-| `-v streams-data:/data` | A named volume holding the WAL, segments, and snapshots. `STREAMS_DATA_DIR` defaults to `/data` in the image. |
-| `-e STREAMS_API_KEYS=...` | Comma-separated bearer keys (production). |
-| `-e STREAMS_ALLOW_INSECURE_NO_AUTH=1` | Permits a keyless start on the `0.0.0.0` bind (local/dev only). |
+| `-v topics-data:/data` | A named volume holding the WAL, segments, and snapshots. `TOPICS_DATA_DIR` defaults to `/data` in the image. |
+| `-e TOPICS_API_KEYS=...` | Comma-separated bearer keys (production). |
+| `-e TOPICS_ALLOW_INSECURE_NO_AUTH=1` | Permits a keyless start on the `0.0.0.0` bind (local/dev only). |
 
 ## The /data volume
 
-The image sets `STREAMS_DATA_DIR=/data` and declares `/data` as a `VOLUME`. That directory
+The image sets `TOPICS_DATA_DIR=/data` and declares `/data` as a `VOLUME`. That directory
 holds everything durable — the WAL, sealed segment files, and snapshots. **Reuse the same
 volume across restarts** to preserve durable state; on the next start the server replays
 the WAL from `/data` and recovers acknowledged writes. A fresh empty volume is a clean
@@ -76,7 +76,7 @@ first start.
 docker exec -it <container> ls -la /data
 ```
 
-For the on-disk layout and optional hot→cold relocation (`STREAMS_COLD_DIR`), see
+For the on-disk layout and optional hot→cold relocation (`TOPICS_COLD_DIR`), see
 [Storage & Tiering](/deployment/storage-and-tiering). For every tunable, see
 [Configuration](/deployment/configuration).
 
@@ -86,18 +86,18 @@ The image is built from a multi-stage `Dockerfile` and is deliberately minimal:
 
 - **Non-root.** The server runs as a dedicated system user (`uid 10001`) that owns `/data`.
 - **Slim runtime.** A `debian:bookworm-slim` base with only `ca-certificates` and `curl`
-  (the latter for the health check). Only the `streams` server binary is shipped — the
-  `streams-probe` test/bench CLI is excluded to keep the image lean.
-- **Defaults baked in.** `STREAMS_HOST=0.0.0.0`, `STREAMS_PORT=4000`, `STREAMS_DATA_DIR=/data`.
+  (the latter for the health check). Only the `topics` server binary is shipped — the
+  `topics-probe` test/bench CLI is excluded to keep the image lean.
+- **Defaults baked in.** `TOPICS_HOST=0.0.0.0`, `TOPICS_PORT=4000`, `TOPICS_DATA_DIR=/data`.
 - **`EXPOSE 4000`** for the listen port.
-- **`HEALTHCHECK`.** A built-in liveness probe runs `curl -fsS http://127.0.0.1:$STREAMS_PORT/v0/health`
+- **`HEALTHCHECK`.** A built-in liveness probe runs `curl -fsS http://127.0.0.1:$TOPICS_PORT/v0/health`
   every 30s (5s timeout, 10s start period, 3 retries). `/v0/health` is always 200 once the
   process is serving.
 
 <Callout type="info">
   The container `HEALTHCHECK` hits `/v0/health` (liveness). For orchestrator readiness —
   gating traffic until WAL replay completes — use `/v0/ready`, which returns 503 during
-  recovery and 200 once ready. See [Running streams](/deployment) and
+  recovery and 200 once ready. See [Running topics](/deployment) and
   [Observability](/deployment/observability).
 </Callout>
 
@@ -119,9 +119,9 @@ Releases are **tag-driven**, built by GitHub Actions, and published to GHCR.
 
    | Tag | Example | Meaning |
    |---|---|---|
-   | `:X.Y.Z` | `ghcr.io/slopus/streams:1.2.3` | The exact version. |
-   | `:X.Y` | `ghcr.io/slopus/streams:1.2` | The latest patch of a minor line. |
-   | `:latest` | `ghcr.io/slopus/streams:latest` | The newest tagged release. |
+   | `:X.Y.Z` | `ghcr.io/slopus/topics:1.2.3` | The exact version. |
+   | `:X.Y` | `ghcr.io/slopus/topics:1.2` | The latest patch of a minor line. |
+   | `:latest` | `ghcr.io/slopus/topics:latest` | The newest tagged release. |
 
 You can also trigger the workflow manually from the Actions tab (`workflow_dispatch`); a
 manual run is tagged with the short commit SHA instead of a version. The workflow uses the
@@ -134,7 +134,7 @@ built-in `GITHUB_TOKEN` with `packages: write`, so no extra secrets are required
 
 ## See also
 
-- [Running streams](/deployment) — start, recovery, binding, and graceful shutdown.
-- [Configuration](/deployment/configuration) — every `STREAMS_*` variable.
+- [Running topics](/deployment) — start, recovery, binding, and graceful shutdown.
+- [Configuration](/deployment/configuration) — every `TOPICS_*` variable.
 - [Security](/deployment/security) — keys, scopes, the prefix allowlist, and resource limits.
 - [Storage & Tiering](/deployment/storage-and-tiering) — what lives under `/data`.

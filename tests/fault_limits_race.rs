@@ -1,10 +1,10 @@
 //! Phase-8A RELIABILITY iter-2 — **TOCTOU + concurrency on the new scopes/limits**.
 //!
-//! These probe the *recently-added* resource-limit layer ([`streams::limits`])
+//! These probe the *recently-added* resource-limit layer ([`topics::limits`])
 //! and the engine creation/write/queue paths that enforce it, under concurrent
 //! racing actors — the check-then-act windows that a serial test never exercises.
-//! The Phase-8A harness ([`streams::storage::testfs::FakeDisk`] +
-//! [`streams::engine::Engine::with_data_dir_fs`]) drives the *real, fully-wired*
+//! The Phase-8A harness ([`topics::storage::testfs::FakeDisk`] +
+//! [`topics::engine::Engine::with_data_dir_fs`]) drives the *real, fully-wired*
 //! engine; one test adds a crash + recovery on top to prove the durable byte
 //! quota (and the per-topic commit sequencer it shares the write path with) stays
 //! consistent across a power loss.
@@ -52,12 +52,12 @@ use std::time::Duration;
 use serde_json::json;
 
 use common::{Harness, StatusCode};
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::limits::Limits;
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::limits::Limits;
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::types::{
     DiffRequest, Durability, RecordIn, RouterCreateRequest, TopicConfig, TopicType, WriteRequest,
 };
 
@@ -158,7 +158,7 @@ fn l_max_topics_race_never_exceeds_cap() {
                 Err(e) => {
                     assert_eq!(
                         e.code,
-                        streams::types::ErrorCode::Throttled,
+                        topics::types::ErrorCode::Throttled,
                         "topic create over cap must be throttled, got {e:?}"
                     );
                     throttled.fetch_add(1, Ordering::Relaxed);
@@ -228,7 +228,7 @@ fn l_max_topics_autocreate_race_never_exceeds_cap() {
                 }
                 Err(e) => assert_eq!(
                     e.code,
-                    streams::types::ErrorCode::Throttled,
+                    topics::types::ErrorCode::Throttled,
                     "over-cap auto-create write must be throttled, got {e:?}"
                 ),
             }
@@ -306,7 +306,7 @@ fn l_max_routers_race_never_exceeds_cap() {
                 Err(e) => {
                     assert_eq!(
                         e.code,
-                        streams::types::ErrorCode::Throttled,
+                        topics::types::ErrorCode::Throttled,
                         "router over cap must be throttled, got {e:?}"
                     );
                     refused_dests.lock().unwrap().push(dest);
@@ -613,7 +613,7 @@ fn l_total_bytes_quota_race_stays_under_cap() {
                 }
                 Err(e) => assert_eq!(
                     e.code,
-                    streams::types::ErrorCode::Throttled,
+                    topics::types::ErrorCode::Throttled,
                     "over-quota write must be throttled, got {e:?}"
                 ),
             }

@@ -71,13 +71,13 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalError, WalReader, WalRecord};
-use streams::storage::Fs;
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalError, WalReader, WalRecord};
+use topics::storage::Fs;
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/fault_wal_*.rs — reused, not reinvented).
@@ -542,7 +542,7 @@ fn f_pub_rollback_invisible() {
                 let d = engine
                     .diff(
                         "roll",
-                        streams::types::DiffRequest {
+                        topics::types::DiffRequest {
                             from_seq: 0,
                             limit: 100,
                             node: None,

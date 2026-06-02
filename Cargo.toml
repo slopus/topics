@@ -1,5 +1,5 @@
 [package]
-name = "streams"
+name = "topics"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
@@ -23,7 +23,7 @@ resolver = "2"
 # (`cargo test --features failpoints`) to drive a named crash/EIO precisely.
 failpoints = ["fail/failpoints"]
 # `test-fs` exposes the in-memory hostile filesystem implementations (FakeDisk,
-# FaultFs, MonitorFs) under `streams::storage::testfs` so the integration crash
+# FaultFs, MonitorFs) under `topics::storage::testfs` so the integration crash
 # harness in `tests/` can inject them through the `*_with` constructors. OFF by
 # default — they never compile into a release build. The lib's own unit tests get
 # them automatically via `cfg(test)`.
@@ -75,7 +75,7 @@ name = "engine"
 harness = false
 
 # WAL-sharding scaling benchmark (Stage 2): a plain `main` that sweeps
-# STREAMS_WAL_SHARDS and prints an aggregate durable-write-ack throughput table.
+# TOPICS_WAL_SHARDS and prints an aggregate durable-write-ack throughput table.
 [[bench]]
 name = "wal_scaling"
 harness = false

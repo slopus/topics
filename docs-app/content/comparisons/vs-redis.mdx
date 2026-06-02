@@ -1,6 +1,6 @@
 ---
 title: vs Redis Streams
-description: A dimension-by-dimension comparison of streams with Redis Streams and Redis Pub/Sub — durable history beyond RAM and explicit gap signals vs in-memory speed and a vast ecosystem.
+description: A dimension-by-dimension comparison of topics with Redis Streams and Redis Pub/Sub — durable history beyond RAM and explicit gap signals vs in-memory speed and a vast ecosystem.
 ---
 
 import { Callout } from 'nextra/components'
@@ -8,13 +8,13 @@ import { Callout } from 'nextra/components'
 # vs Redis Streams
 
 Redis Streams is an in-memory append log with consumer groups; Redis Pub/Sub is
-fire-and-forget broadcast. streams overlaps with both but optimizes for **durable history
+fire-and-forget broadcast. topics overlaps with both but optimizes for **durable history
 beyond RAM** and an **explicit, in-band gap signal** rather than raw in-memory latency and
 ecosystem breadth. This page compares them dimension by dimension and is honest about where
 Redis is the better choice.
 
 <Callout type="info">
-  Redis Streams (the `XADD` / `XREADGROUP` data type) is the real analog to a streams topic.
+  Redis Streams (the `XADD` / `XREADGROUP` data type) is the real analog to a topic in topics.
   Redis **Pub/Sub** is a different primitive — at-most-once, no persistence — covered in its
   own section below.
 </Callout>
@@ -25,11 +25,11 @@ Redis Streams is an in-memory append log. Each entry gets an ID of the form `<ms
 and a flat field/value map as its payload. Reads are by ID (`XRANGE`, `XREAD`), and
 consumer groups track per-group delivery state.
 
-streams is an append-only log of JSON records in named **topics**. Each record gets a
+topics is an append-only log of JSON records in named **topics**. Each record gets a
 monotonic `$seq` (a `u64`) and a `$ts`, and the **`$seq` is the cursor** — you read with
 `POST /v0/topics/:topic/diff` from a `from_seq` and advance your stored cursor to ack. Payloads
 are arbitrary JSON `data`, with optional `tag` and `meta`. Both are logs you read forward;
-the difference is that streams persists to a write-ahead log on disk by default and exposes
+the difference is that topics persists to a write-ahead log on disk by default and exposes
 the cursor as a plain integer rather than an opaque entry ID.
 
 ## Durability
@@ -41,7 +41,7 @@ can be lost on a crash — up to roughly the last second. There is no way to say
 stream is fsync-durable and that one is throwaway"; the persistence policy applies to the
 whole instance.
 
-streams makes durability a **per-topic** decision via [durability classes](/guarantees/durability):
+topics makes durability a **per-topic** decision via [durability classes](/guarantees/durability):
 
 - **`memory`** — _disk-like but best-effort_: the same group-committed WAL path as `disk`, fully
   queryable, but with no durability guarantee — records MAY survive OR be lost on restart (the
@@ -57,7 +57,7 @@ coexist in one process, each buying exactly the guarantee it needs.
 <Callout type="warning">
   This is the central trade in Redis's favor on the *availability* axis: Redis replicates
   (async by default; `WAIT` is best-effort, not strongly consistent) and can fail over.
-  streams is **single node** — one process is the entire durability and failure domain, with
+  topics is **single node** — one process is the entire durability and failure domain, with
   **no replication or failover**. A durable `fsync` write survives a crash of that topic, but
   the topic being down means the service is down.
 </Callout>
@@ -70,7 +70,7 @@ trim point simply never sees the trimmed entries; the next `XREADGROUP` returns 
 with no indication that anything was dropped. You detect loss out of band — from a lag
 metric, or by noticing the ID jumped.
 
-streams turns involuntary loss into a delivery-time event. When cap eviction or TTL expiry
+topics turns involuntary loss into a delivery-time event. When cap eviction or TTL expiry
 destroys records **below a reader's cursor**, the next `diff` returns an in-band
 **[tombstone](/guarantees/tombstones)** with the exact `[gap_from, gap_to]` range and a
 best-effort `reason` (`cap` / `ttl` / `mixed` / `recreated`) — at HTTP 200, never a silent
@@ -84,7 +84,7 @@ Redis offers `XDEL` to remove entries by ID and `MAXLEN` / `MINID` to cap a stre
 or minimum ID. Both are about bounding memory; neither signals a lagging reader, and `XDEL`
 removes by ID, not by a payload predicate.
 
-streams separates the two intents:
+topics separates the two intents:
 
 - **Caps and TTL** (`cap_records`, `cap_bytes`, `ttl_ms`) are involuntary bounding — crossing
   a reader's cursor produces a tombstone.
@@ -100,17 +100,17 @@ Redis consumer groups give at-least-once work distribution via the **Pending Ent
 (PEL): `XREADGROUP` claims entries, `XACK` confirms them, and `XCLAIM` / `XAUTOCLAIM`
 reclaim entries whose consumer died. This is mature, battle-tested tooling.
 
-streams provides native **[lease queues](/api/queues)** on the same log substrate. A topic of
+topics provides native **[lease queues](/api/queues)** on the same log substrate. A topic of
 `type:"queue"` is claimed with `POST /v0/topics/:q/claim` (returning a `lease_id` and a
 `deadline`), confirmed with `ack` (the ack **is** the permanent delete), and released early
 with `nack` or extended with `extend`. Lease expiry is lazy — there are no per-job timers —
 so a crashed worker's jobs become reclaimable after the visibility timeout. Unlike Redis,
-streams also offers a built-in **dead-letter move**: after `max_deliveries`, a job is moved
+topics also offers a built-in **dead-letter move**: after `max_deliveries`, a job is moved
 to a configured dead-letter topic (stamped with provenance) rather than redelivered forever.
 
 <Callout type="info">
   Redis consumer-group tooling (`XAUTOCLAIM`, consumer lag introspection) is more mature and
-  has years of production patterns behind it. streams queue lease durability is best-effort
+  has years of production patterns behind it. topics queue lease durability is best-effort
   by default (`leases_durable` defaults off; a transient WAL error on a lease append degrades
   to the baseline at-least-once reclaim-on-timeout, never losing or duplicating beyond
   at-least-once).
@@ -124,7 +124,7 @@ acknowledgments but it is best-effort and not a strong-consistency (CP) guarante
 Cluster shards keyspace across nodes for horizontal capacity, and managed offerings
 (ElastiCache, Redis Cloud, Valkey) handle failover for you.
 
-streams has **none of this**: no replication, no failover, no clustering, no managed
+topics has **none of this**: no replication, no failover, no clustering, no managed
 service. One NVMe-backed machine is the whole system. This is the honest cost of its simplicity.
 
 ## Protocol & ecosystem
@@ -133,10 +133,10 @@ Redis speaks **RESP** and has one of the largest client ecosystems in software �
 well-supported driver in every language, plus co-located data structures, Lua scripting, and
 transactions (`MULTI`/`EXEC`) right next to your stream.
 
-streams speaks **plain HTTP and JSON** with SSE for live delivery. There is no SDK to adopt
+topics speaks **plain HTTP and JSON** with SSE for live delivery. There is no SDK to adopt
 and no binary framing: `curl` is a complete client, and any HTTP stack can read, write,
 watch, and delete. The trade is that you don't get Redis's adjacent data structures or
-scripting — streams does one thing (a durable event log with queues and fan-out) rather than
+scripting — topics does one thing (a durable event log with queues and fan-out) rather than
 being a general-purpose data store.
 
 ## Redis Pub/Sub
@@ -147,17 +147,17 @@ misses messages, and there is no way to ask for them again. It is excellent for 
 real-time broadcast where missing a message is acceptable (cache invalidation pings, live
 presence) and you want the absolute minimum overhead.
 
-streams' nearest equivalent is [watch over SSE](/api/watch): multiplexed live delivery across
+topics' nearest equivalent is [watch over SSE](/api/watch): multiplexed live delivery across
 many topics on one connection — but backed by a durable log, so a watcher can reconnect with
 `Last-Event-ID` (or just `diff` from a stored cursor) and catch up on everything it missed.
 If at-most-once broadcast with zero durability is genuinely all you need, Redis Pub/Sub is
-lighter; if you ever need replay, Pub/Sub cannot give it to you and streams can.
+lighter; if you ever need replay, Pub/Sub cannot give it to you and topics can.
 
 ## Verdict
 
 <div className="verdict-grid">
   <div className="verdict win">
-    <h4>streams wins when</h4>
+    <h4>topics wins when</h4>
     <ul>
       <li>You need an explicit, in-band <strong>gap/loss signal</strong> at delivery time, not a silent trim plus a lag metric.</li>
       <li>You want <strong>per-topic durability classes</strong> instead of one global AOF/RDB policy.</li>

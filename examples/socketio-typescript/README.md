@@ -1,6 +1,6 @@
-# Socket.IO TypeScript chat over streams
+# Socket.IO TypeScript chat over topics
 
-This example runs a Socket.IO chat server that uses a local `streams` instance as
+This example runs a Socket.IO chat server that uses a local `topics` instance as
 the durable event backbone.
 
 Topology:
@@ -15,7 +15,7 @@ Topology:
 - The Socket.IO server tails that client's own topic and emits those records to
   that socket.
 
-Because each browser client's subscription is represented by durable streams
+Because each browser client's subscription is represented by durable topics
 state, round-robin load balancing does not change the feed. A server can stop
 and restart; when the browser reconnects with the same `clientId`, the server
 reuses the same client topic and router, then resumes from its saved cursor or
@@ -28,15 +28,15 @@ its Socket.IO server was offline.
 
 ## Run
 
-Start `streams` locally first. This example expects:
+Start `topics` locally first. This example expects:
 
 ```bash
 docker run --rm -p 4000:4000 \
-  -e STREAMS_ALLOW_INSECURE_NO_AUTH=1 \
-  ghcr.io/slopus/streams:latest
+  -e TOPICS_ALLOW_INSECURE_NO_AUTH=1 \
+  ghcr.io/slopus/topics:latest
 ```
 
-If you already have streams listening on `127.0.0.1:4000` with no auth, use that.
+If you already have topics listening on `127.0.0.1:4000` with no auth, use that.
 
 Then run the example:
 
@@ -66,7 +66,7 @@ Useful environment variables:
 
 | Name | Default | Purpose |
 | --- | --- | --- |
-| `STREAMS_URL` | `http://127.0.0.1:4000` | streams base URL. |
+| `TOPICS_URL` | `http://127.0.0.1:4000` | topics base URL. |
 | `STREAM_PREFIX` | `socketio.chat` | Prefix for the ingress topic, client topics, and routers. |
 | `SERVER_ID` | random per process | Stable id for restart cursor state. |
 | `PORT` | `0` | Port to bind. `0` asks the OS for a free port. |

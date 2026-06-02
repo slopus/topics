@@ -1,13 +1,13 @@
 ---
 title: Why a Single Node
-description: streams runs on one machine on purpose — the case for scaling up instead of out, what a single machine actually gives you today, the distributed-systems cost you avoid, and the honest availability tradeoff.
+description: topics runs on one machine on purpose — the case for scaling up instead of out, what a single machine actually gives you today, the distributed-systems cost you avoid, and the honest availability tradeoff.
 ---
 
 import { Callout, Cards } from 'nextra/components'
 
 # Why a Single Node
 
-streams runs on one machine, and that is the most consequential decision in the project. It
+topics runs on one machine, and that is the most consequential decision in the project. It
 isn't a limitation we're working around — it's the choice that makes everything else
 possible: the small API, the millisecond latencies, the crisp answer to "what survives a
 crash." Choose distribution instead and you inherit its complexity in every one of those
@@ -23,10 +23,10 @@ no cluster, no configuration — just a library and a file — in exchange for l
 machine. That trade fit an enormous fraction of real workloads, and it turned the database
 into something you *embed and forget* rather than operate.
 
-streams takes the same trade for an append-only event log. The hard part — a correct,
+topics takes the same trade for an append-only event log. The hard part — a correct,
 crash-safe, ordered log with millisecond delivery — lives inside the engine; the outside is a
 single process pointed at a single directory. The one difference from SQLite is deliberate:
-streams is a **networked server**, not an in-process library, so many services across your
+topics is a **networked server**, not an in-process library, so many services across your
 fleet can read and write the same log over HTTP. Think of it as one step out from embedded —
 SQLite's operating model, with a network port.
 
@@ -41,7 +41,7 @@ nodes" is rarely the answer to a question anyone has actually measured — it's 
 expensive one, because the cost lands on the part of the system you operate forever, not the
 part you write once.
 
-streams takes the opposite default: **use one machine well, and reach for more only once
+topics takes the opposite default: **use one machine well, and reach for more only once
 you can show you've outgrown it.** For most event workloads, that day simply never arrives.
 
 ## A single machine is bigger than you think
@@ -53,7 +53,7 @@ hour today gives you, on a single predictable bill:
 - **multiple terabytes of RAM,** and
 - **local NVMe sustaining millions of IOPS** at sub-millisecond latency.
 
-That is more capacity than many distributed clusters had a few years ago. streams is built
+That is more capacity than many distributed clusters had a few years ago. topics is built
 to actually use it: the write-ahead log is [sharded across cores](/how-it-works/wal-and-group-commit)
 so durable throughput scales with the hardware, reads are `O(1)` seq-indexed lookups, and a
 record delivered live over SSE is [serialized once](/how-it-works/performance) and shared
@@ -65,11 +65,11 @@ honestly, is on the [Performance](/how-it-works/performance) page.)
 ## What you are not paying for
 
 The real case for one node isn't the throughput — it's everything a distributed log spends
-to reach its throughput that streams simply never spends:
+to reach its throughput that topics simply never spends:
 
 - **No coordination on the write path.** No replication round-trips, no consensus, no
   partition or rebalance handling. A write is a sequential append to a local disk the engine
-  fully owns. Every microsecond a cluster spends agreeing, streams spends appending — which is
+  fully owns. Every microsecond a cluster spends agreeing, topics spends appending — which is
   precisely why the latency floor is low enough to quote in milliseconds.
 - **No distributed failure modes.** Split brain, partial failure, stale replicas, cross-node
   clock skew, "which node is authoritative" — none of these can occur when there is only one
@@ -88,7 +88,7 @@ to reach its throughput that streams simply never spends:
 
 Be clear-eyed about the cost. A single node is a single point of failure for *availability*:
 it goes away for a few seconds during a deploy, a kernel patch, or the occasional crash.
-streams doesn't pretend otherwise — it makes that downtime **cheap and safe** rather than
+topics doesn't pretend otherwise — it makes that downtime **cheap and safe** rather than
 engineering it away:
 
 - **Acknowledged work is never lost.** A `disk` or `fsync` write lands in the write-ahead log
@@ -110,7 +110,7 @@ protocol into your data path.
 ## If you genuinely need more than one node
 
 Don't argue yourself out of a real requirement. If you need transparent failover,
-multi-region writes, or throughput beyond the largest single box, streams is **not** that
+multi-region writes, or throughput beyond the largest single box, topics is **not** that
 system — multi-server, replication, HA, and single-writer fencing are
 [out of scope by design](/getting-started#whats-implemented-today), not unfinished features.
 
@@ -138,7 +138,7 @@ What you *can* build on top of independent nodes:
   <Cards.Card title="Performance" href="/how-it-works/performance" arrow>
     The throughput and latency targets, the measured baselines, and their honest caveats.
   </Cards.Card>
-  <Cards.Card title="Running streams" href="/deployment" arrow>
+  <Cards.Card title="Running topics" href="/deployment" arrow>
     How the durable server starts, recovers, binds, and shuts down.
   </Cards.Card>
   <Cards.Card title="Durability" href="/guarantees/durability" arrow>

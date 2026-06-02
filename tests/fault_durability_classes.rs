@@ -1,7 +1,7 @@
 //! Phase-8A durability-CLASS crash matrix: drive the *real, fully-wired*
 //! [`Engine`] through an in-memory [`FakeDisk`] (the same harness
 //! `tests/crash_oracle.rs` uses — [`FakeDisk`]/[`FaultFs`] from
-//! `streams::storage::testfs` injected via [`Engine::with_data_dir_fs`]) and a
+//! `topics::storage::testfs` injected via [`Engine::with_data_dir_fs`]) and a
 //! pure-Rust reference model, then assert the three durability classes behave
 //! exactly to contract across snapshot + WAL replay + a crash mid-write:
 //!
@@ -48,12 +48,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{
     DiffRequest, Durability, RecordIn, RouterCreateRequest, TopicConfig, TopicType, WriteRequest,
 };
 
@@ -421,7 +421,7 @@ fn assert_topic_contract(
                     model.head
                 );
             }
-            let ceiling = model.head + streams::config::DISK_HEAD_RESERVE_AHEAD;
+            let ceiling = model.head + topics::config::DISK_HEAD_RESERVE_AHEAD;
             assert!(
                 dump.head <= ceiling,
                 "{name}: disk recovered head {} exceeds reservation ceiling {}",
@@ -800,10 +800,10 @@ fn disk_topic_crash_loses_only_unfsynced_tail() {
     // file stays fast + deterministic while still hitting the interesting
     // boundaries of the small workload (each iteration opens a fresh recovering
     // engine + replays, so the cap bounds total wall time). The probed set is
-    // tiered (streams::testutil::crash_points): a bounded deterministic sample by
-    // DEFAULT, the full `0..=cap` matrix under `STREAMS_TEST_EXHAUSTIVE=1`.
+    // tiered (topics::testutil::crash_points): a bounded deterministic sample by
+    // DEFAULT, the full `0..=cap` matrix under `TOPICS_TEST_EXHAUSTIVE=1`.
     let cap = total_writes.min(10);
-    for crash_at in streams::testutil::crash_points(cap) {
+    for crash_at in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xD15C_0000 ^ crash_at);
         let trip = CrashAfter::new(disk.clone(), crash_at);
         let mut model = RefModel::default();
@@ -928,9 +928,9 @@ fn fsync_topic_sweep_acked_always_durable() {
     };
 
     // Tiered crash-point sweep (see the sibling sweep above): bounded
-    // deterministic sample by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
+    // deterministic sample by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
     let cap = total_writes.min(10);
-    for crash_at in streams::testutil::crash_points(cap) {
+    for crash_at in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0x5EE0 ^ crash_at);
         let trip = CrashAfter::new(disk.clone(), crash_at);
         let mut model = RefModel::default();

@@ -485,7 +485,7 @@ fn idle_stream_emits_heartbeat_comment() {
     // The keep-alive `: hb` comment fires only when the stream is idle. The
     // server drives that cadence from the session's clamped `heartbeat_ms`, whose
     // production floor is 1000ms; we lower the floor for the test process via
-    // `STREAMS_TEST_MIN_HEARTBEAT_MS` (config::min_heartbeat_ms) and request a
+    // `TOPICS_TEST_MIN_HEARTBEAT_MS` (config::min_heartbeat_ms) and request a
     // sub-second heartbeat, so this asserts the *cadence* without the old ~15s
     // wall-clock wait. Bounded + non-flaky: it returns as soon as the byte arrives
     // and can never hang.
@@ -500,13 +500,13 @@ fn idle_stream_emits_heartbeat_comment() {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.0 {
-                Some(v) => std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", v),
-                None => std::env::remove_var("STREAMS_TEST_MIN_HEARTBEAT_MS"),
+                Some(v) => std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", v),
+                None => std::env::remove_var("TOPICS_TEST_MIN_HEARTBEAT_MS"),
             }
         }
     }
-    let _env_guard = EnvGuard(std::env::var("STREAMS_TEST_MIN_HEARTBEAT_MS").ok());
-    std::env::set_var("STREAMS_TEST_MIN_HEARTBEAT_MS", "100");
+    let _env_guard = EnvGuard(std::env::var("TOPICS_TEST_MIN_HEARTBEAT_MS").ok());
+    std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", "100");
 
     let h = Harness::start();
     write(&h, "quiet", json!({ "records": [{ "data": 1 }] }));

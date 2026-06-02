@@ -2,7 +2,7 @@
 //!
 //! Drives many concurrent **durable** (`fsync`-class) writers spread across many
 //! topics against a real, on-disk durable [`Engine`], and measures the AGGREGATE
-//! write-ack throughput (acks/sec) at several `STREAMS_WAL_SHARDS` values. The
+//! write-ack throughput (acks/sec) at several `TOPICS_WAL_SHARDS` values. The
 //! goal is to show write throughput scaling ~linearly with shard count up to the
 //! core / NVMe-fsync limit: each shard is an independent writer thread + mpsc +
 //! fsync stream, so spreading topics across shards lets N group-commit fsyncs run
@@ -32,10 +32,10 @@ use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
 use serde_json::json;
-use streams::clock::{SharedClock, SystemClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::types::{Durability, RecordIn, TopicConfig, WriteRequest};
+use topics::clock::{SharedClock, SystemClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::types::{Durability, RecordIn, TopicConfig, WriteRequest};
 
 /// One benchmark configuration.
 struct Params {
@@ -242,7 +242,7 @@ fn main() {
         .map(|n| n.get())
         .unwrap_or(0);
 
-    println!("# streams WAL-sharding scaling benchmark");
+    println!("# topics WAL-sharding scaling benchmark");
     println!(
         "# cores(available_parallelism)={cores}  writers={}  topics={}  ops/run={}  \
          payload={}B  batch={}  durability={}  repeat={}",

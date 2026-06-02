@@ -1,13 +1,13 @@
 ---
 title: Introduction
-description: streams is a persistent event log over plain HTTP — write to a topic, read it back by sequence, follow it live, delete from it. Runs on one machine, with durability you choose per topic and loss that is always explicit.
+description: topics is a persistent event log over plain HTTP — write to a topic, read it back by sequence, follow it live, delete from it. Runs on one machine, with durability you choose per topic and loss that is always explicit.
 ---
 
 import { Callout, Cards } from 'nextra/components'
 
 # Introduction
 
-**streams** is a persistent event log you talk to over plain HTTP. You write events to a
+**topics** is a persistent event log you talk to over plain HTTP. You write events to a
 named **topic**, the server stamps each one with a monotonic sequence number, and you read
 them back by asking for "everything after sequence N." You can follow a topic live, fan it
 out to other topics, and delete what you no longer need — all from a single process on one
@@ -18,7 +18,7 @@ That's the whole thing. The rest of this site is detail.
 
 ## The short version
 
-Three deliberate bets define streams:
+Three deliberate bets define topics:
 
 1. **A small API.** Create a topic, write, read by sequence, watch, delete. A handful of
    HTTP calls, JSON in and out, IDs assigned for you. `curl` is a complete client — no SDK,
@@ -27,7 +27,7 @@ Three deliberate bets define streams:
    machine — SQLite's operating model, with a network port — so you skip the distributed
    system entirely: no cluster, no consensus, no replication hops. Growing means a bigger
    machine, not more of them to operate; the price is brief downtime on restarts, which
-   streams makes cheap.
+   topics makes cheap.
 3. **[Durability you choose](/guarantees/durability).** Decide per topic how much crash-safety
    a write buys: best-effort `memory`, crash-surviving `disk`, or power-loss-proof `fsync`.
    Strong where it matters, fast where it doesn't.
@@ -54,22 +54,22 @@ The model fits in a sentence:
 
 Everything else is that idea expanded into a few verbs. Below, an online store records its
 `orders` — run the calls top to bottom and you've used the whole product. They assume
-`STREAMS` points at your server and auth is off on the default loopback bind:
+`TOPICS` points at your server and auth is off on the default loopback bind:
 
 ```bash
-export STREAMS=http://localhost:4000
+export TOPICS=http://localhost:4000
 ```
 
 **Create a topic** — or skip it; a topic is created lazily on the first write.
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/orders -d '{ "durable": true }'
+curl -X PUT $TOPICS/v0/topics/orders -d '{ "durable": true }'
 ```
 
 **Write records** — the server numbers each one and returns the assigned seqs.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -d '{ "records": [ { "data": { "sku": "AEROPRESS-GO", "qty": 1, "total": 3499 }, "tag": "order-7731" } ] }'
 # → { "seqs": [1], "head_seq": 1, ... }
 ```
@@ -78,7 +78,7 @@ curl -X POST $STREAMS/v0/topics/orders \
 the cursor; there's no opaque token.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders/diff -d '{ "from_seq": 0 }'
+curl -X POST $TOPICS/v0/topics/orders/diff -d '{ "from_seq": 0 }'
 # → { "records": [ { "$seq": 1, "$tag": "order-7731", "data": { "sku": "AEROPRESS-GO", ... } } ],
 #     "next_from_seq": 1, "caught_up": true }
 ```
@@ -87,23 +87,23 @@ curl -X POST $STREAMS/v0/topics/orders/diff -d '{ "from_seq": 0 }'
 woken on append rather than polled.
 
 ```bash
-curl -X POST $STREAMS/v0/watch -d '{ "topics": { "orders": { "tail": true } } }'
+curl -X POST $TOPICS/v0/watch -d '{ "topics": { "orders": { "tail": true } } }'
 # → { "wid": "wid_…", "stream_url": "/v0/watch/wid_…" }
-curl -N $STREAMS/v0/watch/wid_…
+curl -N $TOPICS/v0/watch/wid_…
 ```
 
 **Delete** — permanently remove records by seq range and/or tag, effective immediately,
 point-in-time (it never touches records written later).
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders/delete -d '{ "match": ["tag", "Eq", "order-7731"] }'
+curl -X POST $TOPICS/v0/topics/orders/delete -d '{ "match": ["tag", "Eq", "order-7731"] }'
 ```
 
 **Fan out** — a router copies every record from one topic into another, server-side,
 preserving the origin node.
 
 ```bash
-curl -X PUT $STREAMS/v0/routers/orders-to-fulfillment -d '{ "source": "orders", "dest": "fulfillment" }'
+curl -X PUT $TOPICS/v0/routers/orders-to-fulfillment -d '{ "source": "orders", "dest": "fulfillment" }'
 ```
 
 That's the simple level. The same surface scales up into lease-based **queues**
@@ -113,12 +113,12 @@ end to end.
 
 ## What's implemented today
 
-streams is honest about maturity. The `/v0` contract is fully implemented; a few
+topics is honest about maturity. The `/v0` contract is fully implemented; a few
 operational edges are partial or planned.
 
 - **Implemented** — the full `/v0` API (topics, batched diff reads, permanent deletes,
   routers, multiplexed SSE, lease-based queues); the **sharded** WAL with adaptive group
-  commit (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`, shard-count-agnostic recovery);
+  commit (`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`, shard-count-agnostic recovery);
   **async + derived router forwarding** (off the write/ack path, forwarded copies not
   WAL-logged so one source append is one WAL write, durable per-router cursor with
   replay-from-cursor recovery, single-source-per-dest); the
@@ -139,7 +139,7 @@ operational edges are partial or planned.
   consumer + delete).
 
 <Callout type="warning">
-  streams speaks **plain HTTP** — it does not terminate TLS. For any non-loopback
+  topics speaks **plain HTTP** — it does not terminate TLS. For any non-loopback
   exposure, run it behind a TLS-terminating reverse proxy or bind loopback and tunnel.
   See [Security](/deployment/security).
 </Callout>

@@ -7,20 +7,20 @@ import { Callout } from 'nextra/components'
 
 # WAL & Group Commit
 
-The **write-ahead log** is the durability boundary of streams: an acknowledged write to a
+The **write-ahead log** is the durability boundary of topics: an acknowledged write to a
 durable topic is a complete, checksum-valid frame on disk, and recovery loses only data that
 never reached the WAL. This page covers the frame format, the control-frame timeline, the
 sharded writer threads (each fed by its own MPSC channel), the adaptive group-commit window,
 and the off-lock fsync that lets many concurrent writers coalesce into one flush.
 
-The WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`): there are **N
+The WAL is **sharded** (`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`): there are **N
 independent shard writers**, each an ordered append stream over its own file set with its own
 group-commit loop, so durable write throughput scales ~linearly with shard count. Each topic
 routes to **exactly one shard** by a stable hash of its interned id, so within a shard appends
 are still one ordered sequential stream (a deliberate match to the hardware — making group
 commit trivial and removing write-side lock contention), and per-topic ordering and every
 durability guarantee still hold because a topic always lives on the same shard. On disk each
-shard (when shards > 1) lives under `wal/shard-NN/`; `STREAMS_WAL_SHARDS=1` is the flat
+shard (when shards > 1) lives under `wal/shard-NN/`; `TOPICS_WAL_SHARDS=1` is the flat
 single-writer layout. Recovery is **shard-count-agnostic** — it replays all shards by
 `topic_id`, so the shard count may change between restarts.
 

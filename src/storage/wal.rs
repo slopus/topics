@@ -1435,7 +1435,7 @@ impl Wal {
             read_only: false,
         };
         let handle = std::thread::Builder::new()
-            .name("streams-wal".to_string())
+            .name("topics-wal".to_string())
             .spawn(move || task.run())
             .map_err(WalError::Io)?;
 

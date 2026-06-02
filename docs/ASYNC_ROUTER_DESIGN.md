@@ -1,9 +1,9 @@
 # Async + Derived Router Forwarding — Design Note
 
-Status: SHIPPED DEFAULT (IMPLEMENTED + HARDENED; `STREAMS_FORWARD_V2` default ON).
+Status: SHIPPED DEFAULT (IMPLEMENTED + HARDENED; `TOPICS_FORWARD_V2` default ON).
 The async + derived forwarding path is fully wired, tested, the codex review findings
 are fixed, and it is now THE default forwarding model. The legacy synchronous
-`forward_from` path remains available as an explicit opt-out via `STREAMS_FORWARD_V2=0`
+`forward_from` path remains available as an explicit opt-out via `TOPICS_FORWARD_V2=0`
 (`false`/`no`/`off`). The flag is captured per-engine at construction
 (`Engine::forward_v2`).
 
@@ -108,7 +108,7 @@ WAL append + the periodic cursor, never N (no amplification).
 
 ### 1.1 Why a *read-path catch-up* (the hard constraint)
 
-`tests/integration_routers.rs` and the `streams-probe` conformance both write to
+`tests/integration_routers.rs` and the `topics-probe` conformance both write to
 `source` and then **immediately** (no sleep, same connection) `diff` the dest,
 asserting the forwarded copy is already visible. A purely time-driven background
 worker would make that racy. So forwarding is **cursor-driven** and runnable from
@@ -306,7 +306,7 @@ order), with no fsync on it.
 
 | File | Change |
 |---|---|
-| `src/config.rs` | Add `ROUTER_TICK_INTERVAL_MS`, `ROUTER_BATCH` consts; a `forward_v2` runtime flag (env `STREAMS_FORWARD_V2`). Was default off in Stage 1; the cutover flipped it to **default ON** (`STREAMS_FORWARD_V2=0` is now the legacy opt-out). |
+| `src/config.rs` | Add `ROUTER_TICK_INTERVAL_MS`, `ROUTER_BATCH` consts; a `forward_v2` runtime flag (env `TOPICS_FORWARD_V2`). Was default off in Stage 1; the cutover flipped it to **default ON** (`TOPICS_FORWARD_V2=0` is now the legacy opt-out). |
 | `src/engine/router.rs` | `RouterGraph`: add `dest_base: HashMap<String,u64>` and per-router `Mutex` (or move per-router advance state into a small `RouterRuntime`). Add `dest_base(name)`, `set_dest_base`, `pending_deferred` bookkeeping. `note_forwarded` keeps advancing cursor+total; add `cursor(name)`. |
 | `src/engine/mod.rs` | New `advance_router(&self, name)` (the idempotent forward step, per-router-mutex-guarded) carrying the per-record transform + filter + backpressure-prefix logic extracted from `forward_from`. New `catch_up_dest(&self, dest)` called at the top of `diff`/SSE/queue/`topic_state` GET read paths. New `drain_router_sources(&self)` for the worker. `write()`: when `forward_v2`, **drop** the inline `forward_from` call (lines ~2143-2154) — just `mark_dirty` the source. Keep `forward_from` as the v1 path under the flag so all tests stay green until cutover. |
 | `src/engine/topic_state.rs` | `publish_staged`: advance head + notify, then materialize **after** the caller releases the gate; split out `seal_pending()` to run the seal/fsync off-gate. Add a per-topic `pending_seal` marker the maintenance worker / read path drains. |
@@ -317,7 +317,7 @@ order), with no fsync on it.
 | `src/engine/wal_glue.rs` / `src/storage/wal.rs` | **No new WAL record types** — forwarded dest records are derived, so nothing is logged for them (this is the no-amplification win). |
 
 ### Tests impact
-- `tests/integration_routers.rs`, `streams-probe`: stay green because the
+- `tests/integration_routers.rs`, `topics-probe`: stay green because the
   read-path catch-up (`catch_up_dest`) makes a forward visible on the immediate
   dest read with no sleep.
 - `tests/crash_recovery.rs` (the `mixed_durability...` test): already does NOT

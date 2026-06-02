@@ -19,11 +19,11 @@ use std::sync::Arc;
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
 
-use streams::clock::{Clock, SharedClock, SystemClock};
-use streams::config::ServerConfig;
-use streams::engine::topic_state::{StoredRecord, TopicIndex, TopicState};
-use streams::engine::{Engine, SEQ_BASE};
-use streams::types::{DiffRequest, Discard, Filter, FilterOp, RecordIn, TopicConfig, WriteRequest};
+use topics::clock::{Clock, SharedClock, SystemClock};
+use topics::config::ServerConfig;
+use topics::engine::topic_state::{StoredRecord, TopicIndex, TopicState};
+use topics::engine::{Engine, SEQ_BASE};
+use topics::types::{DiffRequest, Discard, Filter, FilterOp, RecordIn, TopicConfig, WriteRequest};
 
 const TOPIC: &str = "bench";
 

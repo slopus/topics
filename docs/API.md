@@ -1,4 +1,4 @@
-# streams — HTTP API Reference (`/v0`)
+# topics — HTTP API Reference (`/v0`)
 
 A persistent event engine exposed as a JSON-first HTTP API. Single binary, single
 machine. This document is the complete `/v0` surface — every endpoint, its body, its
@@ -17,7 +17,7 @@ http://{host}:{port}/v0/...
 The API version is the **first path segment** (`/v0`). Breaking changes ship as a new
 prefix (`/v1`) and may run concurrently. Within a version only additive changes are made
 (new optional request fields, new response fields, new endpoints). **Clients must ignore
-unknown response fields.** There is no region in the host — streams is single-machine.
+unknown response fields.** There is no region in the host — topics is single-machine.
 
 ### 0.2 Auth
 
@@ -25,7 +25,7 @@ unknown response fields.** There is no region in the host — streams is single-
 Authorization: Bearer <API_KEY>
 ```
 
-Plain bearer token. Keys are supplied at startup (`STREAMS_API_KEYS`, comma-separated). A
+Plain bearer token. Keys are supplied at startup (`TOPICS_API_KEYS`, comma-separated). A
 missing/unknown key returns `401`. **Keys are hashed at rest** (SHA-256) — only the digest is
 retained in memory, never the plaintext, and tokens are never logged. The check is
 **constant-time**: the presented token is hashed and its digest compared against every
@@ -39,7 +39,7 @@ and the header is ignored — logged loudly at boot.
 
 A key **may** carry a scope set and a topic-name prefix allowlist. **This is fully additive and
 back-compatible**: a bare `key` (no scopes, no prefixes) is a **full-access** key, exactly as
-before. The `STREAMS_API_KEYS` entry syntax is extended:
+before. The `TOPICS_API_KEYS` entry syntax is extended:
 
 ```
 key                       # full access (back-compat): all scopes, all topics
@@ -70,7 +70,7 @@ key::prefixes             # empty scopes field = ALL scopes, prefix-restricted
 
 A request that authenticates but lacks the required scope, or addresses a topic/router name
 outside its prefix allowlist (path or relevant body name), returns **`403 forbidden`**. A
-**malformed scope token** in `STREAMS_API_KEYS` makes the server **refuse to start**
+**malformed scope token** in `TOPICS_API_KEYS` makes the server **refuse to start**
 (fail-closed — it will not silently grant the wrong scope). The plaintext keys are parsed into
 the hashed store once at startup and then **zeroized**, so no plaintext secret lingers in the
 process config.
@@ -85,20 +85,20 @@ GET** — the creating key must be presented (header or the dev-only `?token=`),
 unconfigured server is never an accidental public, unauthenticated event store. If the
 configured bind is **non-loopback** (e.g. `0.0.0.0`) **and** no api keys are set, the server
 **refuses to start** (and logs loudly) unless you explicitly set
-`STREAMS_ALLOW_INSECURE_NO_AUTH=1`. Loopback with no keys stays dev-friendly. Configure the
-bind via `STREAMS_HOST`/`STREAMS_PORT`.
+`TOPICS_ALLOW_INSECURE_NO_AUTH=1`. Loopback with no keys stays dev-friendly. Configure the
+bind via `TOPICS_HOST`/`TOPICS_PORT`.
 
-> streams speaks **plain HTTP** — it does not terminate TLS, **by design**. For any non-loopback
+> topics speaks **plain HTTP** — it does not terminate TLS, **by design**. For any non-loopback
 > exposure, run it behind a TLS-terminating reverse proxy (or bind loopback and tunnel); native
 > TLS is **out of scope** (§0.11). Bearer keys are secrets: a token sent over plain HTTP, or in a
 > URL query string, can be observed in transit or in logs — see the watch `?token=` note in §7.1.
 
 ### 0.11 Security scope (what's deliberately out of scope)
 
-streams is a **single-machine** event store; some platform concerns are intentionally left to the
+topics is a **single-machine** event store; some platform concerns are intentionally left to the
 deployment rather than built in:
 
-- **TLS — out of scope.** streams speaks plain HTTP; terminate TLS at a reverse proxy (or bind
+- **TLS — out of scope.** topics speaks plain HTTP; terminate TLS at a reverse proxy (or bind
   loopback). This is a transport concern handled outside the binary, not a planned feature.
 - **Scopes / prefix allowlist — *implemented* (§0.2).** A key may carry a scope set
   (`read`/`write`/`delete`/`admin`) and a topic-name prefix allowlist; keys are hashed at rest.
@@ -108,7 +108,7 @@ deployment rather than built in:
   prefix allowlist is a filter, not an isolated namespace).
 - **Resource / rate limits — *implemented* (§11).** Configurable caps on topics, routers, watch
   sessions, concurrent SSE connections (global + per-key), per-key in-flight requests, and a
-  global **total-bytes** quota (`STREAMS_MAX_TOTAL_BYTES`), enforced on every creation/write path
+  global **total-bytes** quota (`TOPICS_MAX_TOTAL_BYTES`), enforced on every creation/write path
   with a `429 throttled`; plus a per-response **byte budget**, a length bound on queue `seqs`
   arrays, and idle watch-session GC. See §11 for the env vars and §12 for the consolidated
   threat model.
@@ -535,12 +535,12 @@ prior in-window write; `seqs` are the original ones and no new append happened.
 
 | Limit | Default | Config var |
 |---|---|---|
-| Max records per write | `10000` | `STREAMS_MAX_BATCH_RECORDS` |
-| Max single record `data`+`meta` | `1 MiB` | `STREAMS_MAX_RECORD_BYTES` |
-| Max total request body | `64 MiB` | `STREAMS_MAX_BODY_BYTES` |
-| Max `meta` per record | `16 KiB`, ≤ 64 keys | `STREAMS_MAX_META_BYTES` |
-| Max `tag` length | `256` bytes | `STREAMS_MAX_TAG_BYTES` |
-| Max `node` length | `128` bytes | `STREAMS_MAX_NODE_BYTES` |
+| Max records per write | `10000` | `TOPICS_MAX_BATCH_RECORDS` |
+| Max single record `data`+`meta` | `1 MiB` | `TOPICS_MAX_RECORD_BYTES` |
+| Max total request body | `64 MiB` | `TOPICS_MAX_BODY_BYTES` |
+| Max `meta` per record | `16 KiB`, ≤ 64 keys | `TOPICS_MAX_META_BYTES` |
+| Max `tag` length | `256` bytes | `TOPICS_MAX_TAG_BYTES` |
+| Max `node` length | `128` bytes | `TOPICS_MAX_NODE_BYTES` |
 
 **Errors** — `400 invalid_request` / `batch_too_large` / `record_too_large`;
 `404 topic_not_found` (`create:false` and absent); `413 payload_too_large`;
@@ -571,7 +571,7 @@ because the operation is described by the JSON body; it is read-only and safe to
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `from_seq` | `u64` | `0` | Exclusive lower bound: return records with `$seq > from_seq`. `0` = from earliest retained. To tail, pass the current `head_seq`. |
-| `limit` | `u32` | `256` | Max records this call. Clamped to `STREAMS_MAX_LIMIT` (`1000`), not rejected. `0` ⇒ default. |
+| `limit` | `u32` | `256` | Max records this call. Clamped to `TOPICS_MAX_LIMIT` (`1000`), not rejected. `0` ⇒ default. |
 | `node` | string \| array | none | Node loop-prevention filter (§4.5): records whose `$node` ∈ this set are omitted (but still advance the cursor). |
 | `include_tags` | bool | `false` | Include `$tag` on each record. |
 | `include_meta` | bool | `true` | Include each record's `meta`. |
@@ -788,8 +788,8 @@ cursor" can re-forward; consumers must be idempotent — see DESIGN §6). A deri
 **single-source**: a second router with a *different* `source` into the same `dest` is rejected
 `409 topic_exists_incompatible` with `error.detail.reason: "router_dest_fan_in"`.
 
-> **Legacy opt-out (`STREAMS_FORWARD_V2=0`).** The async + derived model above is the shipped
-> default. Setting `STREAMS_FORWARD_V2=0` (`false`/`no`/`off`) reverts to the legacy
+> **Legacy opt-out (`TOPICS_FORWARD_V2=0`).** The async + derived model above is the shipped
+> default. Setting `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) reverts to the legacy
 > **synchronous in-line** forward: each forwarded copy is its own WAL append, written on the
 > source write/ack path (durable-by-construction but **WAL-amplified** — N WAL writes for an
 > N-way fan-out, and the source ack waits on them). The legacy path also permits **multi-source
@@ -899,7 +899,7 @@ open, while the client can still read the error body), and the **GET** is a tiny
 last-delivered cursor per topic (so GET reconnects resume exactly) and is **reclaimed** after
 `session_ttl_ms` (default 300000) of no active GET. The idle-session GC runs opportunistically
 on every `POST /v0/watch` and stream-open: a session with no live stream whose last access is
-older than the TTL is removed, so an abandoned session cannot pin a `STREAMS_MAX_WATCH_SESSIONS`
+older than the TTL is removed, so an abandoned session cannot pin a `TOPICS_MAX_WATCH_SESSIONS`
 slot until restart. A session with an open stream is never reclaimed (its cursor map is in use).
 
 **Auth & the `wid` capability.** The **POST** is authenticated normally
@@ -946,7 +946,7 @@ to the creating key's scope so the stream can never exceed it.
 | Field | Meaning | Default |
 |---|---|---|
 | `node` | Loop-prevention filter applied to all watched topics (this node never receives its own records). Omit for none. | none |
-| `topics` | Map of `topic → per-topic options`. The key is the topic (keeps cursors unambiguous and doubles as the resume map). Up to `STREAMS_MAX_WATCH_TOPICS` (default 256). | required, ≥1 |
+| `topics` | Map of `topic → per-topic options`. The key is the topic (keeps cursors unambiguous and doubles as the resume map). Up to `TOPICS_MAX_WATCH_TOPICS` (default 256). | required, ≥1 |
 | `topics[b].from_seq` | Deliver records with `$seq > from_seq`. `0` = from earliest. | `0` |
 | `topics[b].tail` | If `true`, ignore `from_seq` and start at the topic's current head (only records after subscribe; the SSE analog of Redis `XREAD $`). | `false` |
 | `limit` | Max records per `record` frame (per topic, per flush). | `256` |
@@ -1113,7 +1113,7 @@ created **without auth** (dev mode) the `wid` alone authorizes and no bearer is 
 ## 8. Health / readiness / metrics
 
 These live at the version root (and aliases at the server root for load balancers). They do
-not require auth by default (`STREAMS_PROBE_AUTH=true` to require it).
+not require auth by default (`TOPICS_PROBE_AUTH=true` to require it).
 
 ### 8.1 Liveness — `GET /v0/health` (alias `GET /healthz`)
 
@@ -1133,28 +1133,28 @@ not require auth by default (`STREAMS_PROBE_AUTH=true` to require it).
 ### 8.3 Metrics — `GET /v0/metrics`
 
 Prometheus text exposition (`text/plain; version=0.0.4`) by default; `Accept:
-application/json` for a JSON snapshot. Exposes process/aggregate gauges (`streams_topics`,
-`streams_topics_by_class{class=...}`, `streams_routers`, `streams_records_live`,
-`streams_bytes_live`, `streams_queue_topics`, `streams_queue_leases_in_flight`,
-`streams_sse_connections`, `streams_watch_sessions`, `streams_ready`,
-`streams_recovery_progress`, `streams_uptime_ms`), **per-topic gauges**
-(`streams_topic_head_seq` / `_earliest_seq` / `_records_live` / `_bytes_live` /
+application/json` for a JSON snapshot. Exposes process/aggregate gauges (`topics_topics`,
+`topics_topics_by_class{class=...}`, `topics_routers`, `topics_records_live`,
+`topics_bytes_live`, `topics_queue_topics`, `topics_queue_leases_in_flight`,
+`topics_sse_connections`, `topics_watch_sessions`, `topics_ready`,
+`topics_recovery_progress`, `topics_uptime_ms`), **per-topic gauges**
+(`topics_topic_head_seq` / `_earliest_seq` / `_records_live` / `_bytes_live` /
 `_queue_ready` / `_queue_in_flight`, labelled `{topic=...}`; the per-topic block is bounded and
-sets `streams_topic_metrics_truncated` if capped), the real **WAL metrics**
-(`streams_wal_frames_total`, `_batches_total`, `_fsyncs_total`, `_bytes_written_total`,
+sets `topics_topic_metrics_truncated` if capped), the real **WAL metrics**
+(`topics_wal_frames_total`, `_batches_total`, `_fsyncs_total`, `_bytes_written_total`,
 `_rotations_total`, `_queue_depth`, `_queue_depth_peak`, `_submit_full_total`,
-`_read_only`), and a **fsync-latency histogram** `streams_wal_fsync_latency_us` (with
+`_read_only`), and a **fsync-latency histogram** `topics_wal_fsync_latency_us` (with
 `_bucket{le=...}` / `_sum` / `_count`).
 
 ```
-# HELP streams_topic_head_seq Highest assigned seq per topic.
-# TYPE streams_topic_head_seq gauge
-streams_topic_head_seq{topic="jobs"} 480231
-streams_topic_earliest_seq{topic="jobs"} 468188
-streams_topic_records_live{topic="jobs"} 12043
-streams_wal_fsyncs_total 88241
-streams_wal_fsync_latency_us_bucket{le="500"} 84120
-streams_wal_fsync_latency_us_count 88241
+# HELP topics_topic_head_seq Highest assigned seq per topic.
+# TYPE topics_topic_head_seq gauge
+topics_topic_head_seq{topic="jobs"} 480231
+topics_topic_earliest_seq{topic="jobs"} 468188
+topics_topic_records_live{topic="jobs"} 12043
+topics_wal_fsyncs_total 88241
+topics_wal_fsync_latency_us_bucket{le="500"} 84120
+topics_wal_fsync_latency_us_count 88241
 ```
 `200` always (even when not ready — metrics describe the recovering process). (There are no
 per-topic append/read/eviction/tombstone counters and no scheduler-throttle metric — the
@@ -1164,7 +1164,7 @@ surface is gauges + WAL counters + the fsync histogram above.)
 > can poll liveness/readiness), `/v0/metrics` exposes operational state (topic count, …) and is
 > therefore **gated behind auth by default** when keys are configured: it needs a key with the
 > `read` scope (a full-access key suffices). In dev mode (no keys) it is open. Set
-> `STREAMS_PROBE_AUTH` to additionally require auth on the liveness/readiness probes.
+> `TOPICS_PROBE_AUTH` to additionally require auth on the liveness/readiness probes.
 
 ---
 
@@ -1245,7 +1245,7 @@ Lease up to `max` claimable jobs to a worker `node`.
 | Field | Type | Req? | Default | Meaning |
 |---|---|---|---|---|
 | `node` | string | yes | — | The claiming worker's identity. Recorded as the lease holder; used for `nack`/`extend`/`/work` ownership and for instant release on `/work` disconnect (§10.8). ≤ `MAX_NODE_BYTES`. |
-| `max` | `u32` | no | `1` | Max jobs to lease this call. Clamped to `STREAMS_MAX_CLAIM` (`1000`). The response may contain **fewer** (or zero) if the queue has less work available — `count < max` is the reliable "queue (near-)empty" signal, never an error. |
+| `max` | `u32` | no | `1` | Max jobs to lease this call. Clamped to `TOPICS_MAX_CLAIM` (`1000`). The response may contain **fewer** (or zero) if the queue has less work available — `count < max` is the reliable "queue (near-)empty" signal, never an error. |
 | `lease_ms` | `u64` | no | topic `lease_ms` | Lease duration for the jobs claimed by *this* call; overrides the topic default. Clamped `[100, 86400000]`. |
 
 A job is **claimable** iff it is not acked (still in the jobs log) and not currently leased
@@ -1321,7 +1321,7 @@ acked+deleted job stays gone iff its delete was durable — i.e. **ack durabilit
 | Field | Type | Req? | Meaning |
 |---|---|---|---|
 | `node` | string | yes | The worker acking. Must be the current lease holder of each seq for the ack to count. |
-| `seqs` | array<u64> | yes | 1..=`STREAMS_MAX_CLAIM` job seqs to complete. |
+| `seqs` | array<u64> | yes | 1..=`TOPICS_MAX_CLAIM` job seqs to complete. |
 | `lease_ids` | array<string> | no | Optional **per-seq lease fence** (validate-when-supplied): the `claimed[].lease_id` tokens from the originating claim, one per entry of `seqs` (same length and order). When present, a seq is acked only if its supplied token matches the current lease — a **stale** token (the lease was superseded by a re-claim/extend by another worker) is rejected and that seq is **skipped**. Omit to fall back to the legacy `node`+`seqs` match. |
 
 **Behavior** — only seqs currently leased to `node` are acked (deleted). A seq that is not
@@ -1471,7 +1471,7 @@ Accept: text/event-stream
 | Query | Req? | Default | Meaning |
 |---|---|---|---|
 | `node` | yes | — | The worker identity these jobs are leased to (as in §10.2). |
-| `max` | no | `1` | Target in-flight depth: the server keeps at most this many jobs leased to this connection at once (the backpressure bound). Clamped to `STREAMS_MAX_CLAIM`. |
+| `max` | no | `1` | Target in-flight depth: the server keeps at most this many jobs leased to this connection at once (the backpressure bound). Clamped to `TOPICS_MAX_CLAIM`. |
 | `lease_ms` | no | topic `lease_ms` | Lease duration for jobs pushed on this stream. |
 | `token` | no | — | Dev-only `?token=<key>` fallback for browser `EventSource` (as in §7.1); prefer the `Authorization: Bearer` header — a query string leaks via logs/history/proxies. |
 
@@ -1515,28 +1515,28 @@ bad `max`); `404 topic_not_found`; `406 not_acceptable` (`Accept` not `text/even
 
 ## 11. Resource & rate limits (DoS hardening)
 
-streams enforces a small set of **configurable resource caps** so a single instance — or a
+topics enforces a small set of **configurable resource caps** so a single instance — or a
 single api key — cannot exhaust the server by creating unbounded resources or opening unbounded
-streams. Every cap has a **sane default** and is **disabled by setting it to `0`** (unlimited).
+topics. Every cap has a **sane default** and is **disabled by setting it to `0`** (unlimited).
 The defaults are generous; a normal deployment never trips them, and an unconfigured dev topic on
 loopback behaves exactly as before.
 
 | Limit | Env var | Default | Scope | Enforced on |
 |---|---|---|---|---|
-| Max topics | `STREAMS_MAX_TOPICS` | `100000` | instance | every topic **creation** (`PUT /v0/topics/:topic` and write auto-create) |
-| Max routers | `STREAMS_MAX_ROUTERS` | `10000` | instance | every router **creation** (`PUT /v0/routers/:r`) |
-| Max watch sessions | `STREAMS_MAX_WATCH_SESSIONS` | `10000` | instance | `POST /v0/watch` |
-| Max SSE connections | `STREAMS_MAX_SSE_CONNECTIONS` | `10000` | instance | every SSE stream GET (`/v0/watch/:wid`, `/v0/topics/:q/work`) |
-| Max SSE connections / key | `STREAMS_MAX_SSE_CONNECTIONS_PER_KEY` | `1000` | per key | same, attributed to the authenticated key |
-| Max in-flight requests / key | `STREAMS_MAX_INFLIGHT_PER_KEY` | `1000` | per key | every request — a per-key **concurrency** cap (held for the request's duration) |
-| Max total bytes | `STREAMS_MAX_TOTAL_BYTES` | `0` (unlimited) | instance | every **write** — a global disk/RAM growth quota over the sum of retained record bytes across all topics |
+| Max topics | `TOPICS_MAX_TOPICS` | `100000` | instance | every topic **creation** (`PUT /v0/topics/:topic` and write auto-create) |
+| Max routers | `TOPICS_MAX_ROUTERS` | `10000` | instance | every router **creation** (`PUT /v0/routers/:r`) |
+| Max watch sessions | `TOPICS_MAX_WATCH_SESSIONS` | `10000` | instance | `POST /v0/watch` |
+| Max SSE connections | `TOPICS_MAX_SSE_CONNECTIONS` | `10000` | instance | every SSE stream GET (`/v0/watch/:wid`, `/v0/topics/:q/work`) |
+| Max SSE connections / key | `TOPICS_MAX_SSE_CONNECTIONS_PER_KEY` | `1000` | per key | same, attributed to the authenticated key |
+| Max in-flight requests / key | `TOPICS_MAX_INFLIGHT_PER_KEY` | `1000` | per key | every request — a per-key **concurrency** cap (held for the request's duration) |
+| Max total bytes | `TOPICS_MAX_TOTAL_BYTES` | `0` (unlimited) | instance | every **write** — a global disk/RAM growth quota over the sum of retained record bytes across all topics |
 
 Two additional, **non-configurable** hard bounds protect the read/response paths:
 
 - A single `record` frame / `diff` response is bounded by a **byte budget** (`max_batch_bytes`,
   default 1 MiB, clamped to 8 MiB) as well as by `limit`, so one response cannot grow to
   `MAX_LIMIT`×record-cap (§7.2). At least one record is always delivered (forward progress).
-- Queue `ack`/`nack`/`extend` reject a `seqs` array longer than `STREAMS_MAX_CLAIM` (1000) with
+- Queue `ack`/`nack`/`extend` reject a `seqs` array longer than `TOPICS_MAX_CLAIM` (1000) with
   `400 batch_too_large`, so a request cannot make the server allocate/echo an unbounded vec.
 
 **Semantics.**
@@ -1550,7 +1550,7 @@ Two additional, **non-configurable** hard bounds protect the read/response paths
   **existing** topic/router is an *update* and always succeeds, so a saturated server can still
   be reconfigured. A router refused by `max_routers` is rejected **before** any source/dest topic
   auto-create, so it leaves no phantom topics.
-- The **total-bytes** quota (`STREAMS_MAX_TOTAL_BYTES`, default `0`/unlimited) bounds disk/RAM
+- The **total-bytes** quota (`TOPICS_MAX_TOTAL_BYTES`, default `0`/unlimited) bounds disk/RAM
   growth from authenticated writers: a write that would push the live total over the cap is a
   `429 throttled` (`error.detail.limit:"max_total_bytes"`). It is checked only when enabled, so
   the default path is unchanged. Combine with per-topic `cap_bytes`/`cap_records` + `discard:"old"`
@@ -1574,14 +1574,14 @@ carries `error.detail.limit`.
 
 ## 12. Security & operations (threat model)
 
-This section is the operator-facing security note: what streams protects, what it does **not**,
+This section is the operator-facing security note: what topics protects, what it does **not**,
 and how to deploy it safely. It restates the model spread across §0.2 / §0.11 / §11 in one
 place.
 
 ### 12.1 What's in scope
 
 - **Authentication** — bearer tokens (`Authorization: Bearer <key>`), supplied at startup via
-  `STREAMS_API_KEYS`. **Keys are hashed at rest**: the plaintext is parsed into the hashed store
+  `TOPICS_API_KEYS`. **Keys are hashed at rest**: the plaintext is parsed into the hashed store
   **once** at startup and then **zeroized and dropped** — only the SHA-256 digest is held in
   memory for the process lifetime, never the plaintext, and **tokens are never logged**. The
   presented token is hashed and its digest compared against every configured key's digest in
@@ -1608,7 +1608,7 @@ place.
   ack/nack/extend `seqs` arrays, and **idle watch-session GC** so abandoned sessions free their
   slot (§11).
 - **Accidental public exposure** — the default bind is **loopback** (`127.0.0.1:4000`); a
-  non-loopback bind with no keys **refuses to start** unless `STREAMS_ALLOW_INSECURE_NO_AUTH=1`
+  non-loopback bind with no keys **refuses to start** unless `TOPICS_ALLOW_INSECURE_NO_AUTH=1`
   (§0.2).
 - **No path traversal** — user-controlled topic/router **names never reach the filesystem** as
   path components. On-disk segment/WAL/snapshot files are keyed by an interned **numeric
@@ -1618,35 +1618,35 @@ place.
 
 ### 12.2 What's NOT in scope (deploy accordingly)
 
-- **No TLS.** streams speaks **plain HTTP** and does not terminate TLS. A bearer token on plain
+- **No TLS.** topics speaks **plain HTTP** and does not terminate TLS. A bearer token on plain
   HTTP — or in a URL query string (the dev-only `?token=` SSE fallback, §7.1) — can be observed
-  in transit or in logs. **For any non-loopback exposure, run streams behind a TLS-terminating
+  in transit or in logs. **For any non-loopback exposure, run topics behind a TLS-terminating
   reverse proxy** (nginx / Caddy / Envoy / a cloud LB), or bind loopback and tunnel (SSH /
   WireGuard). Native TLS is **out of scope by design** — terminate it at the proxy.
 - **No hard tenant isolation.** The prefix allowlist is a *filter*, not a namespace partition:
   two keys with overlapping prefixes share the same topic namespace. Multi-tenancy beyond per-key
   scopes + prefix allowlists is **out of scope** (there is no hard per-tenant partition).
 - **No audit log / no key rotation API.** Keys are static for the process lifetime (set at
-  startup); rotate by restarting with a new `STREAMS_API_KEYS`. There is no per-request audit
+  startup); rotate by restarting with a new `TOPICS_API_KEYS`. There is no per-request audit
   trail beyond the operational tracing logs (which never contain tokens).
 - **Trusted operator.** Anyone who can read the process environment or the boot logs can see
-  the configured key **plaintext** (it is supplied via `STREAMS_API_KEYS`); the *hashing at
+  the configured key **plaintext** (it is supplied via `TOPICS_API_KEYS`); the *hashing at
   rest* protects the in-memory/runtime surface and crash dumps, not the startup configuration.
-  Manage `STREAMS_API_KEYS` as a secret (e.g. a secrets manager / systemd `LoadCredential`),
+  Manage `TOPICS_API_KEYS` as a secret (e.g. a secrets manager / systemd `LoadCredential`),
   not a committed file.
 
 ### 12.3 Recommended hardened deployment
 
-1. **Terminate TLS at a reverse proxy** in front of streams; have the proxy forward to a
-   **loopback** streams bind (`STREAMS_HOST=127.0.0.1`). Then a leaked plain-HTTP token is not
+1. **Terminate TLS at a reverse proxy** in front of topics; have the proxy forward to a
+   **loopback** topics bind (`TOPICS_HOST=127.0.0.1`). Then a leaked plain-HTTP token is not
    network-observable.
-2. **Set `STREAMS_API_KEYS`** with **least-privilege scopes + prefixes** per client — e.g. a
+2. **Set `TOPICS_API_KEYS`** with **least-privilege scopes + prefixes** per client — e.g. a
    read-only dashboard key `dash:read:tenant42:`, a producer `prod:write:tenant42:`, an admin
    key `ops::` (all scopes, all topics). Avoid bare full-access keys in production.
 3. **Tune the resource caps (§11)** to your capacity. Leave the defaults unless you have a
    specific reason; set a cap to `0` only to deliberately disable it.
-4. **Never set `STREAMS_ALLOW_INSECURE_NO_AUTH=1`** outside a trusted private network — it
+4. **Never set `TOPICS_ALLOW_INSECURE_NO_AUTH=1`** outside a trusted private network — it
    disables the no-auth refusal that exists to prevent an accidental open event store.
-5. **Treat the data directory** (`STREAMS_DATA_DIR`) as sensitive: it contains every record's
+5. **Treat the data directory** (`TOPICS_DATA_DIR`) as sensitive: it contains every record's
    payload in the WAL/segments in the clear. Protect it with filesystem permissions and
-   at-rest disk encryption as your threat model requires (streams does not encrypt payloads).
+   at-rest disk encryption as your threat model requires (topics does not encrypt payloads).

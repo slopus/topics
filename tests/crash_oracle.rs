@@ -37,12 +37,12 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::Fs;
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::Fs;
+use topics::types::{
     DeleteRequest, DiffRequest, Filter, RecordIn, TopicConfig, TopicType, WriteRequest,
 };
 
@@ -495,7 +495,7 @@ fn assert_topic_contract(
     } else {
         // disk class: the head may sit at the durable reservation ceiling, but
         // never beyond it (no unbounded future seq).
-        let ceiling = model.head + streams::config::DISK_HEAD_RESERVE_AHEAD;
+        let ceiling = model.head + topics::config::DISK_HEAD_RESERVE_AHEAD;
         assert!(
             dump.head <= ceiling,
             "{name}: disk-class recovered head {} exceeds the reservation ceiling {} \
@@ -503,7 +503,7 @@ fn assert_topic_contract(
             dump.head,
             ceiling,
             model.head,
-            streams::config::DISK_HEAD_RESERVE_AHEAD
+            topics::config::DISK_HEAD_RESERVE_AHEAD
         );
     }
 
@@ -1038,11 +1038,11 @@ fn sweep_durable_append_crash_points_oracle() {
     // Cap the sweep so the test stays fast but still covers every interesting
     // boundary of the small workload (each durable append blocks on a real group
     // fsync, so the cap bounds total wall time). The set of probed crash points is
-    // tiered (streams::testutil::crash_points): a bounded deterministic sample by
+    // tiered (topics::testutil::crash_points): a bounded deterministic sample by
     // DEFAULT (both endpoints + an interior spread), the full `0..=cap` matrix when
-    // `STREAMS_TEST_EXHAUSTIVE=1` (nightly CI). No boundary is ever dropped.
+    // `TOPICS_TEST_EXHAUSTIVE=1` (nightly CI). No boundary is ever dropped.
     let cap = total_writes.min(14);
-    for crash_point in streams::testutil::crash_points(cap) {
+    for crash_point in topics::testutil::crash_points(cap) {
         // A FaultFs that drives a FakeDisk.crash() after exactly `crash_point`
         // write_at calls — the harness-level crash injector at a precise FS index.
         let disk = FakeDisk::with_seed(crash_point);
@@ -1145,11 +1145,11 @@ impl CrashAfter {
 }
 
 struct CrashAfterFile {
-    inner: Box<dyn streams::storage::File>,
+    inner: Box<dyn topics::storage::File>,
     owner: CrashAfter,
 }
 
-impl streams::storage::File for CrashAfterFile {
+impl topics::storage::File for CrashAfterFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read_at(offset, buf)
     }
@@ -1188,8 +1188,8 @@ impl Fs for CrashAfter {
     fn open(
         &self,
         path: &std::path::Path,
-        opts: streams::storage::OpenOpts,
-    ) -> std::io::Result<Box<dyn streams::storage::File>> {
+        opts: topics::storage::OpenOpts,
+    ) -> std::io::Result<Box<dyn topics::storage::File>> {
         let inner = self.disk.open(path, opts)?;
         Ok(Box::new(CrashAfterFile {
             inner,

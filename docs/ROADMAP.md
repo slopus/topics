@@ -1,4 +1,4 @@
-# streams — Roadmap
+# topics — Roadmap
 
 Four build phases, each with crisp acceptance criteria, plus the benchmark plan. The guiding rule:
 **the API and its semantics are fixed in phase 1 and never change**; later phases add persistence,
@@ -116,7 +116,7 @@ Lock in correctness and record initial performance numbers against the phase-2 s
 Add persistence and scale underneath the unchanged API, staying a single restartable process.
 
 **Scope**
-- WAL: framing (§ARCHITECTURE 2.1), **sharded writers** (`STREAMS_WAL_SHARDS`, default
+- WAL: framing (§ARCHITECTURE 2.1), **sharded writers** (`TOPICS_WAL_SHARDS`, default
   `min(num_cpus, 8)`; each shard an ordered writer with its own file set), adaptive group commit,
   per-topic durable fsync, preallocation, rotation; shard-count-agnostic recovery.
 - Compactor: WAL→segment checkpointing; segment `.data`/`.idx`; mmap serving of sealed segments,
@@ -209,7 +209,7 @@ recovery costs.
 - **Durable consumer groups as a server primitive:** **Out of scope** — they are an application-level
   pattern (a topic per consumer + delete-as-ack), not a built-in server feature.
 - **Multi-server / replication / HA, native TLS, hard multi-tenancy:**
-  **Out of scope** — streams is single-server with an advisory data-dir single-writer lock
+  **Out of scope** — topics is single-server with an advisory data-dir single-writer lock
   (TLS terminates at a reverse proxy; tenancy is per-key scopes + topic-name-prefix allowlists).
 - **Auto-priority constants** (`AUTO_MAX=500`, `HALF_LIFE_MS=30000`) and **band weights/boundaries**
   are starting defaults; phase 3/4 benchmarks may retune them. The formula and knobs are stable; the

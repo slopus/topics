@@ -1,15 +1,15 @@
 ---
 title: Pub/Sub
-description: Build Redis-style pub/sub on streams — a small capped+TTL feed, routers fanning out to per-subscriber topics, subscribers tailing over SSE and tolerating gaps via tombstones.
+description: Build Redis-style pub/sub on topics — a small capped+TTL feed, routers fanning out to per-subscriber topics, subscribers tailing over SSE and tolerating gaps via tombstones.
 ---
 
 import { Callout, Steps } from 'nextra/components'
 
 # Pub/Sub
 
-Pub/sub on streams is a **small capped, TTL'd feed topic** with [routers](/api/routers) fanning every record out to one topic per subscriber, and subscribers **tailing over SSE** with `tail: true`. Memory stays bounded because the feed and the subscriber topics have a small `cap_records` and a short `ttl_ms`; a subscriber that falls behind the retention window doesn't break — it gets an explicit [tombstone](/guarantees/tombstones) frame naming the exact gap, then resumes. This is the weak-guarantee, low-latency pattern: fast fan-out, bounded resources, gaps tolerated and *signalled*, never silent.
+Pub/sub on topics is a **small capped, TTL'd feed topic** with [routers](/api/routers) fanning every record out to one topic per subscriber, and subscribers **tailing over SSE** with `tail: true`. Memory stays bounded because the feed and the subscriber topics have a small `cap_records` and a short `ttl_ms`; a subscriber that falls behind the retention window doesn't break — it gets an explicit [tombstone](/guarantees/tombstones) frame naming the exact gap, then resumes. This is the weak-guarantee, low-latency pattern: fast fan-out, bounded resources, gaps tolerated and *signalled*, never silent.
 
-It is deliberately the opposite of the [durable-streams](/guides/durable-streams) recipe. There you make eviction impossible; here you embrace it for bounded memory, and rely on the gap signal to keep slow subscribers honest.
+It is deliberately the opposite of the [durable streams](/guides/durable-streams) recipe. There you make eviction impossible; here you embrace it for bounded memory, and rely on the gap signal to keep slow subscribers honest.
 
 <Callout type="info">
   Use the `disk` durability class (the default, `durable: false`) for pub/sub. A
@@ -41,10 +41,10 @@ A publisher writes once to `notifications`. Routers copy each record into `notif
 
 A bounded feed: keep at most `cap_records` records, expire anything older than `ttl_ms`. `discard: "old"` (the default) evicts the oldest when full — that is the pub/sub-friendly policy.
 
-Examples use `$STREAMS` as the base URL — see the [Quickstart](/getting-started/quickstart).
+Examples use `$TOPICS` as the base URL — see the [Quickstart](/getting-started/quickstart).
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/notifications \
+curl -X PUT $TOPICS/v0/topics/notifications \
   -H 'content-type: application/json' \
   -d '{ "ttl_ms": 5000, "cap_records": 10000, "discard": "old", "durable": false }'
 ```
@@ -63,11 +63,11 @@ curl -X PUT $STREAMS/v0/topics/notifications \
 A router copies every record appended to `notifications` into a per-subscriber topic, at-least-once and per-source FIFO. The subscriber topics auto-create (lazily) on first forward, inheriting defaults — give them their own small cap+TTL up front if you want a different retention than the feed.
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/notifications:web -d '{ "ttl_ms": 5000, "cap_records": 10000 }'
-curl -X PUT $STREAMS/v0/topics/notifications:mobile -d '{ "ttl_ms": 5000, "cap_records": 10000 }'
+curl -X PUT $TOPICS/v0/topics/notifications:web -d '{ "ttl_ms": 5000, "cap_records": 10000 }'
+curl -X PUT $TOPICS/v0/topics/notifications:mobile -d '{ "ttl_ms": 5000, "cap_records": 10000 }'
 
-curl -X PUT $STREAMS/v0/routers/notifications-to-web -d '{ "source": "notifications", "dest": "notifications:web" }'
-curl -X PUT $STREAMS/v0/routers/notifications-to-mobile -d '{ "source": "notifications", "dest": "notifications:mobile" }'
+curl -X PUT $TOPICS/v0/routers/notifications-to-web -d '{ "source": "notifications", "dest": "notifications:web" }'
+curl -X PUT $TOPICS/v0/routers/notifications-to-mobile -d '{ "source": "notifications", "dest": "notifications:mobile" }'
 ```
 
 ```json
@@ -90,7 +90,7 @@ curl -X PUT $STREAMS/v0/routers/notifications-to-mobile -d '{ "source": "notific
 The publisher writes to `notifications`; the routers do the fan-out. Tag records if subscribers will filter or you'll want to cancel by tag.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/notifications \
+curl -X POST $TOPICS/v0/topics/notifications \
   -H 'content-type: application/json' \
   -d '{ "records": [
           { "data": { "type": "comment", "post": "p-123", "actor": "user-1042" }, "tag": "user-1042:msg-5" }
@@ -110,13 +110,13 @@ Each subscriber watches its own topic with `tail: true`, which starts at the top
 
 ```bash
 # 1. Create the watch session.
-curl -X POST $STREAMS/v0/watch \
+curl -X POST $TOPICS/v0/watch \
   -H 'content-type: application/json' \
   -d '{ "topics": { "notifications:web": { "tail": true } } }'
 # → { "wid": "wid_BuRguGorNdVFWNQULz-rrw", "stream_url": "/v0/watch/wid_BuRguGorNdVFWNQULz-rrw", ... }
 
 # 2. Open the stream.
-curl -N $STREAMS/v0/watch/wid_BuRguGorNdVFWNQULz-rrw
+curl -N $TOPICS/v0/watch/wid_BuRguGorNdVFWNQULz-rrw
 ```
 
 ```text
@@ -135,7 +135,7 @@ A subscriber can watch **many** topics over the one SSE connection (up to 256), 
 
 ## Tolerating gaps — the tombstone
 
-This is the load-bearing part of weak-guarantee pub/sub. Because the subscriber topics are small and TTL'd, a slow subscriber *will* eventually fall behind the retention window. When that happens streams does **not** silently drop the missed records — it emits a tombstone frame naming the exact range, then resumes from the new floor:
+This is the load-bearing part of weak-guarantee pub/sub. Because the subscriber topics are small and TTL'd, a slow subscriber *will* eventually fall behind the retention window. When that happens topics does **not** silently drop the missed records — it emits a tombstone frame naming the exact range, then resumes from the new floor:
 
 ```text
 id: eyJzdWItYSI6ODMwMDB9
@@ -162,7 +162,7 @@ The subscriber handles `record` and `tombstone` uniformly: process records, and 
 
 - **Lightweight tailing.** Set `include_data: false` on the watch to receive only `$seq`/`$ts`/`$tag`/`$node` metadata per record — handy for a "something changed, go fetch it" notification feed.
 - **One shared topic instead of per-subscriber topics.** You *can* point every subscriber at `notifications` directly and skip the routers — but then all subscribers share one retention window, and a single slow subscriber's lag is measured against the same cap as everyone else. Per-subscriber topics isolate each subscriber's fate; that isolation is the reason to use routers here.
-- **Bounded memory across the whole topology.** Each topic trims itself via cap+TTL. To put a hard ceiling on total retained bytes server-wide, set `STREAMS_MAX_TOTAL_BYTES` — a write past it returns `429 throttled`. See [Configuration](/deployment/configuration).
+- **Bounded memory across the whole topology.** Each topic trims itself via cap+TTL. To put a hard ceiling on total retained bytes server-wide, set `TOPICS_MAX_TOTAL_BYTES` — a write past it returns `429 throttled`. See [Configuration](/deployment/configuration).
 
 ## See also
 

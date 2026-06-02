@@ -1,4 +1,4 @@
-//! streams — a persistent event engine (single binary), library crate.
+//! topics — a persistent event engine (single binary), library crate.
 //!
 //! The binary (`src/main.rs`) is a thin wrapper that loads config, builds the
 //! [`engine::Engine`], and serves [`http::build_router`]. Exposing the modules

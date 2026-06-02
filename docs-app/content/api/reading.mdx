@@ -29,7 +29,7 @@ recency clock.
 ### Request body
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders/diff \
+curl -X POST $TOPICS/v0/topics/orders/diff \
   -H 'content-type: application/json' \
   -d '{
         "from_seq": 479100,
@@ -64,7 +64,7 @@ curl -X POST $STREAMS/v0/topics/orders/diff \
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `from_seq` | `u64` | `0` | Exclusive lower bound: return records with `$seq > from_seq`. `0` = from the earliest retained. To tail, pass the current `head_seq`. |
-| `limit` | `u32` | `256` | Max records this call. Clamped to `STREAMS_MAX_LIMIT` (`1000`), not rejected. `0` ⇒ default. |
+| `limit` | `u32` | `256` | Max records this call. Clamped to `TOPICS_MAX_LIMIT` (`1000`), not rejected. `0` ⇒ default. |
 | `node` | string \| array | none | Node loop-prevention filter: records whose `$node` is in this set are omitted (but still advance the cursor). Pass an array to filter several of your own identities. |
 | `include_tags` | bool | `false` | Include `$tag` on each returned record. |
 | `include_meta` | bool | `true` | Include each record's `meta`. |

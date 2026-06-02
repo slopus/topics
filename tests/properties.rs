@@ -27,10 +27,10 @@ use proptest::prelude::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::types::{
     DeleteRequest, DiffRequest, Discard, Filter, NodeFilter, RecordIn, TopicConfig, WriteRequest,
 };
 
@@ -470,7 +470,7 @@ proptest! {
 
         let d = engine.diff(TOPIC, diff_from(0)).unwrap();
         let tomb = d.tombstone.expect("ttl expiry crossing from_seq=0 must tombstone");
-        prop_assert_eq!(tomb.reason, streams::types::TombstoneReason::Ttl);
+        prop_assert_eq!(tomb.reason, topics::types::TombstoneReason::Ttl);
         prop_assert_eq!(tomb.gap_from, 1);
         prop_assert_eq!(tomb.gap_to, n as u64);
         prop_assert_eq!(d.records.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![n as u64 + 1]);

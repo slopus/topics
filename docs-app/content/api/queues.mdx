@@ -74,7 +74,7 @@ changes it returns `409 topic_exists_incompatible`.
 
 ```bash
 # A durable queue that fails loudly when full, with dead-lettering after 5 deliveries.
-curl -X PUT $STREAMS/v0/topics/transcode \
+curl -X PUT $TOPICS/v0/topics/transcode \
   -H 'content-type: application/json' \
   -d '{ "type": "queue", "durable": true, "discard": "reject",
         "lease_ms": 30000, "claim_jitter_ms": 0,
@@ -92,7 +92,7 @@ curl -X PUT $STREAMS/v0/topics/transcode \
 Produce jobs with a normal write — the queue is just a topic:
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode \
+curl -X POST $TOPICS/v0/topics/transcode \
   -H 'content-type: application/json' \
   -d '{ "records": [ { "data": { "type": "transcode", "src": "s3://uploads/clip-8800.mov", "preset": "h264-1080p" },
                        "tag": "clip-8800" } ] }'
@@ -375,7 +375,7 @@ scope](/deployment/security)) — the worker still **acks** (and may nack/extend
 separate `POST` endpoints above; the stream only *delivers*.
 
 ```bash
-curl -N "$STREAMS/v0/topics/transcode/work?node=api-fra-1&max=8" \
+curl -N "$TOPICS/v0/topics/transcode/work?node=api-fra-1&max=8" \
   -H 'accept: text/event-stream'
 ```
 

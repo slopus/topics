@@ -1,16 +1,16 @@
 ---
 title: vs NATS JetStream
-description: How streams compares to NATS JetStream — the closest single-binary peer — on subjects vs topics, durability, consumers, dead-letter, gap detection, KV/Object store, RAFT replication, and isolation.
+description: How topics compares to NATS JetStream — the closest single-binary peer — on subjects vs topics, durability, consumers, dead-letter, gap detection, KV/Object store, RAFT replication, and isolation.
 ---
 
 import { Callout } from 'nextra/components'
 
 # vs NATS JetStream
 
-NATS JetStream is the fairest peer to streams: both are persistence layers that live
+NATS JetStream is the fairest peer to topics: both are persistence layers that live
 inside a **single server binary**, write to local files, and serve as the substrate for
 log, queue, and fan-out patterns. The honest split is that JetStream also **clusters**
-for replicated HA and scale-out, while streams is single-machine; and that streams gives
+for replicated HA and scale-out, while topics is single-machine; and that topics gives
 you a **delivery-time gap signal** and a **built-in dead-letter move**, which JetStream
 leaves to advisories you wire up yourself.
 
@@ -18,12 +18,12 @@ leaves to advisories you wire up yourself.
   This page describes JetStream (the persistence/streaming layer inside `nats-server`),
   not core NATS subject messaging. JetStream can run as one binary — that's why it's the
   closest comparison — but it is also designed to run as a RAFT-replicated cluster, which
-  streams is not.
+  topics is not.
 </Callout>
 
 ## The shape of each system
 
-streams writes records to named **topics** addressed directly by name (`orders`,
+topics writes records to named **topics** addressed directly by name (`orders`,
 `audit`). A topic has a per-topic [durability class](/guarantees/durability) and is read by
 its monotonic `seq` cursor over plain HTTP/JSON, with live delivery over
 [multiplexed SSE](/api/watch).
@@ -33,14 +33,14 @@ JetStream defines **streams** that bind one or more **subjects** —
 subject, decoupled from any particular publisher. You interact through the NATS protocol
 and a NATS client library; consumers are objects the server tracks on your behalf.
 
-That subject-binding model is genuinely powerful and has no equivalent in streams: a
+That subject-binding model is genuinely powerful and has no equivalent in topics: a
 JetStream stream pulls in traffic by wildcard pattern without the producer naming the
-stream. In streams you write to a topic by name, and [routers](/api/routers) handle
+stream. In topics you write to a topic by name, and [routers](/api/routers) handle
 fan-out after the fact.
 
 ## Subjects vs topics
 
-| | streams | NATS JetStream |
+| | topics | NATS JetStream |
 |---|---|---|
 | Addressing | Write to a **topic** by name | Stream **binds subjects** (`orders.>`) and captures matching publishes |
 | Producer coupling | Producer names the topic | Producer publishes to a subject; the stream captures it |
@@ -48,7 +48,7 @@ fan-out after the fact.
 | Wildcards | Tag prefix match on reads/deletes; topic names are literal | First-class subject wildcards (`*`, `>`) |
 | Transport | Plain HTTP/JSON + SSE — `curl` is a client | NATS wire protocol + a NATS client library |
 
-Subject wildcard capture is a clear JetStream win. The streams win is reach: any HTTP
+Subject wildcard capture is a clear JetStream win. The topics win is reach: any HTTP
 client, no protocol or SDK, and SSE for live tailing.
 
 ## Per-stream vs per-topic durability
@@ -56,7 +56,7 @@ client, no protocol or SDK, and SSE for live tailing.
 JetStream sets storage **per stream** — `file` or `memory`. That is a binary choice for
 the whole stream.
 
-streams resolves a [durability class](/guarantees/durability) **per topic**, with three
+topics resolves a [durability class](/guarantees/durability) **per topic**, with three
 levels rather than two:
 
 - `memory` — disk-like but best-effort: same group-committed WAL path as `disk`, no durability
@@ -68,8 +68,8 @@ levels rather than two:
 
 A RAM cache topic, a group-committed feed, and an `fsync`-gated job queue coexist in one
 process, each paying only for the guarantee it needs. JetStream's `file` storage is
-closer to streams' `disk`/`fsync` end; the per-topic granularity and the explicit `disk`
-middle tier are a streams distinction.
+closer to topics' `disk`/`fsync` end; the per-topic granularity and the explicit `disk`
+middle tier are a topics distinction.
 
 ## Consumers + AckWait vs lease queues
 
@@ -84,7 +84,7 @@ position and acknowledgements:
 These are mature, well-worn ack semantics, and the server holding consumer state is a
 real convenience.
 
-streams splits this into two explicit models:
+topics splits this into two explicit models:
 
 - **Cursor reads** ([diff](/api/reading)): the consumer owns its `from_seq` cursor.
   Advancing it is the ack. The server tracks no per-consumer position — it's stateless
@@ -95,7 +95,7 @@ streams splits this into two explicit models:
   is production-ready today.
 
 JetStream's win here is server-side consumer bookkeeping and `BackOff` scheduling out of
-the topic. The streams win is that the cursor model needs no server-side consumer object at
+the topic. The topics win is that the cursor model needs no server-side consumer object at
 all, and the queue model gives you per-message leases with the same redelivery guarantee.
 
 ## MaxDeliver advisory vs built-in dead-letter MOVE
@@ -107,7 +107,7 @@ JetStream **publishes an advisory** (`$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES
 There is no built-in destination — you subscribe to the advisory and build your own
 dead-letter handling.
 
-streams moves the message for you. When a queue job is about to be delivered for the
+topics moves the message for you. When a queue job is about to be delivered for the
 `(max_deliveries + 1)`-th time and the topic has a `dead_letter` target, the job is
 **moved** into the dead-letter topic — stamped with `meta.$dead_letter_from`,
 `$dead_letter_deliveries`, and `$dead_letter_src_seq` — and deleted from the source
@@ -126,17 +126,17 @@ When retention (Limits / `DiscardOld`) evicts messages a consumer hasn't reached
 consumer infers the loss from a **jump in the stream sequence number**. There is no
 delivery-time "you missed X..Y" frame.
 
-streams makes involuntary loss **explicit**. If cap eviction or TTL expiry removed records
+topics makes involuntary loss **explicit**. If cap eviction or TTL expiry removed records
 below a consumer's cursor, the read returns an in-band [tombstone](/guarantees/tombstones)
 with the exact `[gap_from, gap_to]` range — at HTTP 200, on the same response that
 carries the surviving records. A purely **deleted** gap reads silently (you asked for that
 removal); only **involuntary** loss tombstones. That distinction is the
 [load-bearing invariant](/getting-started) of the whole data model.
 
-streams also lets a topic **reject** instead of evicting: with `discard:"reject"`, a full
+topics also lets a topic **reject** instead of evicting: with `discard:"reject"`, a full
 topic fails the producer with `422 topic_full` **before** a seq is assigned, rather than
 dropping the oldest record. JetStream's `DiscardNew` similarly refuses new messages on a
-full stream; the difference is that streams pairs rejection-on-write with a tombstone
+full stream; the difference is that topics pairs rejection-on-write with a tombstone
 on the read side when eviction *does* happen.
 
 ## KV / Object store
@@ -145,7 +145,7 @@ JetStream ships **KV** and **Object** stores built on top of streams-as-subjects
 genuine convenience for config, sessions, and large blobs without bolting on another
 system.
 
-streams has **no** KV or Object abstraction. A topic is an append-only log; the closest
+topics has **no** KV or Object abstraction. A topic is an append-only log; the closest
 thing to "latest value for a key" is a tag plus a [point-in-time delete](/api/deletion),
 which is not the same as a KV bucket. If you want a key/value or object API in the same
 binary, JetStream wins outright.
@@ -158,15 +158,15 @@ JetStream streams can be **RAFT-replicated** with `replicas: 1 | 3 | 5`. A 3- or
 stream survives the loss of a node, with automatic leader election and failover — real
 high availability.
 
-streams has **no replication, no failover, no HA**. A single machine is the entire
+topics has **no replication, no failover, no HA**. A single machine is the entire
 durability and failure domain. An `fsync` topic survives any crash of *that* machine and
 replays its WAL on restart, but if the machine or its disk is gone, the data is gone
 until you restore a backup. There is no quorum, no follower, no automatic failover.
 
 <Callout type="warning">
   If you need to survive the loss of a node without operator intervention, you need
-  replication — and that is JetStream (or another replicated system), not streams.
-  streams trades HA for the simplicity of one process and one disk.
+  replication — and that is JetStream (or another replicated system), not topics.
+  topics trades HA for the simplicity of one process and one disk.
 </Callout>
 
 ## Accounts isolation + native TLS, and scale
@@ -176,13 +176,13 @@ streams in one account are invisible to another. Auth is `nkeys`/JWT, and the se
 terminates **TLS** natively (plus WebSocket and MQTT gateways). For scale, NATS forms
 **clusters, superclusters, and leaf nodes** that span regions.
 
-streams is more modest on all three axes, and says so:
+topics is more modest on all three axes, and says so:
 
 - **Isolation** is a [prefix allowlist](/deployment/security) per API key — a *filter*,
   not a partition. Two keys can be scoped to non-overlapping topic-name prefixes, but this
   is not hard tenant isolation, and a hard namespace partition is **out of scope** (not a
   planned feature).
-- **TLS** is **not** terminated by streams. Run it behind a TLS-terminating reverse proxy
+- **TLS** is **not** terminated by topics. Run it behind a TLS-terminating reverse proxy
   for any non-loopback exposure. Auth is bearer keys, hashed SHA-256 at rest and compared
   in constant time, with [per-key scopes](/deployment/security) (`read`/`write`/`delete`/`admin`).
 - **Scale** is **vertical only** — one NVMe-backed machine. The engine core sustains
@@ -193,7 +193,7 @@ streams is more modest on all three axes, and says so:
 
 <div className="verdict-grid">
   <div className="verdict win">
-    <h4>streams wins when</h4>
+    <h4>topics wins when</h4>
     <ul>
       <li>You want a <strong>delivery-time gap signal</strong> — an explicit tombstone
         with the exact <code>[gap_from, gap_to]</code> range — not a silent

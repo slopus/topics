@@ -21,7 +21,7 @@ or a batch-level default). The server records it as `$node`: immutable, never re
 echoed on reads when present.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/chat:general \
+curl -X POST $TOPICS/v0/topics/chat:general \
   -H 'content-type: application/json' \
   -d '{ "node": "api-fra-1",
         "records": [ { "data": { "from": "user-1042", "text": "hello" } } ] }'
@@ -37,7 +37,7 @@ read drops every record whose `$node` equals the filter, **byte-exact**, before 
 
 ```bash
 # api-fra-1 reads the topic it also writes to; its own records are filtered out.
-curl -X POST $STREAMS/v0/topics/chat:general/diff \
+curl -X POST $TOPICS/v0/topics/chat:general/diff \
   -H 'content-type: application/json' \
   -d '{ "from_seq": 0, "node": "api-fra-1" }'
 ```
@@ -111,7 +111,7 @@ to `true`. Set `dedupe_node: false` if you genuinely want echoes — a topic whe
 receive back its own records.
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/echo \
+curl -X PUT $TOPICS/v0/topics/echo \
   -H 'content-type: application/json' \
   -d '{ "dedupe_node": false }'
 ```

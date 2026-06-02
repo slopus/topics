@@ -1,4 +1,4 @@
-//! Async + derived router forwarding (`STREAMS_FORWARD_V2`) — Stage 2 properties.
+//! Async + derived router forwarding (`TOPICS_FORWARD_V2`) — Stage 2 properties.
 //!
 //! This binary runs with the async/derived forwarding path ENABLED for its whole
 //! process (the flag is captured per-engine at construction from the env var; this
@@ -26,17 +26,17 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::types::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::types::{
     DiffRequest, Discard, RecordIn, RouterCreateRequest, TombstoneReason, TopicConfig, WriteRequest,
 };
 
 /// Enable the async/derived path for THIS test process. Idempotent; every test in
 /// this binary wants it on, and the engine captures it at construction.
 fn enable_v2() {
-    std::env::set_var("STREAMS_FORWARD_V2", "1");
+    std::env::set_var("TOPICS_FORWARD_V2", "1");
 }
 
 fn durable_engine(dir: &std::path::Path) -> (Arc<Engine>, TestClock) {
@@ -82,7 +82,7 @@ fn router_req(source: &str, dest: &str) -> RouterCreateRequest {
     }
 }
 
-fn diff_all(engine: &Engine, topic_name: &str) -> streams::types::DiffResponse {
+fn diff_all(engine: &Engine, topic_name: &str) -> topics::types::DiffResponse {
     engine
         .diff(
             topic_name,
@@ -239,7 +239,7 @@ fn backpressured_forward_is_retried_not_dropped() {
     engine
         .delete(
             "dst",
-            streams::types::DeleteRequest {
+            topics::types::DeleteRequest {
                 before_seq: Some(3),
                 match_: None,
             },

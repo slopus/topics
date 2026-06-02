@@ -4,7 +4,7 @@
 //! The server now serves BOTH protocols on the same listener, auto-detecting
 //! the connection (hyper-util `auto::Builder` sniffs the HTTP/2 preface). These
 //! tests prove, over the REAL bound server (`common::Harness`, which serves via
-//! `streams::serve::serve`, the exact production path):
+//! `topics::serve::serve`, the exact production path):
 //!
 //! - an HTTP/2-prior-knowledge client (`reqwest .http2_prior_knowledge()`) gets
 //!   a `200` from `/v0/health`, the negotiated version is HTTP/2, and it can

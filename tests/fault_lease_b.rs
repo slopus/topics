@@ -35,11 +35,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::FakeDisk;
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::FakeDisk;
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 const DATA_DIR: &str = "/data";
 
@@ -179,7 +179,7 @@ fn f_clock_backward_lease() {
         // Persist directory entries, then a clean power loss with no torn damage:
         // every acked durable frame (3 appends + 1 lease) is already fsynced.
         sync_dirs(&disk);
-        disk.crash(streams::storage::testfs::TornDamage::None);
+        disk.crash(topics::storage::testfs::TornDamage::None);
         drop(engine);
         (job.seq, job.deadline, head)
     };
@@ -290,7 +290,7 @@ fn f_clock_backward_lease() {
     let d = engine2
         .diff(
             "q",
-            streams::types::DiffRequest {
+            topics::types::DiffRequest {
                 from_seq: 0,
                 limit: 1000,
                 node: None,

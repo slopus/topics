@@ -1,6 +1,6 @@
 ---
 title: vs Cloud Queues
-description: How streams compares to AWS SQS, SNS, and Kinesis and GCP Pub/Sub — managed multi-AZ services versus one self-hosted JSON/HTTP binary with an explicit loss signal and fixed cost.
+description: How topics compares to AWS SQS, SNS, and Kinesis and GCP Pub/Sub — managed multi-AZ services versus one self-hosted JSON/HTTP binary with an explicit loss signal and fixed cost.
 ---
 
 import { Callout } from 'nextra/components'
@@ -8,7 +8,7 @@ import { Callout } from 'nextra/components'
 # vs Cloud Queues
 
 AWS SQS, SNS, and Kinesis and GCP Pub/Sub are managed, multi-AZ-replicated, pay-per-use
-services that scale far beyond one machine and are operated for you. streams is the
+services that scale far beyond one machine and are operated for you. topics is the
 opposite trade: **one self-hosted binary** that puts a log, a queue, and fan-out behind a
 single JSON/HTTP API on your own NVMe, at fixed cost, with an **explicit, never-silent
 loss signal** — and no managed HA, no multi-AZ, no elastic scale-out.
@@ -22,7 +22,7 @@ loss signal** — and no managed HA, no multi-AZ, no elastic scale-out.
 
 ## The four services, briefly
 
-Each occupies a different point in the design space; streams overlaps all four because it
+Each occupies a different point in the design space; topics overlaps all four because it
 folds log, queue, and fan-out onto one substrate.
 
 ### AWS SQS — lease queue, no replay
@@ -32,18 +32,18 @@ SQS is a managed queue with a **visibility-timeout lease** (default 30 s, max 12
 queues are at-least-once with loose ordering; **FIFO** queues add ordering and
 exactly-once within a 5-minute dedup window. A native **dead-letter queue** kicks in
 after `maxReceiveCount`. There is **no replay** — an acked message is deleted, and
-retention is 4 days by default (up to 14). This maps closely to the streams
+retention is 4 days by default (up to 14). This maps closely to the topics
 [lease queue](/api/queues): `claim` → lease, `ack` → permanent delete. The difference is
-that a streams queue sits on top of a retained log, so the underlying records can still be
+that a topics queue sits on top of a retained log, so the underlying records can still be
 read by cursor; SQS has no log behind the queue.
 
 ### AWS SNS — push fan-out, no storage
 
 SNS is **stateless push fan-out**: publish once, deliver to many endpoints (SQS, Lambda,
 HTTP, email, SMS) with optional filter policies. There is **no storage and no replay** —
-it routes and forgets. The streams analog is a [router](/api/routers) fanning one topic into
+it routes and forgets. The topics analog is a [router](/api/routers) fanning one topic into
 several topics (each with its own durability), plus [SSE watch](/api/watch) for live push.
-SNS wins decisively on **heterogeneous** delivery: streams pushes to SSE clients and other
+SNS wins decisively on **heterogeneous** delivery: topics pushes to SSE clients and other
 topics, not to email/SMS/Lambda.
 
 ### AWS Kinesis — sharded log, with replay
@@ -51,8 +51,8 @@ topics, not to email/SMS/Lambda.
 Kinesis Data Streams is the closest cloud analog to a log: a **sharded ordered log** with
 per-shard sequence numbers, **replay by sequence number or timestamp**, and retention from
 24 h to 365 days. Capacity is provisioned per shard (or on-demand). The shape — an ordered,
-seq-addressable, replayable log — is what streams is, with two differences: Kinesis scales
-horizontally by adding shards (ordering only *within* a shard), and streams replays by
+seq-addressable, replayable log — is what topics is, with two differences: Kinesis scales
+horizontally by adding shards (ordering only *within* a shard), and topics replays by
 its own monotonic `seq` cursor on a single topic with no sharding.
 
 ### GCP Pub/Sub — lease + ordering + seek replay
@@ -72,7 +72,7 @@ All four services share a profile that is the recurring "cloud wins" axis:
 - **Pay-per-use** with free tiers, and **elastic scale** far beyond one machine.
 - Deep cloud-native integration — IAM, KMS, and the provider's observability stack.
 
-streams is the inverse on every one of those points:
+topics is the inverse on every one of those points:
 
 - **You operate it** — one binary, one disk; you handle backup, upgrades, and security.
 - **Single machine is the entire durability and failure domain.** No replication, no
@@ -87,7 +87,7 @@ streams is the inverse on every one of those points:
 
 <Callout type="warning">
   If you need multi-AZ durability that survives a datacenter outage with an SLA, you need
-  a managed (or self-built replicated) system. streams is one machine — that is the deal
+  a managed (or self-built replicated) system. topics is one machine — that is the deal
   it makes in exchange for being one small binary.
 </Callout>
 
@@ -98,7 +98,7 @@ This is the sharpest functional difference, and it is true of **all four** cloud
 shard trims data a consumer hasn't reached, the loss is silent. You detect it from a
 sequence-number jump (Kinesis), a lag/age metric, or not at all — after the fact.
 
-streams refuses to lose data quietly. If cap eviction or TTL expiry removed records below a
+topics refuses to lose data quietly. If cap eviction or TTL expiry removed records below a
 consumer's cursor, the read returns an in-band [tombstone](/guarantees/tombstones) with the
 exact `[gap_from, gap_to]` range — at HTTP 200, on the same response that carries the
 surviving records. Loss you **asked for** (a [point-in-time delete](/api/deletion)) is
@@ -106,14 +106,14 @@ filtered silently; loss you **didn't** is always announced. That asymmetry is th
 [load-bearing invariant](/getting-started) of the system, and no cloud queue provides it.
 
 <Callout type="info">
-  The cloud services do offer something streams cannot: FIFO/exactly-once (SQS FIFO,
+  The cloud services do offer something topics cannot: FIFO/exactly-once (SQS FIFO,
   Pub/Sub exactly-once + ordering keys) and time-based replay (Kinesis, Pub/Sub seek).
-  streams is **at-least-once** only and replays by `seq` cursor, not by wall-clock time.
+  topics is **at-least-once** only and replays by `seq` cursor, not by wall-clock time.
 </Callout>
 
 ## Fixed cost and data locality
 
-The other streams pull is economics and location:
+The other topics pull is economics and location:
 
 - **Fixed cost on your own NVMe** — no per-request or per-GB metering, no egress charges,
   no vendor lock-in. A high, steady, predictable volume that would meter expensively in
@@ -135,7 +135,7 @@ machine you run 24/7.
 
 <div className="verdict-grid">
   <div className="verdict win">
-    <h4>streams wins when</h4>
+    <h4>topics wins when</h4>
     <ul>
       <li>You want <strong>log + queue + fan-out in one self-hosted JSON/HTTP API</strong>,
         not three managed services stitched together.</li>
@@ -172,4 +172,4 @@ machine you run 24/7.
 - [Comparisons overview](/comparisons) — the full capability matrix across all four systems.
 - [vs NATS JetStream](/comparisons/vs-nats) — the closest single-binary peer.
 - [Tombstones](/guarantees/tombstones) — the explicit gap signal in depth.
-- [Job Queue guide](/guides/job-queue) — building a lease queue on streams.
+- [Job Queue guide](/guides/job-queue) — building a lease queue on topics.

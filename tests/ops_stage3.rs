@@ -56,55 +56,55 @@ fn metrics_exposes_new_gauges() {
 
     // Engine gauges.
     assert_eq!(
-        metric_value(&body, "streams_topics"),
+        metric_value(&body, "topics_topics"),
         Some(2.0),
         "two topics:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_records_live"),
+        metric_value(&body, "topics_records_live"),
         Some(2.0),
         "two live records:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_queue_topics"),
+        metric_value(&body, "topics_queue_topics"),
         Some(1.0),
         "one queue topic:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_sse_connections"),
+        metric_value(&body, "topics_sse_connections"),
         Some(0.0),
         "no open SSE connections:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_ready"),
+        metric_value(&body, "topics_ready"),
         Some(1.0),
         "ready after recovery:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_recovery_progress"),
+        metric_value(&body, "topics_recovery_progress"),
         Some(1.0),
         "recovery complete:\n{body}"
     );
 
     // WAL counters: frames > 0 and at least one fsync from the durable writes.
-    let frames = metric_value(&body, "streams_wal_frames_total").expect("wal frames present");
+    let frames = metric_value(&body, "topics_wal_frames_total").expect("wal frames present");
     assert!(frames > 0.0, "wal frames written: {frames}\n{body}");
-    let fsyncs = metric_value(&body, "streams_wal_fsyncs_total").expect("wal fsyncs present");
+    let fsyncs = metric_value(&body, "topics_wal_fsyncs_total").expect("wal fsyncs present");
     assert!(fsyncs > 0.0, "at least one durable fsync: {fsyncs}\n{body}");
 
     // Queue-depth gauge present (steady-state 0 once committed) + backpressure
     // counter present.
     assert_eq!(
-        metric_value(&body, "streams_wal_queue_depth"),
+        metric_value(&body, "topics_wal_queue_depth"),
         Some(0.0),
         "queue drained at rest:\n{body}"
     );
     assert!(
-        body.contains("streams_wal_submit_full_total"),
+        body.contains("topics_wal_submit_full_total"),
         "backpressure counter present:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_wal_read_only"),
+        metric_value(&body, "topics_wal_read_only"),
         Some(0.0),
         "wal healthy (not read-only):\n{body}"
     );
@@ -112,11 +112,11 @@ fn metrics_exposes_new_gauges() {
     // fsync-latency histogram: the `+Inf` bucket equals the observation count and
     // the `_count` series is present and > 0.
     assert!(
-        body.contains("streams_wal_fsync_latency_us_bucket{le=\"+Inf\"}"),
+        body.contains("topics_wal_fsync_latency_us_bucket{le=\"+Inf\"}"),
         "fsync histogram +Inf bucket present:\n{body}"
     );
     let hist_count =
-        metric_value(&body, "streams_wal_fsync_latency_us_count").expect("histogram count present");
+        metric_value(&body, "topics_wal_fsync_latency_us_count").expect("histogram count present");
     assert!(hist_count > 0.0, "fsync observed: {hist_count}\n{body}");
     assert_eq!(
         hist_count, fsyncs,
@@ -125,39 +125,39 @@ fn metrics_exposes_new_gauges() {
 
     // Topics-by-class labelled gauge present (durable ⇒ fsync class).
     assert!(
-        body.contains("streams_topics_by_class{class=\"fsync\"} 2"),
+        body.contains("topics_topics_by_class{class=\"fsync\"} 2"),
         "two fsync-class topics:\n{body}"
     );
 
     // Per-topic labelled gauges (M3 / codex P2 #1): the `jobs` topic has 2 records and
     // a head at seq 2; the queue topic `q` carries ready/in-flight series.
     assert!(
-        body.contains("streams_topic_head_seq{topic=\"jobs\"} 2"),
+        body.contains("topics_topic_head_seq{topic=\"jobs\"} 2"),
         "per-topic head_seq for jobs:\n{body}"
     );
     assert!(
-        body.contains("streams_topic_records_live{topic=\"jobs\"} 2"),
+        body.contains("topics_topic_records_live{topic=\"jobs\"} 2"),
         "per-topic records_live for jobs:\n{body}"
     );
     assert!(
-        body.contains("streams_topic_bytes_live{topic=\"jobs\"}"),
+        body.contains("topics_topic_bytes_live{topic=\"jobs\"}"),
         "per-topic bytes_live for jobs:\n{body}"
     );
     assert!(
-        body.contains("streams_topic_queue_ready{topic=\"q\"}"),
+        body.contains("topics_topic_queue_ready{topic=\"q\"}"),
         "per-queue-topic ready gauge for q:\n{body}"
     );
     assert!(
-        body.contains("streams_topic_queue_in_flight{topic=\"q\"}"),
+        body.contains("topics_topic_queue_in_flight{topic=\"q\"}"),
         "per-queue-topic in-flight gauge for q:\n{body}"
     );
     // The non-queue topic must NOT emit a queue series.
     assert!(
-        !body.contains("streams_topic_queue_ready{topic=\"jobs\"}"),
+        !body.contains("topics_topic_queue_ready{topic=\"jobs\"}"),
         "no queue gauge for a non-queue topic:\n{body}"
     );
     assert_eq!(
-        metric_value(&body, "streams_topic_metrics_truncated"),
+        metric_value(&body, "topics_topic_metrics_truncated"),
         Some(0.0),
         "per-topic series not truncated (2 topics):\n{body}"
     );
@@ -266,10 +266,10 @@ fn shutdown_drains_sse_within_timeout() {
 #[test]
 fn concurrent_same_name_create_leaves_no_orphan_after_restart() {
     use std::sync::Arc;
-    use streams::clock::SharedClock;
-    use streams::config::ServerConfig;
-    use streams::engine::Engine;
-    use streams::types::TopicConfig;
+    use topics::clock::SharedClock;
+    use topics::config::ServerConfig;
+    use topics::engine::Engine;
+    use topics::types::TopicConfig;
 
     let data_dir = tempfile::tempdir().expect("temp data dir");
     let cfg = ServerConfig {
@@ -279,7 +279,7 @@ fn concurrent_same_name_create_leaves_no_orphan_after_restart() {
 
     // First boot: 16 threads race to create the same durable topic name.
     let created_count = {
-        let clock: SharedClock = Arc::new(streams::clock::SystemClock);
+        let clock: SharedClock = Arc::new(topics::clock::SystemClock);
         let engine = Engine::with_data_dir(cfg.clone(), clock).expect("durable engine");
         let mut handles = Vec::new();
         for _ in 0..16 {
@@ -309,7 +309,7 @@ fn concurrent_same_name_create_leaves_no_orphan_after_restart() {
     // Second boot: replay the WAL. There must be EXACTLY ONE topic and NO orphan
     // (a losing create logging under its own topic id would replay as a `topic-<id>`).
     {
-        let clock: SharedClock = Arc::new(streams::clock::SystemClock);
+        let clock: SharedClock = Arc::new(topics::clock::SystemClock);
         let engine = Engine::with_data_dir(cfg, clock).expect("reopen durable engine");
         assert_eq!(
             engine.topic_count(),

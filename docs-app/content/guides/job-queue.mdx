@@ -1,13 +1,13 @@
 ---
 title: Job Queue
-description: Build a durable job queue on streams two ways — a Bull-style cursor queue, or a lease queue with claim/ack/nack/extend, visibility timeouts, and dead-lettering.
+description: Build a durable job queue on topics two ways — a Bull-style cursor queue, or a lease queue with claim/ack/nack/extend, visibility timeouts, and dead-lettering.
 ---
 
 import { Callout, Steps, Tabs } from 'nextra/components'
 
 # Job Queue
 
-streams gives you two ways to run a durable job queue, and they share the same persistent log underneath. The **cursor queue** (Bull-style) is a durable unbounded topic where each worker owns its own cursor and acks by advancing it — simple, stateless on the server, perfect for a known partition of workers. The **lease queue** (`type: "queue"`) adds claim/ack/nack/extend with per-job visibility-timeout leases, redelivery, and dead-lettering — what you reach for when many workers compete for one pool of jobs and you need stalled-job recovery.
+topics gives you two ways to run a durable job queue, and they share the same persistent log underneath. The **cursor queue** (Bull-style) is a durable unbounded topic where each worker owns its own cursor and acks by advancing it — simple, stateless on the server, perfect for a known partition of workers. The **lease queue** (`type: "queue"`) adds claim/ack/nack/extend with per-job visibility-timeout leases, redelivery, and dead-lettering — what you reach for when many workers compete for one pool of jobs and you need stalled-job recovery.
 
 Both are at-least-once. Both keep jobs durable across a crash. The difference is *who tracks delivery*: in the cursor model the client owns its position; in the lease model the server leases jobs and reclaims them on timeout.
 
@@ -27,10 +27,10 @@ A durable, unbounded topic. Producers append jobs; each worker reads from its ow
 
 Durable so an acked job survives a crash; unbounded (`cap_records: 0`) so nothing is ever lost to eviction — replay is just reading from an earlier `from_seq`.
 
-Examples use `$STREAMS` as the base URL — see the [Quickstart](/getting-started/quickstart).
+Examples use `$TOPICS` as the base URL — see the [Quickstart](/getting-started/quickstart).
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/transcode \
+curl -X PUT $TOPICS/v0/topics/transcode \
   -H 'content-type: application/json' \
   -d '{ "durable": true, "cap_records": 0, "ttl_ms": 0 }'
 ```
@@ -56,7 +56,7 @@ curl -X PUT $STREAMS/v0/topics/transcode \
 A producer appends with a normal write. Tag each job so you can cancel it later. Set `node` only if a producer also consumes (so [loop-prevention](/guarantees/node-loop-prevention) filters its own jobs back out).
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode \
+curl -X POST $TOPICS/v0/topics/transcode \
   -H 'content-type: application/json' \
   -d '{ "records": [
           { "data": { "src": "s3://uploads/clip-9001.mov", "preset": "1080p" }, "tag": "tenant42:clip-9001" },
@@ -83,7 +83,7 @@ curl -X POST $STREAMS/v0/topics/transcode \
 Each worker reads from its stored `from_seq`, processes the batch, then persists `next_from_seq`. Pass the worker's own `node` so it never receives jobs it produced.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode/diff \
+curl -X POST $TOPICS/v0/topics/transcode/diff \
   -H 'content-type: application/json' \
   -d '{ "from_seq": 0, "limit": 50, "node": "transcode-1" }'
 ```
@@ -120,7 +120,7 @@ Cancellation is a [permanent delete](/api/deletion) by tag. It is silent (never 
   <Tabs.Tab>
 ```bash
 # Cancel one job by exact tag match.
-curl -X POST $STREAMS/v0/topics/transcode/delete \
+curl -X POST $TOPICS/v0/topics/transcode/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Eq", "tenant42:clip-9001"] }'
 ```
@@ -128,7 +128,7 @@ curl -X POST $STREAMS/v0/topics/transcode/delete \
   <Tabs.Tab>
 ```bash
 # Cancel every currently-queued job for a tenant (trailing-prefix match).
-curl -X POST $STREAMS/v0/topics/transcode/delete \
+curl -X POST $TOPICS/v0/topics/transcode/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Glob", "tenant42:*"] }'
 ```
@@ -144,7 +144,7 @@ curl -X POST $STREAMS/v0/topics/transcode/delete \
 A consumer whose cursor was behind the deleted seq simply advances past it — no tombstone, because a delete is voluntary removal, not capacity loss. To compact already-processed jobs, delete by `before_seq` after a checkpoint:
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode/delete -d '{ "before_seq": 480000 }'
+curl -X POST $TOPICS/v0/topics/transcode/delete -d '{ "before_seq": 480000 }'
 ```
 
 ### When the cursor queue fits
@@ -166,7 +166,7 @@ Internally a queue is two logs: the **jobs log** (the topic you produce to, dura
 `discard: "reject"` so a full durable queue refuses new jobs loudly instead of dropping unconsumed work. `dead_letter` + `max_deliveries` send poison jobs aside after N failed deliveries.
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/transcode \
+curl -X PUT $TOPICS/v0/topics/transcode \
   -H 'content-type: application/json' \
   -d '{ "type": "queue", "durable": true, "discard": "reject",
         "lease_ms": 30000, "claim_jitter_ms": 0,
@@ -199,7 +199,7 @@ Produce jobs with the same normal write as Model A (`POST /v0/topics/transcode`)
 Lease up to `max` claimable jobs to a worker `node`. A job is claimable iff it is in the jobs log, not acked, and has no active lease.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode/claim \
+curl -X POST $TOPICS/v0/topics/transcode/claim \
   -H 'content-type: application/json' \
   -d '{ "node": "transcode-1", "max": 8, "lease_ms": 30000 }'
 ```
@@ -223,7 +223,7 @@ curl -X POST $STREAMS/v0/topics/transcode/claim \
 Ack the seqs you completed. **The ack is the delete** — the server records the completion and permanently removes the job from the jobs log. Ack is idempotent: seqs not currently leased to `node` are silently skipped and reported in `skipped`. To fence a stale worker, optionally echo the claim's `lease_id` tokens in a `lease_ids` array (validate-when-supplied — a superseded token's seq is skipped); omit it for the plain `node` + `seqs` match.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode/ack \
+curl -X POST $TOPICS/v0/topics/transcode/ack \
   -H 'content-type: application/json' \
   -d '{ "node": "transcode-1", "seqs": [1] }'
 ```
@@ -242,11 +242,11 @@ Ack durability equals the topic's `durable`: on an `fsync` queue the delete is f
 
 ```bash
 # Nack: release a job back to the queue, optionally delayed (backoff).
-curl -X POST $STREAMS/v0/topics/transcode/nack \
+curl -X POST $TOPICS/v0/topics/transcode/nack \
   -d '{ "node": "transcode-1", "seqs": [2], "delay_ms": 5000 }'
 
 # Extend: heartbeat a long-running job to push its deadline out.
-curl -X POST $STREAMS/v0/topics/transcode/extend \
+curl -X POST $TOPICS/v0/topics/transcode/extend \
   -d '{ "node": "transcode-1", "seqs": [3], "lease_ms": 30000 }'
 ```
 
@@ -273,7 +273,7 @@ Each job carries a delivery counter incremented on every claim (including reclai
 The dead-letter topic is an ordinary topic, so inspect poison jobs with a normal read:
 
 ```bash
-curl -X POST $STREAMS/v0/topics/transcode.dlq/diff -d '{ "from_seq": 0, "include_meta": true }'
+curl -X POST $TOPICS/v0/topics/transcode.dlq/diff -d '{ "from_seq": 0, "include_meta": true }'
 ```
 
 To re-drive, read the dead-letter topic and re-produce the jobs into the source queue.
@@ -283,7 +283,7 @@ To re-drive, read the dead-letter topic and re-produce the jobs into the source 
 Instead of a claim→ack→claim poll loop, open the `/work` SSE stream. The server keeps up to `max` jobs leased-and-pushed to that one connection, claiming replacements as you ack, applying backpressure at `max` in-flight.
 
 ```bash
-curl -N "$STREAMS/v0/topics/transcode/work?node=transcode-1&max=8" \
+curl -N "$TOPICS/v0/topics/transcode/work?node=transcode-1&max=8" \
   -H 'accept: text/event-stream'
 ```
 

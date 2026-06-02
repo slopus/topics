@@ -1,23 +1,23 @@
 ---
 title: Security
-description: The streams threat model — hashed bearer keys, per-key scopes and a topic-name prefix allowlist, the loopback-default no-auth refusal, what is deliberately out of scope, and a hardened-deployment checklist.
+description: The topics threat model — hashed bearer keys, per-key scopes and a topic-name prefix allowlist, the loopback-default no-auth refusal, what is deliberately out of scope, and a hardened-deployment checklist.
 ---
 
 import { Callout, Steps } from 'nextra/components'
 
 # Security
 
-This is the operator-facing threat model: what streams protects, what it deliberately does
+This is the operator-facing threat model: what topics protects, what it deliberately does
 **not**, and how to deploy it safely. Authentication (hashed bearer keys), authorization
 (per-key scopes + a topic-name prefix allowlist), DoS resource limits, and the loopback-default
 no-auth refusal are **implemented and shipping today**. TLS, hard tenant isolation, and an
-audit/rotation API are **not** — run streams behind a reverse proxy and read the
+audit/rotation API are **not** — run topics behind a reverse proxy and read the
 [out-of-scope](#whats-not-in-scope) section before you expose it.
 
 <Callout type="warning">
-  streams speaks **plain HTTP** and does not terminate TLS. A bearer token on plain HTTP —
+  topics speaks **plain HTTP** and does not terminate TLS. A bearer token on plain HTTP —
   or in a `?token=` query string — can be observed in transit or in logs. For any
-  non-loopback exposure, terminate TLS at a reverse proxy in front of a loopback streams
+  non-loopback exposure, terminate TLS at a reverse proxy in front of a loopback topics
   bind, or bind loopback and tunnel.
 </Callout>
 
@@ -29,7 +29,7 @@ Auth is a plain bearer token on every request:
 Authorization: Bearer <API_KEY>
 ```
 
-Keys are supplied at startup via the `STREAMS_API_KEYS` environment variable (comma-separated).
+Keys are supplied at startup via the `TOPICS_API_KEYS` environment variable (comma-separated).
 The handling is hardened against a process-memory or crash-dump compromise:
 
 - **Hashed at rest (SHA-256).** Each configured key is parsed into a hashed store **once** at
@@ -53,7 +53,7 @@ A missing or unknown token returns **`401 unauthorized`**.
 
 A bare key is **full access**, exactly as before — scopes and prefixes are fully additive and
 back-compatible. A key **may** additionally carry a scope set and a topic-name prefix allowlist.
-The `STREAMS_API_KEYS` entry syntax is extended with `:`-delimited fields:
+The `TOPICS_API_KEYS` entry syntax is extended with `:`-delimited fields:
 
 ```text
 key                       # full access (back-compat): all scopes, all topics
@@ -106,7 +106,7 @@ The allowlist is enforced on **three** surfaces, not just the URL path:
   allowlist, so a prefix-limited key cannot even enumerate cross-tenant names.
 
 <Callout type="important">
-  A **malformed scope token** in `STREAMS_API_KEYS` makes the server **refuse to start**
+  A **malformed scope token** in `TOPICS_API_KEYS` makes the server **refuse to start**
   (fail-closed — it never silently grants the wrong scope). Validate your key strings before
   rolling them out, or the process will not boot.
 </Callout>
@@ -156,26 +156,26 @@ fallback is accepted **only on the SSE stream GETs** — `/v0/watch/:wid` and
 ## The loopback default & no-auth refusal
 
 The default bind is **`127.0.0.1:4000` (loopback only)**, so an unconfigured server is never
-an accidental public, unauthenticated event store. Configure the bind via `STREAMS_HOST` /
-`STREAMS_PORT`.
+an accidental public, unauthenticated event store. Configure the bind via `TOPICS_HOST` /
+`TOPICS_PORT`.
 
 The refusal rule:
 
 - **Loopback + no keys** → starts in dev mode (auth disabled). Friendly for local work.
 - **Non-loopback bind (e.g. `0.0.0.0`) + no keys** → the server **refuses to start** and logs
-  loudly, unless you explicitly set `STREAMS_ALLOW_INSECURE_NO_AUTH=1`.
+  loudly, unless you explicitly set `TOPICS_ALLOW_INSECURE_NO_AUTH=1`.
 
 ```bash
 # Refuses to start: public bind, no keys, no explicit override.
-STREAMS_HOST=0.0.0.0 ./streams
+TOPICS_HOST=0.0.0.0 ./topics
 # error: refusing to bind a non-loopback address with no API keys configured.
 
 # Starts: public bind with keys configured (the production shape).
-STREAMS_HOST=0.0.0.0 STREAMS_API_KEYS='prod:write:tenant42:,ops::' ./streams
+TOPICS_HOST=0.0.0.0 TOPICS_API_KEYS='prod:write:tenant42:,ops::' ./topics
 ```
 
 <Callout type="important">
-  `STREAMS_ALLOW_INSECURE_NO_AUTH=1` exists for trusted private networks only (e.g. a
+  `TOPICS_ALLOW_INSECURE_NO_AUTH=1` exists for trusted private networks only (e.g. a
   pod-internal bind behind a service mesh). Never set it on anything reachable from an
   untrusted network — it disables the one guard against an accidental open event store.
 </Callout>
@@ -196,9 +196,9 @@ disk.
 
 ## What's NOT in scope
 
-streams is honest about its boundaries. Deploy accordingly.
+topics is honest about its boundaries. Deploy accordingly.
 
-- **No TLS (by design).** streams speaks plain HTTP and does not terminate TLS. For any
+- **No TLS (by design).** topics speaks plain HTTP and does not terminate TLS. For any
   non-loopback exposure, run it behind a TLS-terminating reverse proxy (nginx / Caddy / Envoy /
   a cloud LB), or bind loopback and tunnel (SSH / WireGuard). Native TLS is **out of scope** —
   terminate it at the proxy.
@@ -207,18 +207,18 @@ streams is honest about its boundaries. Deploy accordingly.
   beyond per-key scopes + prefix allowlists is **out of scope** — there is no hard per-tenant
   partition.
 - **No audit log / no key rotation API.** Keys are **static** for the process lifetime (set at
-  startup). Rotate by restarting with a new `STREAMS_API_KEYS`. There is no per-request audit
+  startup). Rotate by restarting with a new `TOPICS_API_KEYS`. There is no per-request audit
   trail beyond the operational tracing logs (which never contain tokens).
 - **Trusted operator.** Anyone who can read the process environment or the boot logs can see
-  the configured key **plaintext** — it is supplied via `STREAMS_API_KEYS`. Hashing-at-rest
+  the configured key **plaintext** — it is supplied via `TOPICS_API_KEYS`. Hashing-at-rest
   protects the in-memory/runtime surface and crash dumps, **not** the startup configuration.
-  Manage `STREAMS_API_KEYS` as a secret (a secrets manager, systemd `LoadCredential`, a
+  Manage `TOPICS_API_KEYS` as a secret (a secrets manager, systemd `LoadCredential`, a
   Kubernetes Secret), never a committed file.
 
 <Callout type="warning">
   The [data directory](/deployment/storage-and-tiering) contains every record's payload in the
-  WAL and segments **in the clear** — streams does not encrypt payloads. Protect
-  `STREAMS_DATA_DIR` (and any `STREAMS_COLD_DIR`) with filesystem permissions and at-rest disk
+  WAL and segments **in the clear** — topics does not encrypt payloads. Protect
+  `TOPICS_DATA_DIR` (and any `TOPICS_COLD_DIR`) with filesystem permissions and at-rest disk
   encryption as your threat model requires.
 </Callout>
 
@@ -228,8 +228,8 @@ streams is honest about its boundaries. Deploy accordingly.
 
 ### Terminate TLS at a reverse proxy
 
-Put nginx / Caddy / Envoy / a cloud LB in front of streams and have it forward to a **loopback**
-streams bind (`STREAMS_HOST=127.0.0.1`). A leaked plain-HTTP token is then not
+Put nginx / Caddy / Envoy / a cloud LB in front of topics and have it forward to a **loopback**
+topics bind (`TOPICS_HOST=127.0.0.1`). A leaked plain-HTTP token is then not
 network-observable.
 
 ### Set least-privilege keys
@@ -238,7 +238,7 @@ Give each client the narrowest scope **and** prefix it needs. Avoid bare full-ac
 production.
 
 ```bash
-STREAMS_API_KEYS='dash:read:tenant42:,prod:write:tenant42:,ops::'
+TOPICS_API_KEYS='dash:read:tenant42:,prod:write:tenant42:,ops::'
 # dash → read-only, only tenant42 topics
 # prod → write-only, only tenant42 topics
 # ops  → all scopes, all topics (admin)
@@ -252,19 +252,19 @@ normal deployment never trips them.
 
 ### Keep the no-auth refusal on
 
-**Never** set `STREAMS_ALLOW_INSECURE_NO_AUTH=1` outside a trusted private network. It disables
+**Never** set `TOPICS_ALLOW_INSECURE_NO_AUTH=1` outside a trusted private network. It disables
 the guard that prevents an accidental open event store.
 
 ### Protect the data directory
 
-Treat `STREAMS_DATA_DIR` (and any `STREAMS_COLD_DIR`) as sensitive — it holds every payload in
+Treat `TOPICS_DATA_DIR` (and any `TOPICS_COLD_DIR`) as sensitive — it holds every payload in
 the clear. Apply filesystem permissions and at-rest disk encryption.
 
 </Steps>
 
 ## See also
 
-- [Configuration](/deployment/configuration) — the full `STREAMS_*` env-var set, including the
+- [Configuration](/deployment/configuration) — the full `TOPICS_*` env-var set, including the
   resource-limit caps.
 - [Storage & Tiering](/deployment/storage-and-tiering) — what the data directory contains and
   why it is sensitive.

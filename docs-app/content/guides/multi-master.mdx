@@ -7,7 +7,7 @@ import { Callout, Steps } from 'nextra/components'
 
 # Multi-Master Fan-out
 
-**Multi-master** means several symmetric nodes that each write events *and* each consume the union of everyone's events — without a node ever receiving back what it produced, and without a record looping forever around the topology. streams makes this safe by construction with two complementary layers: **node loop-prevention** (content-level — a node never delivers its own records to itself) and **router cycle control** (topology-level — a hop-cap stops unbounded forwarding). The contract is simple: every node sets its own `node` id on writes *and* presents it as a filter on reads, and routers preserve `$node` verbatim through every forward.
+**Multi-master** means several symmetric nodes that each write events *and* each consume the union of everyone's events — without a node ever receiving back what it produced, and without a record looping forever around the topology. topics makes this safe by construction with two complementary layers: **node loop-prevention** (content-level — a node never delivers its own records to itself) and **router cycle control** (topology-level — a hop-cap stops unbounded forwarding). The contract is simple: every node sets its own `node` id on writes *and* presents it as a filter on reads, and routers preserve `$node` verbatim through every forward.
 
 Get those two halves right and an A↔B↔C mirror is echo-free and loop-free with no distributed consensus, no clock sync, no leader — just append-only logs and forwarding rules on each topic.
 
@@ -29,7 +29,7 @@ Complementary: node-filtering prevents *delivery* of your own events; the hop-ca
 
 ## Recipe — a two-node api-fra-1 ↔ api-iad-1 mirror
 
-The simplest multi-master: two logical nodes (origin labels), each with its own topic **in the same server**, mirrored both ways with local routers so each node sees the other's writes. (Nodes are content labels, not machines — streams is single-server.)
+The simplest multi-master: two logical nodes (origin labels), each with its own topic **in the same server**, mirrored both ways with local routers so each node sees the other's writes. (Nodes are content labels, not machines — topics is single-server.)
 
 ```text
    node api-fra-1 (label)                                node api-iad-1 (label)
@@ -45,17 +45,17 @@ The simplest multi-master: two logical nodes (origin labels), each with its own 
 
 A node stamps every write with its identity. The batch-level `node` is the common one-writer case.
 
-Examples use `$STREAMS` as the base URL — see the [Quickstart](/getting-started/quickstart).
+Examples use `$TOPICS` as the base URL — see the [Quickstart](/getting-started/quickstart).
 
 ```bash
 # On node api-fra-1:
-curl -X POST $STREAMS/v0/topics/chat:general \
+curl -X POST $TOPICS/v0/topics/chat:general \
   -H 'content-type: application/json' \
   -d '{ "node": "api-fra-1",
         "records": [ { "data": { "from": "user-1042", "text": "hey team" } } ] }'
 
 # On node api-iad-1:
-curl -X POST $STREAMS/v0/topics/chat:general \
+curl -X POST $TOPICS/v0/topics/chat:general \
   -H 'content-type: application/json' \
   -d '{ "node": "api-iad-1",
         "records": [ { "data": { "from": "user-2087", "text": "on my way" } } ] }'
@@ -69,12 +69,12 @@ One router each direction. Because fra→iad and iad→fra together form a direc
 
 ```bash
 # Router forwarding api-fra-1's topic into api-iad-1's topic:
-curl -X PUT $STREAMS/v0/routers/fra-to-iad \
+curl -X PUT $TOPICS/v0/routers/fra-to-iad \
   -H 'content-type: application/json' \
   -d '{ "source": "chat:general", "dest": "chat:general:mirror", "allow_cycle": true }'
 
 # Router forwarding api-iad-1's topic back into api-fra-1's topic (symmetric):
-curl -X PUT $STREAMS/v0/routers/iad-to-fra \
+curl -X PUT $TOPICS/v0/routers/iad-to-fra \
   -H 'content-type: application/json' \
   -d '{ "source": "chat:general:mirror", "dest": "chat:general", "allow_cycle": true }'
 ```
@@ -91,7 +91,7 @@ curl -X PUT $STREAMS/v0/routers/iad-to-fra \
   **This is a single-server, local pattern.** A "node" here is a *logical origin label*
   (`$node`), not a separate machine, and a router's `source`/`dest` are both **local topic
   names** in the same process — there is no remote / cross-machine / HTTP-endpoint router, and
-  streams does **not** do multi-server replication or HA. The mirror is built from local topics
+  topics does **not** do multi-server replication or HA. The mirror is built from local topics
   plus local routers; `$node` preservation and the hop-cap give you echo-free, loop-free
   fan-out across the logical nodes within one server.
 </Callout>
@@ -102,7 +102,7 @@ Each node reads the merged stream and passes **its own** node id as the loop-pre
 
 ```bash
 # On node api-fra-1 — read everything, drop records api-fra-1 produced:
-curl -X POST $STREAMS/v0/topics/chat:general/diff \
+curl -X POST $TOPICS/v0/topics/chat:general/diff \
   -H 'content-type: application/json' \
   -d '{ "from_seq": 0, "node": "api-fra-1" }'
 ```
@@ -138,7 +138,7 @@ The pattern generalizes: each of N nodes sets a distinct `node` id, and you conn
 Watch the merged stream live instead of polling — the loop-prevention filter applies to SSE identically:
 
 ```bash
-curl -X POST $STREAMS/v0/watch \
+curl -X POST $TOPICS/v0/watch \
   -H 'content-type: application/json' \
   -d '{ "node": "api-fra-1", "topics": { "chat:general": { "from_seq": 0 } } }'
 # → returns a wid; GET it to stream. Records with $node "api-fra-1" are never delivered to api-fra-1.

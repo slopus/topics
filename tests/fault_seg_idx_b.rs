@@ -16,7 +16,7 @@
 //! cargo test --features test-fs --test fault_seg_idx_b
 //! ```
 //!
-//! Strategies implemented (see docs/FAULT_TESTING.md / streams-fault-catalog.json):
+//! Strategies implemented (see docs/FAULT_TESTING.md / topics-fault-catalog.json):
 //!   - F-SEG-IDX-WITHOUT-DATA  stray `.idx` with no `.data`: `list()` requires the
 //!       `.data` part, so the orphan `.idx` is NOT reported as a complete segment;
 //!       `TopicTier::resolve` returns `None`; orphan reclaim removes it; nothing
@@ -40,8 +40,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::{
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::{
     decode_data_frame, idx_name, lookup, File, Fs, LocalSegmentStore, OpenOpts, SegmentBuilder,
     SegmentId, SegmentPart, SegmentRecord, SegmentStore, StoreError, Tier, TopicTier,
 };
@@ -470,10 +470,10 @@ fn f_sweep_segment_seal() {
         TornDamage::PrefixTruncate,
         TornDamage::Garble,
     ] {
-        // Tiered sweep (streams::testutil::crash_points): bounded deterministic
+        // Tiered sweep (topics::testutil::crash_points): bounded deterministic
         // sample per damage mode by default, full `0..=total` under
-        // STREAMS_TEST_EXHAUSTIVE. The 3 torn-damage modes always run in full.
-        for crash_point in streams::testutil::crash_points(total) {
+        // TOPICS_TEST_EXHAUSTIVE. The 3 torn-damage modes always run in full.
+        for crash_point in topics::testutil::crash_points(total) {
             // A FRESH disk whose pre-put durable image is empty; crash after exactly
             // `crash_point` FS mutating calls of the put.
             let disk = FakeDisk::with_seed(crash_point.wrapping_mul(0x9E37_79B9) ^ damage as u64);

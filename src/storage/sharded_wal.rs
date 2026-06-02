@@ -37,7 +37,7 @@
 //! Recovery (see [`crate::engine::recovery`]) replays **every** WAL file it finds
 //! — the flat files AND every `shard-*/` subdir — dispatching each frame to its
 //! topic by `topic_id`, never assuming a topic lives in `topic_id % N`. This is what lets
-//! `STREAMS_WAL_SHARDS` be reconfigured between restarts with no data loss: a dir
+//! `TOPICS_WAL_SHARDS` be reconfigured between restarts with no data loss: a dir
 //! written with 8 shards recovers correctly when reopened with 1 (or 4, or 16).
 
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ pub fn shard_subdir(s: usize) -> String {
 /// layout (`n > 1`). This is the stable identity the snapshot checkpoint records so
 /// a position is only ever applied to the exact physical group it was measured
 /// against (a flat group and a `shard-00/` group are distinct keys, never
-/// conflated across a `STREAMS_WAL_SHARDS` reconfigure).
+/// conflated across a `TOPICS_WAL_SHARDS` reconfigure).
 pub fn shard_group_key(s: usize, n: usize) -> String {
     if n <= 1 {
         String::new()

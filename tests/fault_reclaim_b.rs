@@ -39,12 +39,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{DeleteRequest, DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{DeleteRequest, DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Plumbing (mirrors tests/crash_oracle.rs — reused, not reinvented)
@@ -405,9 +405,9 @@ fn f_evict_floor_crash() {
     // workload became durable.
     let cap_points = total_writes.min(16);
     let mut fully_recovered = 0usize;
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap_points` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(cap_points) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap_points` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(cap_points) {
         let disk = FakeDisk::with_seed(0xE71C_F100 ^ crash_point);
         let trip = CrashAfter::new(disk.clone(), FaultOp::WriteAt, crash_point);
         {

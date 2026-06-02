@@ -5,7 +5,7 @@
 //! served"; invariant 8 ".idx never references .data bytes that aren't durably
 //! present"). Each test drives the REAL segment decoders ([`decode_data_frame`] /
 //! [`idx_entry_at`] / [`lookup`]) and a real [`LocalSegmentStore`] through the
-//! Phase-8A harness ([`FakeDisk`] / [`FaultFs`] from `streams::storage::testfs`),
+//! Phase-8A harness ([`FakeDisk`] / [`FaultFs`] from `topics::storage::testfs`),
 //! asserting the CORRECT crash-consistency behavior. Bounded, fixed-seed,
 //! single-segment workloads keep the file well under a second.
 //!
@@ -51,8 +51,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::{
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::{
     data_name, decode_data_frame, idx_entry_at, idx_len, idx_name, lookup, File, Fs,
     LocalSegmentStore, OpenOpts, SegmentBuilder, SegmentError, SegmentId, SegmentPart,
     SegmentRecord, SegmentStore, IDX_STRIDE,

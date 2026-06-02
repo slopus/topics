@@ -26,12 +26,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::{self, ServerConfig};
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp};
-use streams::storage::Fs;
-use streams::types::{DiffRequest, Durability, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::{self, ServerConfig};
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp};
+use topics::storage::Fs;
+use topics::types::{DiffRequest, Durability, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 const DATA_DIR: &str = "/data";
 
@@ -151,7 +151,7 @@ fn disk_topic_does_not_reuse_acked_seq_after_crash() {
         // Crash BEFORE any further group fsync: seqs 2..=8 were acked but their
         // frames are not durable; only seq 1 (hardened by the reservation fsync)
         // and the reservation watermark survive.
-        disk.crash(streams::storage::testfs::TornDamage::None);
+        disk.crash(topics::storage::testfs::TornDamage::None);
         drop(engine);
         last
     };
@@ -276,7 +276,7 @@ fn ttl_evicted_record_does_not_resurrect_after_crash() {
         );
         // Crash: the durable TTL watermark + the appends are on disk.
         sync_dirs(&disk);
-        disk.crash(streams::storage::testfs::TornDamage::None);
+        disk.crash(topics::storage::testfs::TornDamage::None);
         drop(engine);
     }
 
@@ -352,7 +352,7 @@ fn byte_cap_evicted_record_does_not_resurrect_after_crash() {
             "the oldest seq was evicted by the byte cap, live={before:?}"
         );
         sync_dirs(&disk);
-        disk.crash(streams::storage::testfs::TornDamage::None);
+        disk.crash(topics::storage::testfs::TornDamage::None);
         drop(engine);
     }
 
@@ -496,7 +496,7 @@ fn put_topic_create_success_is_durable() {
             },
         );
         sync_dirs(&disk);
-        disk.crash(streams::storage::testfs::TornDamage::None);
+        disk.crash(topics::storage::testfs::TornDamage::None);
         drop(engine);
     }
     let engine = open_engine(&disk);

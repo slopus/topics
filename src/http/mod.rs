@@ -36,7 +36,7 @@ pub struct AppState {
     /// Per-topic coalescing-window claim coordinator + `/work` conn ids (API §10).
     pub coordinator: Arc<ClaimCoordinator>,
     /// Hashed, constant-time API-key store (scopes + topic-name prefix allowlist).
-    /// Parsed **once** here from `STREAMS_API_KEYS`; the auth middleware reuses it
+    /// Parsed **once** here from `TOPICS_API_KEYS`; the auth middleware reuses it
     /// per request. Empty ⇒ auth disabled (dev mode).
     pub keys: Arc<KeyStore>,
     /// Live, mutable per-instance resource counters for the concurrency limits
@@ -52,12 +52,12 @@ pub struct AppState {
 /// Build the full `/v0` axum router with middleware applied.
 ///
 /// Parses the configured API keys into a hashed [`KeyStore`] once. A malformed
-/// scope token in `STREAMS_API_KEYS` makes the parse fail; rather than booting
+/// scope token in `TOPICS_API_KEYS` makes the parse fail; rather than booting
 /// with auth silently degraded, this **panics** (the binary's startup also
 /// validates via [`build_router_checked`], which surfaces the error cleanly).
 pub fn build_router(engine: Arc<Engine>) -> Router {
     build_router_checked(engine).unwrap_or_else(|msg| {
-        panic!("invalid STREAMS_API_KEYS configuration: {msg}");
+        panic!("invalid TOPICS_API_KEYS configuration: {msg}");
     })
 }
 
@@ -141,7 +141,7 @@ pub fn build_router_with_shutdown(
 }
 
 /// Bearer-auth middleware. Disabled when no keys are configured (dev mode).
-/// Probe endpoints skip auth unless `STREAMS_PROBE_AUTH` is set.
+/// Probe endpoints skip auth unless `TOPICS_PROBE_AUTH` is set.
 ///
 /// When auth is enabled it (1) authenticates the bearer against the hashed
 /// [`KeyStore`] in constant time, (2) enforces the route's required
@@ -368,7 +368,7 @@ fn is_sse_stream_path(path: &str) -> bool {
 /// (`/healthz`, `/readyz`, `/v0/health`, `/v0/ready`) so a load balancer can poll
 /// them without a key. `/v0/metrics` is deliberately NOT here — it exposes the topic
 /// count and is gated behind auth by default (codex LOW #12); set
-/// `STREAMS_PROBE_AUTH` to additionally require auth on the liveness/readiness
+/// `TOPICS_PROBE_AUTH` to additionally require auth on the liveness/readiness
 /// probes, or scrape `/v0/metrics` with a read-scoped key.
 fn is_probe_path(path: &str) -> bool {
     matches!(path, "/healthz" | "/readyz" | "/v0/health" | "/v0/ready")

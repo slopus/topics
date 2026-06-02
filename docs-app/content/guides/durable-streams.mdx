@@ -13,7 +13,7 @@ This is the strict end of the durability spectrum, the opposite of [pub/sub](/gu
 
 ## Why this configuration means "no silent loss, ever"
 
-streams tracks two floors per topic (the [dual watermark](/guarantees/tombstones)). `evict_floor` is advanced **only** by involuntary cap eviction and TTL expiry — and it is the **sole** trigger for a tombstone. `earliest_seq` (the first live record) is advanced by eviction, TTL, *and* voluntary deletion.
+topics tracks two floors per topic (the [dual watermark](/guarantees/tombstones)). `evict_floor` is advanced **only** by involuntary cap eviction and TTL expiry — and it is the **sole** trigger for a tombstone. `earliest_seq` (the first live record) is advanced by eviction, TTL, *and* voluntary deletion.
 
 In this config:
 
@@ -36,10 +36,10 @@ In this config:
 
 ### Create the durable, unbounded topic
 
-Examples use `$STREAMS` as the base URL — see the [Quickstart](/getting-started/quickstart).
+Examples use `$TOPICS` as the base URL — see the [Quickstart](/getting-started/quickstart).
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/ledger \
+curl -X PUT $TOPICS/v0/topics/ledger \
   -H 'content-type: application/json' \
   -d '{ "durable": true, "cap_records": 0, "cap_bytes": 0,
         "ttl_ms": 0, "discard": "reject" }'
@@ -61,7 +61,7 @@ curl -X PUT $STREAMS/v0/topics/ledger \
 The response is held until the group `fsync` completes, so when you see the `seqs`, they are durably committed. Use an `idempotency_key` so a producer that retries after a timeout doesn't double-append.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/ledger \
+curl -X POST $TOPICS/v0/topics/ledger \
   -H 'content-type: application/json' \
   -d '{ "idempotency_key": "txn-9f2a",
         "records": [
@@ -78,7 +78,7 @@ curl -X POST $STREAMS/v0/topics/ledger \
 
 <Callout type="info">
   `fsync_ms` here (~5 ms on a laptop's APFS NVMe) is the disk's `fdatasync` floor, not a
-  streams overhead — server-grade NVMe syncs in ~50–500 µs, roughly 10× faster. Group commit
+  topics overhead — server-grade NVMe syncs in ~50–500 µs, roughly 10× faster. Group commit
   amortizes one `fsync` across a whole batch of concurrent durable writers, so aggregate
   throughput stays high even though each individual write waits for the sync. See
   [Performance](/how-it-works/performance).
@@ -89,7 +89,7 @@ curl -X POST $STREAMS/v0/topics/ledger \
 Read from your stored `from_seq`. After processing a batch durably on your side, persist `next_from_seq` — that is your ack.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/ledger/diff \
+curl -X POST $TOPICS/v0/topics/ledger/diff \
   -H 'content-type: application/json' \
   -d '{ "from_seq": 0, "limit": 500 }'
 ```
@@ -115,10 +115,10 @@ Replay is not a special mode — it is just reading from an earlier cursor. A co
 
 ```bash
 # Resume exactly where this consumer left off (its last persisted cursor).
-curl -X POST $STREAMS/v0/topics/ledger/diff -d '{ "from_seq": 480123, "limit": 1000 }'
+curl -X POST $TOPICS/v0/topics/ledger/diff -d '{ "from_seq": 480123, "limit": 1000 }'
 
 # Full reprocess from the beginning of retained history.
-curl -X POST $STREAMS/v0/topics/ledger/diff -d '{ "from_seq": 0, "limit": 1000 }'
+curl -X POST $TOPICS/v0/topics/ledger/diff -d '{ "from_seq": 0, "limit": 1000 }'
 ```
 
 The loop is **read → process durably → persist `next_from_seq` → repeat**. Advancing your stored `from_seq` past seq N acks 1..N (cursor-advance = ack-all). The server keeps no per-consumer state, so each consumer replays independently — many consumers can read the same `ledger` at different positions with zero coordination.
@@ -139,7 +139,7 @@ For live consumption rather than polling, tail the same topic over [SSE watch](/
 
 ```bash
 # After every consumer has durably checkpointed past seq 480000, compact below it.
-curl -X POST $STREAMS/v0/topics/ledger/delete -d '{ "before_seq": 480000 }'
+curl -X POST $TOPICS/v0/topics/ledger/delete -d '{ "before_seq": 480000 }'
 ```
 
 The distinction is the whole point: **involuntary** cap/TTL loss tombstones (and you've configured it away); **voluntary** deletion is silent and is *your* decision. A consumer whose cursor is below a compacted seq simply advances past it with no tombstone — which is correct, because you deliberately removed records that you knew everyone had already processed.

@@ -37,13 +37,13 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::FakeDisk;
-use streams::storage::wal::{encode_frame, WalRecord};
-use streams::storage::OpenOpts;
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::FakeDisk;
+use topics::storage::wal::{encode_frame, WalRecord};
+use topics::storage::OpenOpts;
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Plumbing shared by every test (adapted from tests/crash_oracle.rs — the
@@ -320,9 +320,9 @@ fn f_rec_run_twice_identical() {
         engine
             .delete(
                 "jobs",
-                streams::types::DeleteRequest {
+                topics::types::DeleteRequest {
                     before_seq: None,
-                    match_: Some(streams::types::Filter::from_shorthand("drop")),
+                    match_: Some(topics::types::Filter::from_shorthand("drop")),
                 },
             )
             .unwrap();
@@ -408,7 +408,7 @@ fn f_rec_rebuild_matches_scratch() {
         engine
             .delete(
                 "a",
-                streams::types::DeleteRequest {
+                topics::types::DeleteRequest {
                     before_seq: Some(2),
                     match_: None,
                 },
@@ -552,8 +552,8 @@ fn f_rec_no_snapshot_full_replay() {
 /// snapshot — the exact "checkpoint mid snapshot-materialized frames" overlap.
 #[test]
 fn f_rec_partial_checkpoint_overlap() {
-    use streams::engine::snapshot::capture as capture_snapshot;
-    use streams::storage::{next_snapshot_id_with, write_snapshot_with};
+    use topics::engine::snapshot::capture as capture_snapshot;
+    use topics::storage::{next_snapshot_id_with, write_snapshot_with};
 
     let disk = FakeDisk::new();
     let bcfg = TopicConfig {

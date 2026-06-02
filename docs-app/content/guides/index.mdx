@@ -1,22 +1,22 @@
 ---
 title: Guides & Recipes
-description: Task-oriented recipes that build job queues, pub/sub, durable streams, and N-way multi-master fan-out on top of streams' topics, routers, and SSE.
+description: Task-oriented recipes that build job queues, pub/sub, durable streams, and N-way multi-master fan-out on top of topics, routers, and SSE.
 ---
 
 import { Cards, Callout } from 'nextra/components'
 
 # Guides & Recipes
 
-streams ships **five concepts** — [Topic, Record, seq, Router, Tombstone](/getting-started/mental-model) — plus a permanent delete operation, and a small `/v0` HTTP surface. These guides show how those primitives compose into the messaging patterns you actually deploy: a **job queue**, **pub/sub fan-out**, a **durable replayable stream**, and **N-way multi-master** mirroring. Each is a recipe — copy the `curl`, adapt the config, ship it.
+topics ships **five concepts** — [Topic, Record, seq, Router, Tombstone](/getting-started/mental-model) — plus a permanent delete operation, and a small `/v0` HTTP surface. These guides show how those primitives compose into the messaging patterns you actually deploy: a **job queue**, **pub/sub fan-out**, a **durable replayable stream**, and **N-way multi-master** mirroring. Each is a recipe — copy the `curl`, adapt the config, ship it.
 
-The point of this section: streams is not four products. It is one append-only log, made durable per topic, with server-side fan-out and an explicit gap signal. The "patterns" are just configuration choices on that one substrate.
+The point of this section: topics is not four products. It is one append-only log, made durable per topic, with server-side fan-out and an explicit gap signal. The "patterns" are just configuration choices on that one substrate.
 
 ## The substrate, in one paragraph
 
 A **topic** is a named append-only log. You `POST` records into it and read them back from a `from_seq` cursor with [`/diff`](/api/reading), or live over [SSE watch](/api/watch). What turns a plain topic into a queue, a pub/sub feed, or a durable stream is **config**: the [durability class](/guarantees/durability) (`memory` / `disk` / `fsync`), the retention caps (`cap_records` / `cap_bytes` / `ttl_ms`), the full-topic policy (`discard: "old"` vs `"reject"`), and whether it is a [lease queue](/api/queues) (`type: "queue"`). [Routers](/api/routers) copy one topic's records into another, at-least-once and per-source FIFO, preserving the origin `$node` so [loop-prevention](/guarantees/node-loop-prevention) makes mirroring echo-free.
 
 <Callout type="info">
-  Every recipe here is plain HTTP and JSON against `$STREAMS` (your server's base URL — see
+  Every recipe here is plain HTTP and JSON against `$TOPICS` (your server's base URL — see
   the [Quickstart](/getting-started/quickstart)). `curl` is a complete client — there is no
   SDK to install. The examples assume the dev-mode default (loopback bind, auth disabled);
   see [Security](/deployment/security) for the production setup.

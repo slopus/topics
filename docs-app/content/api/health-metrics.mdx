@@ -9,7 +9,7 @@ import { Callout } from 'nextra/components'
 
 Three operational probes at the version root, with aliases at the server root for load
 balancers. They do **not** require auth by default, so a load balancer can poll liveness
-and readiness without a key — set `STREAMS_PROBE_AUTH=true` to require auth on all three.
+and readiness without a key — set `TOPICS_PROBE_AUTH=true` to require auth on all three.
 
 <Callout type="info">
   Distinguish the two health states: **liveness** (`/v0/health`) answers "can this process
@@ -106,16 +106,16 @@ process.
 
 <Callout type="info">
   **The metric surface is a full catalog**, not a stub. `/v0/metrics` emits process/aggregate
-  gauges (`streams_topics`, `streams_topics_by_class{class=…}`, `streams_routers`,
-  `streams_records_live`, `streams_bytes_live`, `streams_queue_topics`,
-  `streams_queue_leases_in_flight`, `streams_sse_connections`, `streams_watch_sessions`,
-  `streams_ready`, `streams_recovery_progress`, `streams_uptime_ms`), **per-topic gauges**
-  (`streams_topic_head_seq` / `_earliest_seq` / `_records_live` / `_bytes_live` /
-  `_queue_ready` / `_queue_in_flight`, labelled `{topic=…}`, bounded — `streams_topic_metrics_truncated`
-  flags a cap), the real **WAL metrics** (`streams_wal_frames_total`, `_batches_total`,
+  gauges (`topics_topics`, `topics_topics_by_class{class=…}`, `topics_routers`,
+  `topics_records_live`, `topics_bytes_live`, `topics_queue_topics`,
+  `topics_queue_leases_in_flight`, `topics_sse_connections`, `topics_watch_sessions`,
+  `topics_ready`, `topics_recovery_progress`, `topics_uptime_ms`), **per-topic gauges**
+  (`topics_topic_head_seq` / `_earliest_seq` / `_records_live` / `_bytes_live` /
+  `_queue_ready` / `_queue_in_flight`, labelled `{topic=…}`, bounded — `topics_topic_metrics_truncated`
+  flags a cap), the real **WAL metrics** (`topics_wal_frames_total`, `_batches_total`,
   `_fsyncs_total`, `_bytes_written_total`, `_rotations_total`, `_queue_depth`, `_queue_depth_peak`,
   `_submit_full_total`, `_read_only`), and a **fsync-latency histogram**
-  `streams_wal_fsync_latency_us` (with `_bucket{le=…}` / `_sum` / `_count`). There are **no**
+  `topics_wal_fsync_latency_us` (with `_bucket{le=…}` / `_sum` / `_count`). There are **no**
   per-topic append/read/eviction/tombstone counters and no scheduler-throttle metric. The
   [`performance` block](/api/errors#the-performance-block) on every response remains the most
   detailed per-request view.
@@ -128,18 +128,18 @@ curl localhost:4000/v0/metrics
 ```
 
 ```text
-# HELP streams_topics Number of topics.
-# TYPE streams_topics gauge
-streams_topics 42
-# HELP streams_topic_head_seq Highest assigned seq per topic.
-# TYPE streams_topic_head_seq gauge
-streams_topic_head_seq{topic="orders"} 480231
-streams_topic_earliest_seq{topic="orders"} 468188
-# HELP streams_wal_fsyncs_total WAL fsyncs.
-# TYPE streams_wal_fsyncs_total counter
-streams_wal_fsyncs_total 88241
-streams_wal_fsync_latency_us_bucket{le="500"} 84120
-streams_wal_fsync_latency_us_count 88241
+# HELP topics_topics Number of topics.
+# TYPE topics_topics gauge
+topics_topics 42
+# HELP topics_topic_head_seq Highest assigned seq per topic.
+# TYPE topics_topic_head_seq gauge
+topics_topic_head_seq{topic="orders"} 480231
+topics_topic_earliest_seq{topic="orders"} 468188
+# HELP topics_wal_fsyncs_total WAL fsyncs.
+# TYPE topics_wal_fsyncs_total counter
+topics_wal_fsyncs_total 88241
+topics_wal_fsync_latency_us_bucket{le="500"} 84120
+topics_wal_fsync_latency_us_count 88241
 ```
 
 **JSON snapshot** (mirrors the same series in one object)
@@ -164,11 +164,11 @@ curl localhost:4000/v0/metrics -H 'accept: application/json'
   **Metrics are auth-gated by default when keys are configured.** Unlike `/v0/health` and
   `/v0/ready` (which stay unauthenticated so a load balancer can poll liveness/readiness),
   `/v0/metrics` exposes operational state and therefore needs a key with the
-  [`read` scope](/deployment/security) when `STREAMS_API_KEYS` is set (a full-access key
+  [`read` scope](/deployment/security) when `TOPICS_API_KEYS` is set (a full-access key
   suffices). In dev mode (no keys) it is open.
 </Callout>
 
-## Auth on probes — `STREAMS_PROBE_AUTH`
+## Auth on probes — `TOPICS_PROBE_AUTH`
 
 By default the probes skip auth so an external load balancer can poll them without a
 credential:
@@ -176,7 +176,7 @@ credential:
 - `/v0/health` and `/v0/ready` — always unauthenticated.
 - `/v0/metrics` — auth-gated (read scope) when keys are configured; open in dev.
 
-Set `STREAMS_PROBE_AUTH=true` to require auth on **all three**, including health and
+Set `TOPICS_PROBE_AUTH=true` to require auth on **all three**, including health and
 readiness. Use this when even liveness/readiness should be behind a credential (for
 example, the probes are reachable from an untrusted network). See
 [Configuration](/deployment/configuration) for the full env var set and
@@ -185,6 +185,6 @@ example, the probes are reachable from an untrusted network). See
 ## See also
 
 - [Observability](/deployment/observability) — wiring probes and metrics into your stack.
-- [Configuration](/deployment/configuration) — `STREAMS_PROBE_AUTH` and the full env var set.
+- [Configuration](/deployment/configuration) — `TOPICS_PROBE_AUTH` and the full env var set.
 - [Recovery](/how-it-works/recovery) — what WAL replay does behind the `not_ready` gate.
 - [Errors](/api/errors) — the `503` envelope and the `performance` block.

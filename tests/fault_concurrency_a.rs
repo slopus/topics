@@ -68,15 +68,15 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::{SegmentConfig, ServerConfig};
-use streams::engine::segwriter::SegmentWriter;
-use streams::engine::topic_state::{StoredRecord, TopicState};
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::{LocalSegmentStore, TopicTier};
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::{SegmentConfig, ServerConfig};
+use topics::engine::segwriter::SegmentWriter;
+use topics::engine::topic_state::{StoredRecord, TopicState};
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::{LocalSegmentStore, TopicTier};
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_wal_*.rs).
@@ -622,7 +622,7 @@ fn f_snap_race_write_during_capture() {
         let d = engine
             .diff(
                 "snaprace",
-                streams::types::DiffRequest {
+                topics::types::DiffRequest {
                     from_seq: from,
                     limit: 1000,
                     node: None,

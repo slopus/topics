@@ -30,7 +30,7 @@ alphanumeric, allows `. _ : -`). Case-sensitive, byte-exact.
 ### Request body
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{
         "node": "checkout-1",
@@ -139,14 +139,14 @@ on its next read.
 
 Hard, documented limits. Design your batches within them; exceeding one is a `400`
 (`batch_too_large` / `record_too_large`) or, for the raw body, a `413`. These are fixed
-protocol limits — only the raw request-body cap is tunable, via `STREAMS_MAX_BODY_BYTES`
+protocol limits — only the raw request-body cap is tunable, via `TOPICS_MAX_BODY_BYTES`
 (default `64 MiB`); see [Configuration](/deployment/configuration).
 
 | Limit | Value |
 |---|---|
 | Max records per write | `10000` |
 | Max single record `data`+`meta` | `1 MiB` |
-| Max total request body | `64 MiB` (env-tunable: `STREAMS_MAX_BODY_BYTES`) |
+| Max total request body | `64 MiB` (env-tunable: `TOPICS_MAX_BODY_BYTES`) |
 | Max `meta` per record | `16 KiB`, ≤ 64 keys |
 | Max `tag` length | `256` bytes |
 | Max `node` length | `128` bytes |
@@ -159,7 +159,7 @@ protocol limits — only the raw request-body cap is tunable, via `STREAMS_MAX_B
 | `batch_too_large` | `400` | `records` exceeds `MAX_BATCH_RECORDS`. |
 | `record_too_large` | `400` | A single record's `data`+`meta` exceeds `MAX_RECORD_BYTES`, or a per-field cap (`meta`/`tag`/`node`) is exceeded. |
 | `topic_not_found` | `404` | `create:false` (or `auto_create:false`) and the topic does not exist. |
-| `payload_too_large` | `413` | The raw request body exceeds `STREAMS_MAX_BODY_BYTES` (rejected pre-parse). |
+| `payload_too_large` | `413` | The raw request body exceeds `TOPICS_MAX_BODY_BYTES` (rejected pre-parse). |
 | `unsupported_media_type` | `415` | Missing or wrong `Content-Type` (must be `application/json`). |
 | `topic_full` | `422` | Write to a full `discard:"reject"` topic. Nothing was appended. |
 | `throttled` | `429` | Elastic throttle under CPU pressure, or a resource cap reached (carries `Retry-After`). Opt out per-write with `disable_backpressure`. See [Errors](/api/errors). |

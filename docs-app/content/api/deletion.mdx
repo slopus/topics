@@ -47,7 +47,7 @@ both to AND them.
 
 ```bash
 # Cancel one order by exact tag match.
-curl -X POST $STREAMS/v0/topics/orders/delete \
+curl -X POST $TOPICS/v0/topics/orders/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Eq", "order-7731"] }'
 ```

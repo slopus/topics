@@ -1,6 +1,6 @@
-# streams — Data Model & Semantics
+# topics — Data Model & Semantics
 
-This document specifies the data model and runtime semantics of streams precisely enough to
+This document specifies the data model and runtime semantics of topics precisely enough to
 implement directly. It is **normative**: where it says MUST / MUST NOT / SHOULD, treat it as a
 requirement on every implementation phase (in-memory, then WAL-backed). The wire encoding is
 JSON; see [API.md](API.md) for the HTTP surface and [ARCHITECTURE.md](ARCHITECTURE.md) for how
@@ -370,7 +370,7 @@ from the reported `earliest_seq`, never from cap arithmetic.**
 
 **Tiered storage (transparent).** Segments are also the unit of **tiering**: the active + recent
 sealed segments stay HOT (fast NVMe), older sealed segments may relocate to a COLD tier
-(`STREAMS_COLD_DIR`; a different folder now, an object store later). Tiering changes **nothing** about
+(`TOPICS_COLD_DIR`; a different folder now, an object store later). Tiering changes **nothing** about
 the `/v0` API or semantics — a cold read may be slower for `getDifference`/historical reads, but
 writes and live delivery (SSE/tail) are unaffected (the relocator and cold I/O run off the hot path).
 When no cold tier is configured, nothing relocates. Cap/TTL/delete reclaim drops a whole segment in
@@ -381,7 +381,7 @@ either tier. See [ARCHITECTURE §3.6](ARCHITECTURE.md).
 ## 6. Node loop-prevention
 
 Purpose: make router fan-out across N symmetric *logical* nodes safe (a multi-master *topology*
-built from local routers — `node` is a content/origin label, **not** a separate machine; streams
+built from local routers — `node` is a content/origin label, **not** a separate machine; topics
 is single-server and does not do remote/multi-server replication, §12), so a node never receives
 back events it produced.
 
@@ -527,7 +527,7 @@ A router is a forwarding rule `src → dst`: every record committed to `src` is 
 to `dst`. `{ name, source, dest, preserve_node, preserve_tag, filter, allow_cycle, created_ts }`.
 
 The **async + derived** model described below is the **shipped default**. A legacy opt-out
-(`STREAMS_FORWARD_V2=0`, also `false`/`no`/`off`) reverts to the older **synchronous in-line**
+(`TOPICS_FORWARD_V2=0`, also `false`/`no`/`off`) reverts to the older **synchronous in-line**
 forward: each forwarded copy is its own WAL append, written on the source write/ack path. That
 path is durable-by-construction but **WAL-amplified** (an N-way fan-out costs N WAL writes, and the
 source ack waits on them) and it permits **multi-source fan-in** into a single `dst` (no
@@ -762,7 +762,7 @@ use the Clock, never wall-clock sleeps):
 The single-pass cohort design is also a **scalability win**: instead of N independent
 per-claim atomic races over the head of the queue, one coordinator pass assigns the whole
 cohort under one lock — fewer contended atomics, more predictable fairness. The `/work` SSE
-streams (§10.8 of the API) participate in the same cohort, so polling claimers and pushed
+topics (§10.8 of the API) participate in the same cohort, so polling claimers and pushed
 workers are balanced together.
 
 **The available set for a pass** is, in order: (1) the **reclaim freelist** — seqs whose

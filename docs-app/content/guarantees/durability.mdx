@@ -7,14 +7,14 @@ import { Callout } from 'nextra/components'
 
 # Durability Classes
 
-Durability in streams is a **per-topic** decision, not a server-wide mode. Each topic picks one
+Durability in topics is a **per-topic** decision, not a server-wide mode. Each topic picks one
 of three **commit classes** — `memory`, `disk`, or `fsync` — and they form a weak → strong
 spectrum that trades write latency against crash survival.
 
 ## Where "ok" lands
 
 Every write travels the same road — from your process, to the kernel, to the physical disk —
-and the three classes differ only in **how far along that road streams waits before it acks**:
+and the three classes differ only in **how far along that road topics waits before it acks**:
 
 - **`memory`** acks immediately and makes **no durability promise**. Fastest; after a restart
   its records may survive or be gone.
@@ -105,7 +105,7 @@ Set the class with the `durability` field at create time:
 
 ```bash
 # An fsync-gated ledger: every ack is a promise the write survives power loss.
-curl -X PUT $STREAMS/v0/topics/payments \
+curl -X PUT $TOPICS/v0/topics/payments \
   -H 'content-type: application/json' \
   -d '{ "durability": "fsync", "cap_records": 0, "ttl_ms": 0 }'
 ```

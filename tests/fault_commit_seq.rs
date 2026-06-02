@@ -67,12 +67,12 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::Fs;
-use streams::types::{DiffRequest, Durability, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::Fs;
+use topics::types::{DiffRequest, Durability, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_concurrency_a.rs).
@@ -273,11 +273,11 @@ impl CrashAfter {
 }
 
 struct CrashAfterFile {
-    inner: Box<dyn streams::storage::File>,
+    inner: Box<dyn topics::storage::File>,
     owner: CrashAfter,
 }
 
-impl streams::storage::File for CrashAfterFile {
+impl topics::storage::File for CrashAfterFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read_at(offset, buf)
     }
@@ -313,8 +313,8 @@ impl Fs for CrashAfter {
     fn open(
         &self,
         path: &std::path::Path,
-        opts: streams::storage::OpenOpts,
-    ) -> std::io::Result<Box<dyn streams::storage::File>> {
+        opts: topics::storage::OpenOpts,
+    ) -> std::io::Result<Box<dyn topics::storage::File>> {
         let inner = self.disk.open(path, opts)?;
         Ok(Box::new(CrashAfterFile {
             inner,
@@ -669,9 +669,9 @@ fn sweep_concurrent_durable_crash_points_oracle() {
     assert!(total_syncs >= 1, "workload issues at least one group fsync");
 
     let cap = total_syncs.min(4);
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE.
-    for crash_point in streams::testutil::crash_points(cap) {
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE.
+    for crash_point in topics::testutil::crash_points(cap) {
         let disk = FakeDisk::with_seed(0xC0FFEE ^ crash_point);
         let trip = CrashAfter::new(disk.clone(), FaultOp::SyncData, crash_point);
         let acked = {

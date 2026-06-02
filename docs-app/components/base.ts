@@ -1,4 +1,4 @@
-// Prefix an internal path with the configured base path (e.g. "/streams" when
+// Prefix an internal path with the configured base path (e.g. "/topics" when
 // the site is served from a GitHub Pages project subpath) and a trailing slash
 // so it matches the static-export output (`trailingSlash: true`).
 //

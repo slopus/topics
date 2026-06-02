@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use common::{Harness, StatusCode};
 use serde_json::{json, Value};
-use streams::config::ServerConfig;
-use streams::limits::Limits;
+use topics::config::ServerConfig;
+use topics::limits::Limits;
 
 /// Boot a server with the given limits (auth disabled).
 fn limited_harness(limits: Limits) -> Harness {

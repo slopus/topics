@@ -18,7 +18,7 @@
 //!     `0..=total` range that always includes both endpoints (`0` and `total`),
 //!     so every sweep still exercises the no-op-before-any-write and
 //!     after-the-last-write boundaries plus a spread of interior crash points.
-//!   * When `STREAMS_TEST_EXHAUSTIVE` is set to a truthy value (`1`/`true`/…),
+//!   * When `TOPICS_TEST_EXHAUSTIVE` is set to a truthy value (`1`/`true`/…),
 //!     it returns the FULL `0..=total` range, so nightly/opt-in CI runs the
 //!     complete matrix. (See `.github/workflows/ci.yml`.)
 //!
@@ -28,9 +28,9 @@
 //! endpoints, so a bug at a boundary is caught in both modes.
 
 /// Whether the opt-in exhaustive crash matrix is enabled
-/// (`STREAMS_TEST_EXHAUSTIVE=1`). Off by default.
+/// (`TOPICS_TEST_EXHAUSTIVE=1`). Off by default.
 pub fn exhaustive_enabled() -> bool {
-    std::env::var("STREAMS_TEST_EXHAUSTIVE")
+    std::env::var("TOPICS_TEST_EXHAUSTIVE")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on" | "TRUE"))
         .unwrap_or(false)
 }
@@ -40,12 +40,12 @@ pub fn exhaustive_enabled() -> bool {
 /// engine boots (each sweep iteration boots + recovers an engine, ~1-3s of CPU),
 /// large enough to always cover both endpoints (`0` and `total`) plus a couple of
 /// deterministic interior crash points. Can be raised (never below the two
-/// endpoints) via `STREAMS_TEST_SAMPLE` for a middle-ground "wider but still fast"
-/// run, or bypassed entirely with `STREAMS_TEST_EXHAUSTIVE=1`.
+/// endpoints) via `TOPICS_TEST_SAMPLE` for a middle-ground "wider but still fast"
+/// run, or bypassed entirely with `TOPICS_TEST_EXHAUSTIVE=1`.
 const DEFAULT_SAMPLE_CAP: usize = 4;
 
 fn sample_cap() -> usize {
-    std::env::var("STREAMS_TEST_SAMPLE")
+    std::env::var("TOPICS_TEST_SAMPLE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .map(|v| v.max(2))
@@ -55,7 +55,7 @@ fn sample_cap() -> usize {
 /// The crash points a sweep over a workload of `total` mutating FS calls should
 /// probe, tiered by [`exhaustive_enabled`].
 ///
-/// * Exhaustive (`STREAMS_TEST_EXHAUSTIVE=1`): every point in `0..=total`.
+/// * Exhaustive (`TOPICS_TEST_EXHAUSTIVE=1`): every point in `0..=total`.
 /// * Default: a deterministic sample of at most [`sample_cap`] points,
 ///   ALWAYS including `0` and `total`, with the interior points spread evenly
 ///   across the range (a fixed, RNG-free stride seeded only by `total`). The
@@ -64,7 +64,7 @@ fn sample_cap() -> usize {
 /// Use the returned `Vec<u64>` directly as the sweep's iteration set:
 ///
 /// ```ignore
-/// for crash_point in streams::testutil::crash_points(total_writes) {
+/// for crash_point in topics::testutil::crash_points(total_writes) {
 ///     // ... boot a fresh disk, crash() after `crash_point` FS calls, recover ...
 /// }
 /// ```

@@ -1,4 +1,4 @@
-# streams — Architecture
+# topics — Architecture
 
 This document specifies the on-disk and in-memory architecture: storage, WAL, group commit,
 segments, indexing, recovery/crash-consistency, metadata, on-disk layout, the priority scheduler
@@ -202,7 +202,7 @@ write request
 
 The seq is assigned **before** the WAL commit (so it can be returned) but the record is only
 *visible to readers* and *acked to the writer* after its commit class is satisfied. Guarantee: **if
-a write was acked, it is in the WAL.** The WAL is **sharded** (`STREAMS_WAL_SHARDS`, default
+a write was acked, it is in the WAL.** The WAL is **sharded** (`TOPICS_WAL_SHARDS`, default
 `min(num_cpus, 8)`): there are **N independent shard writers**, each fed by its own MPSC channel and
 owning its own file set + group-commit loop, so durable write throughput scales ~linearly with the
 shard count. Each topic routes to **exactly one shard** by a stable hash of its interned id
@@ -210,7 +210,7 @@ shard count. Each topic routes to **exactly one shard** by a stable hash of its 
 hardware, making group commit trivial and removing write-side lock contention), and per-topic ordering
 and every durability guarantee still hold because a topic always lives on the same shard. Recovery is
 **shard-count-agnostic** (it replays all discovered shards by `topic_id`, §4), so the shard count may
-change between restarts. `STREAMS_WAL_SHARDS=1` is the legacy single-writer / flat-layout path.
+change between restarts. `TOPICS_WAL_SHARDS=1` is the legacy single-writer / flat-layout path.
 
 ### 2.3 Durability classes & group commit
 
@@ -386,7 +386,7 @@ Data outgrows RAM and the fast NVMe. Each topic's segments are split across **tw
   data dir). Reads here are buffered/mmap-fast; the live tail (active segment + the in-memory index
   + a bounded recent-record cache) is always hot and independent of cold access.
 - **COLD** — older sealed segments, on a slower tier. **v1's cold tier is a different configured
-  folder** (`STREAMS_COLD_DIR`); when unset (the default in every existing test), **tiering is
+  folder** (`TOPICS_COLD_DIR`); when unset (the default in every existing test), **tiering is
   disabled — nothing relocates and behavior is unchanged by construction.**
 
 Both tiers sit behind one trait, `SegmentStore` (`src/storage/segstore.rs`), so an **object store
@@ -530,7 +530,7 @@ the compact snapshot; metadata is tiny and changes rarely.
 ├── meta/
 │   ├── snapshot.0007.bin            # latest atomic metadata snapshot
 │   └── snapshot.0006.bin            # previous (kept until next snapshot fsynced)
-├── wal/                            # sharded (STREAMS_WAL_SHARDS, default min(num_cpus,8))
+├── wal/                            # sharded (TOPICS_WAL_SHARDS, default min(num_cpus,8))
 │   ├── shard-00/                   # one dir per shard when shards>1 (shards==1 ⇒ flat wal/)
 │   │   ├── CURRENT                 # tiny file naming this shard's active wal segment
 │   │   ├── wal-0000000000001024.log # preallocated, append-only, mixed-topic framed records
@@ -547,21 +547,21 @@ the compact snapshot; metadata is tiny and changes rarely.
     └── 0000000B/
         └── ...
 
-<STREAMS_COLD_DIR>/                  # COLD tier (optional; absent ⇒ tiering disabled, all hot)
+<TOPICS_COLD_DIR>/                  # COLD tier (optional; absent ⇒ tiering disabled, all hot)
 └── topics/
     └── 0000000A/                    # relocated older sealed segments, same seg-<first_seq> naming
         ├── seg-0000000000000001.data
         └── seg-0000000000000001.idx
 ```
 
-The WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`): N independent shard
+The WAL is **sharded** (`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`): N independent shard
 writers, each an ordered append stream over its own file set with trivial group commit (matching the
 sequential disk). A topic maps to one shard by `xxh3(topic_id) % n`; on disk each shard >1 lives under
 `wal/shard-NN/` (shards==1 is the flat `wal/` layout). Segments are **per-topic** (independent
 eviction, per-topic mmap, locality for `getDifference`).
 Segment files named by first seq sort into seq order; finding a segment for a seq is a binary search
 over first-seqs. The same `seg-<first_seq>` naming is used in both tiers, so a relocated segment keeps
-its identity (§3.6); the cold tier mirrors the per-topic layout under `STREAMS_COLD_DIR`. A topic delete
+its identity (§3.6); the cold tier mirrors the per-topic layout under `TOPICS_COLD_DIR`. A topic delete
 is a control frame + a fast rename `topics/0000000A.deleted` then background unlink (fast and
 crash-safe).
 
@@ -569,13 +569,13 @@ crash-safe).
 
 | Knob (env) | Default | Meaning |
 |---|---|---|
-| `STREAMS_DATA_DIR` | `./streams-data` | Hot tier + WAL + meta root. |
-| `STREAMS_COLD_DIR` | *(unset)* | Cold tier root. **Unset ⇒ tiering disabled (all hot).** |
-| `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal a segment after this many records. |
-| `STREAMS_SEGMENT_MAX_BYTES` | `64 MiB` | Seal after this many `.data` bytes (big-payload guard). |
-| `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` | Seal an idle/partial segment after this age; `0` disables. |
-| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Keep this many newest sealed segments hot before relocating. |
-| `STREAMS_HOT_RETAIN_BYTES` | `0` | Optional hot sealed-byte bound; stricter of the two wins (`0` ⇒ off). |
+| `TOPICS_DATA_DIR` | `./topics-data` | Hot tier + WAL + meta root. |
+| `TOPICS_COLD_DIR` | *(unset)* | Cold tier root. **Unset ⇒ tiering disabled (all hot).** |
+| `TOPICS_SEGMENT_MAX_EVENTS` | `10000` | Seal a segment after this many records. |
+| `TOPICS_SEGMENT_MAX_BYTES` | `64 MiB` | Seal after this many `.data` bytes (big-payload guard). |
+| `TOPICS_SEGMENT_MAX_AGE_MS` | `3600000` | Seal an idle/partial segment after this age; `0` disables. |
+| `TOPICS_HOT_RETAIN_SEGMENTS` | `4` | Keep this many newest sealed segments hot before relocating. |
+| `TOPICS_HOT_RETAIN_BYTES` | `0` | Optional hot sealed-byte bound; stricter of the two wins (`0` ⇒ off). |
 
 These live on `ServerConfig` (`cold_dir` + a `SegmentConfig`); the seal triggers are read through the
 `Clock` so the age trigger and the relocator are drivable by `TestClock` (no wall-clock sleeps in
@@ -699,7 +699,7 @@ single WAL writer.
 | **getState** | lock-free atomic loads (head/earliest/count) + `last_consumed_ms` store | lock-free |
 | **getDifference** | topic read lock over committed segments; bounded batch; bump recency; tombstone iff `from_seq+1 < evict_floor` (the involuntary cap/TTL floor — a purely-deleted gap below `earliest_seq` is silent) | topic read lock; doesn't block other topics; rarely blocks the append tail (seqlock) |
 | **SSE push** | worker draining the topic pushes frames to each watcher's bounded channel; slow consumer's channel full → degrade that connection, not the topic | per-topic during drain; per-connection channel isolates a slow client |
-| **Router** | **async, off the write/ack path** (the shipped default): a background per-router worker forwards from a durable cursor; forwarded copies are **derived** (not WAL-logged — one WAL write per source append regardless of fan-out); each derived dest is single-source (a different second source ⇒ `409 topic_exists_incompatible`, `error.detail.reason: "router_dest_fan_in"`); dest scheduling/priority applies; node filtering at dest read time. **Legacy opt-out** `STREAMS_FORWARD_V2=0`: synchronous in-line forward on the ack path — durable-by-construction but WAL-amplified (N WAL writes per N-way fan-out) and it permits multi-source fan-in | no cross-shard lock on the source ack path; recovery replays from the per-router cursor |
+| **Router** | **async, off the write/ack path** (the shipped default): a background per-router worker forwards from a durable cursor; forwarded copies are **derived** (not WAL-logged — one WAL write per source append regardless of fan-out); each derived dest is single-source (a different second source ⇒ `409 topic_exists_incompatible`, `error.detail.reason: "router_dest_fan_in"`); dest scheduling/priority applies; node filtering at dest read time. **Legacy opt-out** `TOPICS_FORWARD_V2=0`: synchronous in-line forward on the ack path — durable-by-construction but WAL-amplified (N WAL writes per N-way fan-out) and it permits multi-source fan-in | no cross-shard lock on the source ack path; recovery replays from the per-router cursor |
 
 ### 8.4 Slow-consumer isolation (SSE)
 
@@ -811,7 +811,7 @@ logic is reused intact.
 
 **Added in phase 6 (tiered storage, §3.6):** the `SegmentStore` trait + `LocalSegmentStore` + per-topic
 `TopicTier` (HOT + optional COLD), the segment file format (`src/storage/segment.rs`), and the
-seal/hot-retention/`STREAMS_COLD_DIR` config. Tiering is **additive and transparent**: with no cold
+seal/hot-retention/`TOPICS_COLD_DIR` config. Tiering is **additive and transparent**: with no cold
 dir, nothing relocates and the phase-4 behavior is unchanged. Cold I/O + the relocator run off the
 hot path; the HARD INVARIANT is that cold reads may degrade historical reads but never affect writes
 or live delivery. Later stages wire sealing into the write path, add the relocator + bounded recent

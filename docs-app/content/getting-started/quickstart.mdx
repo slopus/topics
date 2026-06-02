@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Run streams and write, read, watch, fan out, and delete your first events over plain HTTP and JSON — no client library required.
+description: Run topics and write, read, watch, fan out, and delete your first events over plain HTTP and JSON — no client library required.
 ---
 
 import { Callout, Steps, Tabs } from 'nextra/components'
@@ -13,7 +13,7 @@ delete. Everything is plain HTTP and JSON — no client library required.
 
 <Callout type="info">
   The examples assume auth is disabled (dev mode), which is the default on a loopback bind,
-  and that `STREAMS` points at the server. See [Install & Run](/getting-started/installation)
+  and that `TOPICS` points at the server. See [Install & Run](/getting-started/installation)
   and [Configuration](/deployment/configuration) for production settings.
 </Callout>
 
@@ -25,18 +25,18 @@ delete. Everything is plain HTTP and JSON — no client library required.
   <Tabs.Tab>
 ```bash
 # Build and run (Rust toolchain required). Defaults: bind 127.0.0.1:4000,
-# auth disabled (dev mode); WAL + segments + snapshots under ./streams-data.
+# auth disabled (dev mode); WAL + segments + snapshots under ./topics-data.
 cargo build --release
-./target/release/streams
+./target/release/topics
 ```
   </Tabs.Tab>
   <Tabs.Tab>
 ```bash
 # The image binds 0.0.0.0:4000 and refuses to start on a non-loopback bind with no
-# keys — so pass STREAMS_ALLOW_INSECURE_NO_AUTH=1 for a local-only run.
-docker run --rm -p 4000:4000 -v streams-data:/data \
-  -e STREAMS_ALLOW_INSECURE_NO_AUTH=1 \
-  ghcr.io/slopus/streams:latest
+# keys — so pass TOPICS_ALLOW_INSECURE_NO_AUTH=1 for a local-only run.
+docker run --rm -p 4000:4000 -v topics-data:/data \
+  -e TOPICS_ALLOW_INSECURE_NO_AUTH=1 \
+  ghcr.io/slopus/topics:latest
 ```
   </Tabs.Tab>
 </Tabs>
@@ -44,7 +44,7 @@ docker run --rm -p 4000:4000 -v streams-data:/data \
 Once it's listening, point your shell at it so the rest of the commands stay short:
 
 ```bash
-export STREAMS=http://localhost:4000
+export TOPICS=http://localhost:4000
 ```
 
 ### Create a topic (optional)
@@ -53,7 +53,7 @@ A topic is created lazily on first write, so this step is optional — but it le
 config up front. Here we make a durable, unbounded log of an online store's orders.
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/orders \
+curl -X PUT $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "durable": true, "cap_records": 0, "ttl_ms": 0 }'
 ```
@@ -73,7 +73,7 @@ can carry up to 10,000 records, committed atomically. An optional `tag` gives ea
 match key you can delete by later.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "records": [
           { "data": { "sku": "AEROPRESS-GO", "qty": 1, "total": 3499 }, "tag": "order-7731" },
@@ -94,7 +94,7 @@ continuation cursor, and any tombstone. The monotonic `seq` **is** the cursor �
 opaque token. Advancing your stored `from_seq` is the ack.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders/diff \
+curl -X POST $TOPICS/v0/topics/orders/diff \
   -H 'content-type: application/json' \
   -d '{ "from_seq": 0, "limit": 500 }'
 ```
@@ -125,13 +125,13 @@ curl -X POST $STREAMS/v0/topics/orders/diff \
 
 ```bash
 # 1. Create the watch session (carries the full subscription).
-curl -X POST $STREAMS/v0/watch \
+curl -X POST $TOPICS/v0/watch \
   -H 'content-type: application/json' \
   -d '{ "topics": { "orders": { "from_seq": 0 } } }'
 # → { "wid": "wid_BuRguGorNdVFWNQULz-rrw", "stream_url": "/v0/watch/wid_BuRguGorNdVFWNQULz-rrw", ... }
 
 # 2. Open the stream.
-curl -N $STREAMS/v0/watch/wid_BuRguGorNdVFWNQULz-rrw
+curl -N $TOPICS/v0/watch/wid_BuRguGorNdVFWNQULz-rrw
 ```
 
 ```text
@@ -156,7 +156,7 @@ Here, every order is mirrored into a `fulfillment` topic a warehouse service can
 its own.
 
 ```bash
-curl -X PUT $STREAMS/v0/routers/orders-to-fulfillment \
+curl -X PUT $TOPICS/v0/routers/orders-to-fulfillment \
   -H 'content-type: application/json' \
   -d '{ "source": "orders", "dest": "fulfillment" }'
 ```
@@ -169,7 +169,7 @@ permanent, silent (never a tombstone), effective immediately on all reads, and p
 
 ```bash
 # A customer cancels — remove the order by its exact tag.
-curl -X POST $STREAMS/v0/topics/orders/delete \
+curl -X POST $TOPICS/v0/topics/orders/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Eq", "order-7731"] }'
 ```

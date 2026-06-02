@@ -36,12 +36,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::FakeDisk;
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::FakeDisk;
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // TmpFaulter — inject an io::Error on the FIRST write_at (or sync_all) to a
@@ -283,7 +283,7 @@ fn sync_dirs(disk: &FakeDisk) {
 
 /// Read back the recovered live records of `name` through the public diff path.
 fn dump_records(engine: &Engine, name: &str) -> BTreeMap<u64, ModelRecord> {
-    use streams::types::DiffRequest;
+    use topics::types::DiffRequest;
     let mut records = BTreeMap::new();
     let mut from = 0u64;
     loop {

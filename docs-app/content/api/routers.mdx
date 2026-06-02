@@ -78,8 +78,8 @@ design against.
 </Callout>
 
 <Callout type="warning">
-  **Legacy opt-out (`STREAMS_FORWARD_V2=0`).** The async + derived model above is the **shipped
-  default**. Setting `STREAMS_FORWARD_V2=0` (`false`/`no`/`off`) reverts to the legacy
+  **Legacy opt-out (`TOPICS_FORWARD_V2=0`).** The async + derived model above is the **shipped
+  default**. Setting `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) reverts to the legacy
   **synchronous in-line** forward: each forwarded copy is its own WAL append written on the
   source write/ack path — durable-by-construction but **WAL-amplified** (an N-way fan-out costs
   N WAL writes, and the source ack waits on them). The legacy path also permits **multi-source
@@ -219,7 +219,7 @@ FIFO. The origin `$node` rides through untouched.
 <Tabs items={['curl', 'Response']}>
   <Tabs.Tab>
 ```bash
-curl -X PUT $STREAMS/v0/routers/orders-to-audit \
+curl -X PUT $TOPICS/v0/routers/orders-to-audit \
   -H 'content-type: application/json' \
   -d '{ "source": "orders", "dest": "audit" }'
 ```

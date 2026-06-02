@@ -22,10 +22,10 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt; // for `oneshot`
 
-use streams::clock::{SharedClock, SystemClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::http;
+use topics::clock::{SharedClock, SystemClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::http;
 
 /// Build a fresh in-memory app (auth disabled, dev defaults).
 fn app() -> Router {

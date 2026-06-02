@@ -1,8 +1,8 @@
 //! Phase-8A fault/crash batch #1 — 12 high-value fault-injection strategies from
-//! the catalog (`/tmp/streams-fault-catalog.json`), each one test fn named after
+//! the catalog (`/tmp/topics-fault-catalog.json`), each one test fn named after
 //! its catalog id. Every test asserts the CORRECT crash-consistency behavior via
 //! the model oracle / the durability contract, reusing the Phase-8A harness
-//! (`FakeDisk` / `FaultFs` from `streams::storage::testfs`, the real WAL /
+//! (`FakeDisk` / `FaultFs` from `topics::storage::testfs`, the real WAL /
 //! snapshot / segment store / recovery wired through `Engine::with_data_dir_fs`
 //! and the `*_with` constructors).
 //!
@@ -31,13 +31,13 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::{Fs, OpenOpts};
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::{Fs, OpenOpts};
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs and src/storage/testfs.rs)
@@ -126,7 +126,7 @@ fn append_durable(engine: &Engine, name: &str, n: usize) -> Vec<u64> {
 /// Read back the live records of topic `name` (seq → data string) through the
 /// engine's diff path; `None` if the topic is absent.
 fn dump_records(engine: &Engine, name: &str) -> Option<BTreeMap<u64, String>> {
-    use streams::types::DiffRequest;
+    use topics::types::DiffRequest;
     let st = engine.topic_state(name, false).ok()?;
     let _ = st;
     let mut out = BTreeMap::new();
@@ -175,7 +175,7 @@ struct FullDump {
 }
 
 fn full_dump(engine: &Engine, name: &str) -> Option<FullDump> {
-    use streams::types::DiffRequest;
+    use topics::types::DiffRequest;
     let st = engine.topic_state(name, false).ok()?;
     let mut records = BTreeMap::new();
     let mut tombstone = None;
@@ -624,7 +624,7 @@ fn f_wal_zeroed_frame() {
 // ===========================================================================
 #[test]
 fn f_rec_run_twice_identical() {
-    use streams::types::DeleteRequest;
+    use topics::types::DeleteRequest;
     let disk = FakeDisk::new();
 
     // A non-trivial durable workload: appends + a prefix delete + a cap topic that
@@ -710,8 +710,8 @@ fn f_rec_run_twice_identical() {
 // ===========================================================================
 #[test]
 fn f_snap_crash_after_tmp_before_rename() {
-    use streams::storage::snapshot::{load_latest_with, write_snapshot_with, Checkpoint, Snapshot};
-    use streams::storage::OpenOpts as OO;
+    use topics::storage::snapshot::{load_latest_with, write_snapshot_with, Checkpoint, Snapshot};
+    use topics::storage::OpenOpts as OO;
 
     let disk = FakeDisk::new();
     let fs = disk.arc();
@@ -789,7 +789,7 @@ fn f_snap_crash_after_tmp_before_rename() {
 // ===========================================================================
 #[test]
 fn f_snap_crash_after_rename_before_dirfsync() {
-    use streams::storage::snapshot::{load_latest_with, write_snapshot_with, Checkpoint, Snapshot};
+    use topics::storage::snapshot::{load_latest_with, write_snapshot_with, Checkpoint, Snapshot};
 
     let mk = |id: u64, seq: u64| Snapshot {
         id,
@@ -868,8 +868,8 @@ fn f_snap_crash_after_rename_before_dirfsync() {
 // ===========================================================================
 #[test]
 fn f_seg_crash_after_data_before_idx() {
-    use streams::storage::segment::{data_name, idx_name, SegmentBuilder, SegmentRecord};
-    use streams::storage::{LocalSegmentStore, SegmentPart, SegmentStore};
+    use topics::storage::segment::{data_name, idx_name, SegmentBuilder, SegmentRecord};
+    use topics::storage::{LocalSegmentStore, SegmentPart, SegmentStore};
 
     let disk = FakeDisk::new();
     let root = PathBuf::from(DATA_DIR).join("seg");
@@ -938,8 +938,8 @@ fn f_seg_crash_after_data_before_idx() {
 // ===========================================================================
 #[test]
 fn f_cold_crash_after_copy_before_flip() {
-    use streams::storage::segment::{data_name, idx_name, SegmentBuilder, SegmentRecord};
-    use streams::storage::{LocalSegmentStore, SegmentPart, SegmentStore, Tier, TopicTier};
+    use topics::storage::segment::{data_name, idx_name, SegmentBuilder, SegmentRecord};
+    use topics::storage::{LocalSegmentStore, SegmentPart, SegmentStore, Tier, TopicTier};
 
     let disk = FakeDisk::new();
     let hot_root = PathBuf::from(DATA_DIR).join("hot");
@@ -987,7 +987,7 @@ fn f_cold_crash_after_copy_before_flip() {
 
     // The record is fully readable from the resolved (hot) store: read the first
     // frame via its .idx locator and confirm it decodes to the original record.
-    use streams::storage::segment::{decode_data_frame, idx_entry_at};
+    use topics::storage::segment::{decode_data_frame, idx_entry_at};
     let store = tier.store_for(1).unwrap();
     let idx_bytes = store
         .read_range(1, SegmentPart::Idx, 0, 20)

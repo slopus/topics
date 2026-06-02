@@ -43,16 +43,16 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::SegmentConfig;
-use streams::engine::segwriter::SegmentWriter;
-use streams::engine::topic_state::{StoredRecord, TopicState};
-use streams::storage::testfs::FakeDisk;
-use streams::storage::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::SegmentConfig;
+use topics::engine::segwriter::SegmentWriter;
+use topics::engine::topic_state::{StoredRecord, TopicState};
+use topics::storage::testfs::FakeDisk;
+use topics::storage::{
     decode_data_frame_full, frame_is_deleted, lookup, Fs, LocalSegmentStore, SegmentPart,
     SegmentStore, TopicTier,
 };
-use streams::types::TopicConfig;
+use topics::types::TopicConfig;
 
 const SEG_ROOT: &str = "/data/topics/00000001";
 

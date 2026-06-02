@@ -36,12 +36,12 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::FakeDisk;
-use streams::storage::OpenOpts;
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::FakeDisk;
+use topics::storage::OpenOpts;
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // WAL frame layout constants (mirrors src/storage/wal.rs; those are crate-private
 // so we re-declare the few we need for byte-poking).
@@ -365,10 +365,10 @@ fn assert_topic_contract(
             );
         }
         assert!(
-            dump.head <= model.head + streams::config::DISK_HEAD_RESERVE_AHEAD,
+            dump.head <= model.head + topics::config::DISK_HEAD_RESERVE_AHEAD,
             "{name}: disk recovered head {} exceeds reservation ceiling {}",
             dump.head,
-            model.head + streams::config::DISK_HEAD_RESERVE_AHEAD
+            model.head + topics::config::DISK_HEAD_RESERVE_AHEAD
         );
     }
 

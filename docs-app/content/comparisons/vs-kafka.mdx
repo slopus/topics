@@ -1,6 +1,6 @@
 ---
 title: vs Apache Kafka
-description: A dimension-by-dimension comparison of streams with Apache Kafka — replicated horizontal scale and exactly-once vs one binary, HTTP/JSON, and an explicit gap signal — including why "tombstone" means the opposite in each system.
+description: A dimension-by-dimension comparison of topics with Apache Kafka — replicated horizontal scale and exactly-once vs one binary, HTTP/JSON, and an explicit gap signal — including why "tombstone" means the opposite in each system.
 ---
 
 import { Callout } from 'nextra/components'
@@ -8,15 +8,15 @@ import { Callout } from 'nextra/components'
 # vs Apache Kafka
 
 Apache Kafka is a distributed commit-log cluster built for horizontal scale, replicated HA,
-and exactly-once processing. streams is a single-machine server built for operational simplicity and
+and exactly-once processing. topics is a single-machine server built for operational simplicity and
 an explicit in-band loss signal. The one-line framing: **SQLite is to a database cluster what
-streams is to Kafka** — much the same job, done with the operational footprint of one process
+topics is to Kafka** — much the same job, done with the operational footprint of one process
 and a directory instead of a fleet to run. They solve different scale problems; this page
 compares them dimension by dimension and is honest about where Kafka is the right tool.
 
 <Callout type="important">
   The word **"tombstone" means the opposite thing** in each system. In Kafka a tombstone is a
-  null-value record on a compacted topic that tells compaction to *drop* a key. In streams a
+  null-value record on a compacted topic that tells compaction to *drop* a key. In topics a
   tombstone is a consumer-facing "you missed records `[gap_from, gap_to]`" signal. See
   [Tombstones — opposite meanings](#tombstones-opposite-meanings) below; do not confuse them.
 </Callout>
@@ -28,11 +28,11 @@ ordered, immutable log with its own 64-bit **offset**, and ordering is guarantee
 within a partition** — across partitions there is no global order. Consumer groups commit
 offsets to track progress, and partition count is the unit of both parallelism and ordering.
 
-streams has no partitions. Each **topic** is a single ordered log with a monotonic `$seq` (a
+topics has no partitions. Each **topic** is a single ordered log with a monotonic `$seq` (a
 `u64`), and that `$seq` **is** the cursor: you read with `POST /v0/topics/:topic/diff` from a
 `from_seq` and advance your stored cursor to ack — there is no separate offset-commit
 protocol. Ordering is total within a topic. The trade is direct: Kafka buys parallelism and
-capacity by adding partitions (at the cost of cross-partition ordering); streams gives you
+capacity by adding partitions (at the cost of cross-partition ordering); topics gives you
 total per-topic order but scales only vertically.
 
 ## Durability: replication vs per-topic fsync
@@ -43,7 +43,7 @@ many replicas must hold a record before an `acks=all` write is acknowledged. Kaf
 the OS page cache plus replication rather than fsync-ing every write — durability is a
 function of how many machines hold the data, so a single broker can fail without data loss.
 
-streams' durability is **per-topic and single-machine**, expressed as a
+topics' durability is **per-topic and single-machine**, expressed as a
 [durability class](/guarantees/durability):
 
 - **`memory`** — same group-committed WAL path as `disk`, but best-effort: not fsync-gated and no durability guarantee (records may survive or be lost on restart).
@@ -54,8 +54,8 @@ streams' durability is **per-topic and single-machine**, expressed as a
 
 <Callout type="warning">
   This is the headline trade in Kafka's favor: Kafka's replicated durability tolerates the
-  loss of a whole machine; a streams `fsync` write tolerates a crash **of its host machine** but
-  not the machine's destruction. streams has **no replication, no HA, no failover** — one NVMe-backed machine is
+  loss of a whole machine; a topics `fsync` write tolerates a crash **of its host machine** but
+  not the machine's destruction. topics has **no replication, no HA, no failover** — one NVMe-backed machine is
   the entire durability and failure domain. If you need machine-loss tolerance, use Kafka.
 </Callout>
 
@@ -64,7 +64,7 @@ streams' durability is **per-topic and single-machine**, expressed as a
 Both systems use the word "tombstone" — for opposite purposes. Getting this wrong leads to
 real confusion, so it is worth stating plainly.
 
-| | Kafka tombstone | streams tombstone |
+| | Kafka tombstone | topics tombstone |
 |---|---|---|
 | **What it is** | A record with a **null value** on a log-compacted topic | An in-band marker in a `diff` / SSE response |
 | **Who it is for** | The **compaction process** | The **consumer** |
@@ -77,17 +77,17 @@ gap-detection signal**: when a consumer's committed offset falls outside the ret
 its behavior is governed by `auto.offset.reset` (jump to earliest or latest), and the fact
 that records were skipped is not surfaced as data.
 
-In streams, a [tombstone](/guarantees/tombstones) is exactly that gap-detection signal. When
+In topics, a [tombstone](/guarantees/tombstones) is exactly that gap-detection signal. When
 involuntary cap eviction or TTL expiry destroys records below a reader's cursor, the next
 read returns `tombstone: { gap_from, gap_to, reason }` at HTTP 200. It is a notification to
 the consumer, not a retention directive.
 
 ## Gap detection
 
-Following from the above: streams' core differentiator over Kafka is the **explicit,
+Following from the above: topics' core differentiator over Kafka is the **explicit,
 delivery-time gap signal**. Kafka leaves "did I miss anything?" to offset arithmetic and lag
 metrics; a consumer that lagged past retention silently resumes from wherever
-`auto.offset.reset` points. streams emits the exact missed range in band, and distinguishes
+`auto.offset.reset` points. topics emits the exact missed range in band, and distinguishes
 involuntary loss (tombstoned) from voluntary removal (silently filtered) so the signal stays
 trustworthy.
 
@@ -97,10 +97,10 @@ Kafka is at-least-once by default and supports **exactly-once** semantics via th
 producer, transactions, and `read_committed` consumers — a genuine, production-grade
 capability for end-to-end exactly-once pipelines.
 
-streams is **at-least-once only**. There are no transactions and no exactly-once delivery.
+topics is **at-least-once only**. There are no transactions and no exactly-once delivery.
 It provides idempotency on the *write* path (an idempotency window dedupes retried appends)
 and node loop-prevention, but consumers must tolerate redelivery. If your pipeline requires
-exactly-once processing across stages, Kafka offers it and streams does not.
+exactly-once processing across stages, Kafka offers it and topics does not.
 
 ## Queues & share groups
 
@@ -110,7 +110,7 @@ the unit of progress is the offset, not the individual message. **KIP-932 share 
 per-message ack and redelivery (queue-like semantics), but as of Kafka 4.1 they remain a
 **non-production preview**.
 
-streams ships production **[lease queues](/api/queues)** today: `claim` returns individual
+topics ships production **[lease queues](/api/queues)** today: `claim` returns individual
 jobs with a `lease_id` and `deadline`; `ack` permanently removes a job (the ack **is** the
 delete); `nack` and `extend` control redelivery and visibility; and parallelism is bounded
 by your workers, not by a partition count. A built-in **dead-letter move** relocates a job to
@@ -122,7 +122,7 @@ Kafka is a **multi-node JVM cluster**. KRaft (Kafka 4.0+) removes the ZooKeeper 
 moving metadata into Kafka itself, which simplifies operations — but it is still a cluster of
 JVM brokers to provision, balance, and monitor.
 
-streams is **one self-contained server** and one data directory. No JVM, no cluster bootstrap, no
+topics is **one self-contained server** and one data directory. No JVM, no cluster bootstrap, no
 quorum, no partition rebalancing. You run it, point it at a data dir, and talk to it over
 HTTP. Graceful shutdown writes a final snapshot; a readiness probe (`/v0/ready`) gates
 traffic during WAL replay. The simplicity is the point — and the cost is that there is no
@@ -131,11 +131,11 @@ cluster to scale or fail over to.
 ## Scale
 
 Kafka scales **horizontally** to very high volumes — add brokers and partitions; large
-clusters sustain 15M+ messages/sec. streams scales **vertically only**: its ~1M events/sec
+clusters sustain 15M+ messages/sec. topics scales **vertically only**: its ~1M events/sec
 figure is an *aggregate* design target reached by batching and sharding across many topics and
 connections on one NVMe-backed machine, and a single HTTP origin tops out around 0.5M records/sec
 disk-class. See [Performance](/how-it-works/performance) for measured numbers. If you need
-throughput beyond one machine, Kafka is built for it and streams is not.
+throughput beyond one machine, Kafka is built for it and topics is not.
 
 ## Ecosystem
 
@@ -144,7 +144,7 @@ and **ksqlDB** (stream processing), **Schema Registry**, **MirrorMaker 2** (cros
 replication), pervasive security (TLS, SASL, per-topic ACLs, quotas), and mature managed
 services (Confluent Cloud, Amazon MSK).
 
-streams has no comparable ecosystem and no managed offering — you operate, back up, and
+topics has no comparable ecosystem and no managed offering — you operate, back up, and
 secure it yourself, behind a TLS-terminating reverse proxy. What it offers instead is built
 in: routers with [node loop-prevention](/guarantees/node-loop-prevention) for fan-out,
 multiplexed SSE, and lease queues, all on one substrate reachable with `curl`.
@@ -153,7 +153,7 @@ multiplexed SSE, and lease queues, all on one substrate reachable with `curl`.
 
 <div className="verdict-grid">
   <div className="verdict win">
-    <h4>streams wins when</h4>
+    <h4>topics wins when</h4>
     <ul>
       <li>You want <strong>plain HTTP/JSON</strong>, no JVM and no cluster, with <code>curl</code> as a client.</li>
       <li>You need an <strong>explicit, in-band gap signal</strong> at delivery time, not silent offset resets.</li>

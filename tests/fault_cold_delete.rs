@@ -1,10 +1,10 @@
 //! Phase-8B fault/crash batch — the three **cold-delete-hot boundary** strategies
-//! from the catalog (`/tmp/streams-fault-catalog.json` / `docs/FAULT_TESTING.md`),
+//! from the catalog (`/tmp/topics-fault-catalog.json` / `docs/FAULT_TESTING.md`),
 //! each one test fn named after its catalog id. Every test asserts the CORRECT
 //! crash-consistency behavior at the cold-relocation `confirm_relocated` boundary
 //! (flip the tier pointer → delete the now-redundant HOT copy), reusing the
 //! Phase-8A harness (`FakeDisk` / `FaultFs` / `MonitorFs` from
-//! `streams::storage::testfs`, the real `SegmentWriter` + `TopicTier` +
+//! `topics::storage::testfs`, the real `SegmentWriter` + `TopicTier` +
 //! `LocalSegmentStore` wired through an injectable `Arc<dyn Fs>`, exactly as
 //! `tests/fault_seg_seal.rs` does).
 //!
@@ -46,11 +46,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::SegmentConfig;
-use streams::engine::segwriter::{copy_segment_to_cold, SegmentWriter};
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, MonitorFs, TornDamage};
-use streams::storage::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::SegmentConfig;
+use topics::engine::segwriter::{copy_segment_to_cold, SegmentWriter};
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, MonitorFs, TornDamage};
+use topics::storage::{
     data_name, Fs, LocalSegmentStore, SegmentPart, SegmentStore, StoreError, Tier, TopicTier,
 };
 

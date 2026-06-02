@@ -48,16 +48,16 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::{SegmentConfig, ServerConfig};
-use streams::engine::segwriter::SegmentWriter;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::Fs;
-use streams::storage::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::{SegmentConfig, ServerConfig};
+use topics::engine::segwriter::SegmentWriter;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::Fs;
+use topics::storage::{
     data_name, LocalSegmentStore, SegmentBuilder, SegmentPart, SegmentRecord, Tier, TopicTier,
 };
-use streams::types::{DeleteRequest, DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::types::{DeleteRequest, DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Segment-store-level helpers (mirror tests/fault_cold_flip.rs): a real segment
@@ -558,7 +558,7 @@ fn f_reclaim_delete_never_resurrects() {
                 "jobs",
                 DeleteRequest {
                     before_seq: None,
-                    match_: Some(streams::types::Filter::from_shorthand("drop")),
+                    match_: Some(topics::types::Filter::from_shorthand("drop")),
                 },
             )
             .expect("tag delete acks");

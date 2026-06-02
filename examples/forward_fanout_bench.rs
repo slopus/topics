@@ -2,19 +2,19 @@
 //! amplification and the write-ack latency for a single source write fanning to
 //! 1 / 10 / 100 / 1000 router destinations, in the LEGACY synchronous path (v1,
 //! `forward_from` on the write/ack path) vs. the ASYNC + derived path (v2,
-//! `STREAMS_FORWARD_V2=1`: one WAL append per source write, forwarding off the ack
+//! `TOPICS_FORWARD_V2=1`: one WAL append per source write, forwarding off the ack
 //! path).
 //!
 //! It is a deterministic, in-process measurement (the engine API directly, a real
 //! durable WAL under a temp dir) so the WAL-frame delta is exact. The mode is
-//! selected by the `STREAMS_FORWARD_V2` env var, which the engine captures at
+//! selected by the `TOPICS_FORWARD_V2` env var, which the engine captures at
 //! construction — so the harness runs this binary TWICE (unset ⇒ v1, `=1` ⇒ v2)
 //! and diffs the two reports.
 //!
 //! Run:
 //! ```bash
 //!   cargo run --release --example forward_fanout_bench            # v1 (sync)
-//!   STREAMS_FORWARD_V2=1 cargo run --release --example forward_fanout_bench  # v2
+//!   TOPICS_FORWARD_V2=1 cargo run --release --example forward_fanout_bench  # v2
 //! ```
 
 use std::sync::atomic::Ordering;
@@ -22,10 +22,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::json;
-use streams::clock::{SharedClock, SystemClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::types::{DiffRequest, RecordIn, RouterCreateRequest, TopicConfig, WriteRequest};
+use topics::clock::{SharedClock, SystemClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::types::{DiffRequest, RecordIn, RouterCreateRequest, TopicConfig, WriteRequest};
 
 fn durable_engine(dir: &std::path::Path) -> Arc<Engine> {
     let clock: SharedClock = Arc::new(SystemClock);
@@ -151,7 +151,7 @@ fn measure(fanout: usize, v2: bool) {
 }
 
 fn main() {
-    let v2 = streams::config::forward_v2_enabled();
+    let v2 = topics::config::forward_v2_enabled();
     let mode = if v2 {
         "v2 (async + derived)"
     } else {

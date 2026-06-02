@@ -1,7 +1,7 @@
 # Benchmarks — Phase-2/3 In-Memory BASELINE
 
 This document records the **initial baseline** performance numbers for the
-Phase-2 in-memory `streams` server, captured during Phase 3. All data lives in
+Phase-2 in-memory `topics` server, captured during Phase 3. All data lives in
 RAM: there is no WAL, no segment store, and no fsync. These numbers therefore
 represent the *engine + HTTP + SSE* cost with durability removed from the
 critical path.
@@ -43,7 +43,7 @@ Two layers, matching the ROADMAP benchmark plan:
    estimate interval. Throughput is Criterion's `Throughput::Elements` over the
    batch size. These isolate raw CPU cost of the hot paths.
 
-2. **Live end-to-end HTTP macro-benchmarks** (`streams-probe bench`) — run
+2. **Live end-to-end HTTP macro-benchmarks** (`topics-probe bench`) — run
    against the **release binary** bound on an ephemeral localhost port over real
    HTTP (loopback, keep-alive). Latencies are wall-clock; percentiles via sort +
    linear interpolation. Run size: **50 000 writes**, SSE windows at **1 / 10 /
@@ -65,9 +65,9 @@ Reproduce:
 cargo bench --bench engine
 
 # macro: boot release server, then probe
-STREAMS_PORT=4090 ./target/release/streams &
-./target/release/streams-probe conformance http://localhost:4090   # must exit 0
-./target/release/streams-probe bench       http://localhost:4090 --json
+TOPICS_PORT=4090 ./target/release/topics &
+./target/release/topics-probe conformance http://localhost:4090   # must exit 0
+./target/release/topics-probe bench       http://localhost:4090 --json
 ```
 
 ---
@@ -124,7 +124,7 @@ trend at 1 KiB shows the path is allocation/copy-bound at large payloads.
 
 ---
 
-## 2. Live end-to-end HTTP macro-benchmarks (`streams-probe bench`)
+## 2. Live end-to-end HTTP macro-benchmarks (`topics-probe bench`)
 
 Release binary over loopback HTTP. 50 000 writes. Latencies in milliseconds.
 
@@ -210,9 +210,9 @@ build has no disk path, no recovery, and no governor.
 - All micro numbers are criterion medians from a clean `cargo bench --bench
   engine` run on an otherwise-idle machine; expect a few percent run-to-run
   variance (criterion reported most changes within its noise threshold).
-- The macro numbers are a single representative `streams-probe bench` run; they
+- The macro numbers are a single representative `topics-probe bench` run; they
   are loopback-HTTP figures and include the full axum/hyper request path.
-- `streams-probe conformance` passed 89/89 checks (exit 0) against this same
+- `topics-probe conformance` passed 89/89 checks (exit 0) against this same
   release binary, so the contract these numbers were measured against is the
   documented `/v0` contract.
 
@@ -231,12 +231,12 @@ durability is explicit.
 The only client-observable behavior change vs the baseline: `durable:true`
 writes are now fsync-gated (the ack waits for a real `fdatasync`, reported in
 `performance.fsync_ms`), and data persists across a restart. The `/v0` API, JSON
-shapes, and semantics are identical (`streams-probe conformance` = **89/89**,
-exit 0, against a release server booted on a temp `STREAMS_DATA_DIR`).
+shapes, and semantics are identical (`topics-probe conformance` = **89/89**,
+exit 0, against a release server booted on a temp `TOPICS_DATA_DIR`).
 
 ## Methodology (Phase 4 additions)
 
-- **Durable vs non-durable write-ack** (`streams-probe bench-durable <url>`):
+- **Durable vs non-durable write-ack** (`topics-probe bench-durable <url>`):
   boots two topics that differ ONLY in `durable` (`true` vs `false`) and drives
   the identical HTTP write path against each — single-record write-ack latency
   (one in-flight at a time, n=5000) and concurrent batched throughput (16
@@ -347,7 +347,7 @@ plus the real SIGKILL subprocess tests.
 | Crash consistency (torn tail truncated, never read as data) | **MET** | `crash_recovery.rs`, WAL unit tests |
 | Recovery correctness (head/earliest/evict_floor/count/config/routers/deletes match) | **MET** | `crash_recovery.rs`, `integration_durability.rs` |
 | No silent loss across restart (tombstone vs silent deleted gap) | **MET** | `integration_durability.rs`, `properties.rs` |
-| No regressions (full prior suite green; conformance 89/89) | **MET** | 192 tests green; `streams-probe conformance` 89/89 on the persistent build |
+| No regressions (full prior suite green; conformance 89/89) | **MET** | 192 tests green; `topics-probe conformance` 89/89 on the persistent build |
 | Durable write-ack p99 within budget with adaptive group commit | **PARTIAL** | group commit works (§2); the lone-write durable p50 ~5 ms is at/over the 1–5 ms target because this machine's `fdatasync` (~5 ms) is slower than the server-NVMe assumption — a hardware floor, not a design regression |
 | Segment-granular cap/TTL eviction; async deleted-record reclaim | **DEFERRED → Phase 5** | the in-memory index is the cache; cap/TTL advance `evict_floor` and recover correctly, but the mmap segment store + background reclaimer are Phase 5 |
 | Full DWRR scheduler + elastic throttling under CPU pressure | **DEFERRED → Phase 5** | scheduler present in simplified (mark-dirty) form; the governor/throttle ladder + `429` under pressure are Phase 5 |
@@ -369,9 +369,9 @@ queue/lease/workload features.
 - Reproduce:
   ```bash
   # boot a release server on a temp data dir
-  D=$(mktemp -d); STREAMS_PORT=4090 STREAMS_DATA_DIR=$D ./target/release/streams &
-  ./target/release/streams-probe conformance   http://localhost:4090   # 89/89
-  ./target/release/streams-probe bench-durable  http://localhost:4090 --json
+  D=$(mktemp -d); TOPICS_PORT=4090 TOPICS_DATA_DIR=$D ./target/release/topics &
+  ./target/release/topics-probe conformance   http://localhost:4090   # 89/89
+  ./target/release/topics-probe bench-durable  http://localhost:4090 --json
   # recovery-time: see the SIGKILL-load-restart harness in tests/crash_recovery.rs
   ```
 
@@ -384,20 +384,20 @@ snapshot) release binary** as Phase 4, now with the Phase-5A lease queue and the
 Phase-5B workload features (HTTP/2 cleartext / h2c, the broadcast/distribution/
 queue/actor patterns). **The Phase-2/3 baseline and the Phase-4 numbers above are
 unchanged** — this section is purely additive. There were **no `/v0` API or
-semantics changes**: `streams-probe conformance` against the live binary used here
+semantics changes**: `topics-probe conformance` against the live binary used here
 is **117 / 117, exit 0** (the count grew from Phase-4's 89 as the h2c + queue
 checks were added in earlier Phase-5 stages; all are additive).
 
 Same hardware/OS/toolchain as the baseline: **Apple M4 Max, 16 cores, 128 GiB,
 Darwin 25.2.0, rustc 1.92.0, `--release`**. The server ran on `127.0.0.1` on an
-ephemeral port over a fresh temp `STREAMS_DATA_DIR` on local NVMe (APFS); every
+ephemeral port over a fresh temp `TOPICS_DATA_DIR` on local NVMe (APFS); every
 workload is a live end-to-end HTTP run (reqwest h1/h2, loopback, keep-alive) from
 a single client process. Topics use the default (`durable:false`) class, so these
 exercise the engine + HTTP + SSE + scheduler path, not the fsync floor.
 
 ## Methodology (Phase 5 additions)
 
-Four `streams-probe` subcommands drive a LIVE server; each prints a table and a
+Four `topics-probe` subcommands drive a LIVE server; each prints a table and a
 `--json` summary. Wall-clock latencies; percentiles by sort + linear
 interpolation. The SSE write→deliver latency uses a shared monotonic `epoch`
 stamped into each pulse payload (writer and watchers share one process clock), so
@@ -540,14 +540,14 @@ the server.
   write→deliver latency and its flat scaling with watcher count.
 - Reproduce:
   ```bash
-  D=$(mktemp -d); STREAMS_HOST=127.0.0.1 STREAMS_PORT=4090 STREAMS_DATA_DIR=$D \
-    ./target/release/streams &
+  D=$(mktemp -d); TOPICS_HOST=127.0.0.1 TOPICS_PORT=4090 TOPICS_DATA_DIR=$D \
+    ./target/release/topics &
   U=http://127.0.0.1:4090
-  ./target/release/streams-probe conformance  $U                 # 117/117, exit 0
-  ./target/release/streams-probe broadcast     $U --watchers 100,1000 --json
-  ./target/release/streams-probe distribution  $U --topics 5000 --batch 100 --writers 32 --json
-  ./target/release/streams-probe queue         $U --workers 100 --jobs 20000 --json
-  ./target/release/streams-probe actors        $U --actors 1000 --inferences 5 --json
+  ./target/release/topics-probe conformance  $U                 # 117/117, exit 0
+  ./target/release/topics-probe broadcast     $U --watchers 100,1000 --json
+  ./target/release/topics-probe distribution  $U --topics 5000 --batch 100 --writers 32 --json
+  ./target/release/topics-probe queue         $U --workers 100 --jobs 20000 --json
+  ./target/release/topics-probe actors        $U --actors 1000 --inferences 5 --json
   ```
 
 ---
@@ -559,21 +559,21 @@ Phases 4–5, now built with the Phase-6 layered/tiered segment store: each topi
 log is split into sealed, immutable **segment files** (`seg-<first_seq>.data` +
 `.idx`); the active + newest `hot_retain_segments` sealed segments stay **HOT**
 (the data dir on NVMe) and older sealed segments **relocate to a COLD tier**
-(`STREAMS_COLD_DIR`, a second folder in v1; the `SegmentStore` trait lets S3 drop
+(`TOPICS_COLD_DIR`, a second folder in v1; the `SegmentStore` trait lets S3 drop
 in later). **The Phase-2/3, Phase-4, and Phase-5 numbers above are unchanged** —
 this section is purely additive.
 
 There were **no `/v0` API or semantics changes**: tiering is transparent.
-`streams-probe conformance` against a live binary booted with a cold tier
-configured (`STREAMS_COLD_DIR` set, `STREAMS_SEGMENT_MAX_EVENTS=50`,
-`STREAMS_HOT_RETAIN_SEGMENTS=2` — so seal + relocate fire under real traffic) is
+`topics-probe conformance` against a live binary booted with a cold tier
+configured (`TOPICS_COLD_DIR` set, `TOPICS_SEGMENT_MAX_EVENTS=50`,
+`TOPICS_HOT_RETAIN_SEGMENTS=2` — so seal + relocate fire under real traffic) is
 **117 / 117, exit 0**. With **no** cold dir (the default in every existing test)
 nothing relocates and behavior is identical by construction — the full workspace
 suite is **268 tests green** and clippy is clean.
 
 Same hardware/OS/toolchain as the baseline: **Apple M4 Max, 16 cores, 128 GiB,
 Darwin 25.2.0, rustc 1.92.0, `--release`**. The server ran on `127.0.0.1` over a
-fresh temp `STREAMS_DATA_DIR` (hot) + temp `STREAMS_COLD_DIR` (cold), both on the
+fresh temp `TOPICS_DATA_DIR` (hot) + temp `TOPICS_COLD_DIR` (cold), both on the
 same local APFS/NVMe (so the cold tier here is a *different folder*, not slower
 hardware — the latency delta below is the segment-read path itself, not a slower
 disk). Latencies are wall-clock loopback HTTP, percentiles by sort.
@@ -713,10 +713,10 @@ reclaim) — all green.
 - Reproduce:
   ```bash
   D=$(mktemp -d); C=$(mktemp -d)
-  STREAMS_HOST=127.0.0.1 STREAMS_PORT=4090 STREAMS_DATA_DIR=$D STREAMS_COLD_DIR=$C \
-    STREAMS_SEGMENT_MAX_EVENTS=50 STREAMS_HOT_RETAIN_SEGMENTS=2 ./target/release/streams &
+  TOPICS_HOST=127.0.0.1 TOPICS_PORT=4090 TOPICS_DATA_DIR=$D TOPICS_COLD_DIR=$C \
+    TOPICS_SEGMENT_MAX_EVENTS=50 TOPICS_HOT_RETAIN_SEGMENTS=2 ./target/release/topics &
   U=http://127.0.0.1:4090
-  ./target/release/streams-probe conformance $U          # 117/117, exit 0
+  ./target/release/topics-probe conformance $U          # 117/117, exit 0
   # write >6000 records to one durable topic, wait ~5s for the relocator, then:
   ls $D/topics/*/ ; ls $C/topics/*/                        # observe hot vs cold split
   curl -s -X POST $U/v0/topics/<topic>/diff -d '{"from_seq":0,"limit":1000}'  # cross-tier read
@@ -733,7 +733,7 @@ one-fsync-per-write (durable throughput collapsed to ~17.9 K rec/s) and added
 per-call overhead to append/diff. This iteration restores throughput and trims
 the hot paths WITHOUT changing the `/v0` contract or weakening the
 durability/ordering guarantees (acked ⇒ committed). All gates green after every
-change: `cargo test` 310, `cargo test --features test-fs` 455, `streams-probe
+change: `cargo test` 310, `cargo test --features test-fs` 455, `topics-probe
 conformance` 117/117.
 
 ## Optimizations applied
@@ -821,7 +821,7 @@ final state and the honest target assessment.
 
 Machine / env: **Apple M4 Max, 16 cores, 128 GiB RAM, Darwin 25.2.0**, Rust
 edition 2021, `cargo build --release`. Live server on `127.0.0.1` (loopback HTTP,
-single-tenant dev mode), fresh temp `STREAMS_DATA_DIR` on local NVMe (APFS).
+single-tenant dev mode), fresh temp `TOPICS_DATA_DIR` on local NVMe (APFS).
 
 ## Gate status (all green)
 
@@ -832,7 +832,7 @@ single-tenant dev mode), fresh temp `STREAMS_DATA_DIR` on local NVMe (APFS).
 | `cargo clippy --workspace --all-targets --features test-fs` | clean (0 warnings) |
 | `cargo test --workspace` | **310 passed, 0 failed** |
 | `cargo test --features test-fs` | **455 passed, 0 failed** |
-| `streams-probe conformance` (live release server) | **117 / 117, exit 0** |
+| `topics-probe conformance` (live release server) | **117 / 117, exit 0** |
 
 ## 1. Criterion micro-benchmarks — final absolutes (engine, in-process)
 
@@ -870,7 +870,7 @@ Three commit classes (API §0.10): `memory` (same group-committed WAL write path
 class), `disk` (WAL, group-committed, no per-write fsync), `fsync` (fsync-gated ack).
 Single-write ack and throughput were measured against the live release server.
 
-**Single-record write-ack latency (Rust client, `streams-probe`, n=5000):**
+**Single-record write-ack latency (Rust client, `topics-probe`, n=5000):**
 
 | Class | p50 | p99 | p999 | max | Throughput (16 writers × batch 100) |
 |---|---:|---:|---:|---:|---:|
@@ -896,7 +896,7 @@ Ordering memory > disk > fsync holds; memory ≈ 1.7× disk ≈ 5× fsync.
 
 ## 3. Live HTTP macro + workloads — final numbers
 
-**Core (`streams-probe bench`, writes=50000, watchers=1,10,100):**
+**Core (`topics-probe bench`, writes=50000, watchers=1,10,100):**
 
 | Metric | Value |
 |---|---:|
@@ -982,11 +982,11 @@ start of the iteration; "After" = these final verified numbers.
 
 The single ordered WAL writer (one thread / mpsc / fsync stream) serialized ALL
 durable writes — the write-throughput bottleneck. This iteration splits it into
-`N` independent shards (`STREAMS_WAL_SHARDS`), each its own WAL file set + writer
+`N` independent shards (`TOPICS_WAL_SHARDS`), each its own WAL file set + writer
 thread + group commit + per-shard checkpoint, with each topic routed to exactly one
 shard by a stable hash of its interned `topic_id`. Recovery is **shard-count-agnostic**:
 it replays every WAL group on disk (flat `wal/` + every `shard-NN/`) dispatched by
-`topic_id`, so `STREAMS_WAL_SHARDS` can be reconfigured between restarts with no data
+`topic_id`, so `TOPICS_WAL_SHARDS` can be reconfigured between restarts with no data
 loss (verified live below: 8 → 3 → 1 restarts, all acked durable records recovered).
 
 **Machine:** Apple M4 Max, 16 cores (12P+4E), 128 GiB, macOS/APFS single volume.
@@ -1013,7 +1013,7 @@ full commands below for release/SLO comparison.
 
 On this single-APFS-volume Mac, **durable (`fsync`-class) throughput does not scale
 with shards** — and that is a property of the device, not the engine. APFS takes a
-volume-level barrier per `fsync`, so concurrent fsync streams do not parallelize
+volume-level barrier per `fsync`, so concurrent fsync topics do not parallelize
 (a standalone raw-`fdatasync` probe: 1 thread 227 fsync/s @ 4.4 ms; 16 threads only
 672 fsync/s @ 22.8 ms). Splitting writers across N shards shrinks each shard's
 group-commit cohort, so you issue MORE fsyncs that then serialize at the device
@@ -1056,7 +1056,7 @@ per-write critical section, so adding shards bought little.)
 
 **Not near-linear on this Mac, and that is a hardware result, not a design defect.**
 - `fsync`-class (the production-durable class) is **fsync-device-bound** on a single
-  APFS volume and gets *worse* with shards — set `STREAMS_WAL_SHARDS=1` on such a host.
+  APFS volume and gets *worse* with shards — set `TOPICS_WAL_SHARDS=1` on such a host.
 - The **software write path** scales positively (≈1.6× at 4 shards, memory-class)
   now that the global hot-path locks are gone — sub-linear because of CPU/cache
   saturation at this writer/topic/core ratio, not a shared lock. Per-topic append-order,
@@ -1070,20 +1070,20 @@ per-write critical section, so adding shards bought little.)
 
 ## Default: `min(num_cpus, 8)`
 
-`STREAMS_WAL_SHARDS` defaults to `min(num_cpus, 8)` (≥ 1). Rationale: on the Linux/
+`TOPICS_WAL_SHARDS` defaults to `min(num_cpus, 8)` (≥ 1). Rationale: on the Linux/
 NVMe target one writer thread per core (capped at 8) matches available fsync
 parallelism without oversharding (which fragments each shard's group commit and
 spawns idle writer threads). The cap of 8 bounds the writer-thread count and keeps
 per-shard cohorts fat enough to amortize fsync. `shards = 1` is the flat legacy
 layout, byte-for-byte identical to the pre-sharding WAL (back-compat, and the right
 setting for a single shared-fsync-volume host like this Mac). Operators on a
-single-volume host should set `STREAMS_WAL_SHARDS=1`.
+single-volume host should set `TOPICS_WAL_SHARDS=1`.
 
 ## Verified (this iteration)
 
 - `cargo test` 384 · `--features test-fs` 575 · `--features test-fs,failpoints` 585
   — all green. clippy clean (default + `test-fs`, `--all-targets`).
-- `streams-probe conformance` **117/117** against a default-config server running an
+- `topics-probe conformance` **117/117** against a default-config server running an
   8-shard WAL (`shard-00..07` confirmed on disk), and **117/117** against a 3-shard
   server after reconfigure.
 - **kill -9 + restart with a DIFFERENT shard count**: 12 durable topics × 20 records
@@ -1093,9 +1093,9 @@ single-volume host should set `STREAMS_WAL_SHARDS=1`.
 
 ---
 
-# Async + Derived Router Forwarding (`STREAMS_FORWARD_V2`) — Fan-out
+# Async + Derived Router Forwarding (`TOPICS_FORWARD_V2`) — Fan-out
 
-The async/derived forwarding path (`STREAMS_FORWARD_V2=1`) removes the WAL
+The async/derived forwarding path (`TOPICS_FORWARD_V2=1`) removes the WAL
 amplification of router fan-out and takes forwarding off the write/ack path. This
 section records the **before (v1, legacy synchronous `forward_from`)** vs. **after
 (v2, async + derived)** numbers for a single source write fanning to **1 / 10 / 100
@@ -1118,7 +1118,7 @@ Reproduce:
 
 ```bash
 cargo run --release --example forward_fanout_bench                       # v1 (sync)
-STREAMS_FORWARD_V2=1 cargo run --release --example forward_fanout_bench  # v2
+TOPICS_FORWARD_V2=1 cargo run --release --example forward_fanout_bench  # v2
 ```
 
 ## WAL writes per source write (the amplification)
@@ -1174,7 +1174,7 @@ background drainer / the dest reader's catch-up, NOT by the source writer's ack.
 
 - `cargo test` 392 · `--features test-fs` 584 · `--features test-fs,failpoints` 594
   — all green. clippy clean (default + `test-fs` + `--all-features`, `--all-targets`).
-- `streams-probe conformance` **117/117** with v2 OFF **and** v2 ON (the read-path
+- `topics-probe conformance` **117/117** with v2 OFF **and** v2 ON (the read-path
   catch-up preserves the no-sleep `/v0` contract).
 - **kill -9 + restart** of a v2 server: the derived dest topics re-materialize from
   the source WAL + the durable per-router cursor with identical seqs (a consumer

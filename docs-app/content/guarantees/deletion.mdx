@@ -47,7 +47,7 @@ standing filter that keeps matching future writes. Five properties define it:
   not a message an in-flight producer sends a moment later.
 
 <Callout type="important">
-  The defining distinction in streams: **involuntary loss you did not ask for** (cap / TTL)
+  The defining distinction in topics: **involuntary loss you did not ask for** (cap / TTL)
   always tombstones; **voluntary removal you requested** (a delete, your own node's records)
   is silently filtered. Deletion is voluntary, so it is silent — mixing the two would make
   the gap alarm useless. See [Explicit Loss & Tombstones](/guarantees/tombstones).
@@ -108,7 +108,7 @@ above; disk space is only released when a whole segment is cleared.)
 
 ```bash
 # Drop everything the durable consumer has already checkpointed past.
-curl -X POST $STREAMS/v0/topics/orders/delete \
+curl -X POST $TOPICS/v0/topics/orders/delete \
   -H 'content-type: application/json' \
   -d '{ "before_seq": 480001 }'
 ```
@@ -127,7 +127,7 @@ match with a `before_seq` set to the new version's seq.
 
 ```bash
 # v2 was just appended at seq 480300; remove only the earlier versions of this tag.
-curl -X POST $STREAMS/v0/topics/orders/delete \
+curl -X POST $TOPICS/v0/topics/orders/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Eq", "order-7731"], "before_seq": 480300 }'
 ```
@@ -144,7 +144,7 @@ a kicked user, revoke their chat.
 
 ```bash
 # Cancel every message that exists right now under this user's chat history.
-curl -X POST $STREAMS/v0/topics/chat:general/delete \
+curl -X POST $TOPICS/v0/topics/chat:general/delete \
   -H 'content-type: application/json' \
   -d '{ "match": ["tag", "Glob", "user-1042:*"] }'
 ```

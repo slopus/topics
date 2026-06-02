@@ -12,7 +12,7 @@
 //!   * `413` on an over-limit body (pre-parse hard guard),
 //!   * the `batch_too_large` / `record_too_large` write limits,
 //!   * `404 topic_not_found` / `router_not_found`,
-//!   * bearer auth on a *second* server booted **with** `STREAMS_API_KEYS`
+//!   * bearer auth on a *second* server booted **with** `TOPICS_API_KEYS`
 //!     (the default elsewhere is the no-keys dev mode): `401` with no token and
 //!     with a bad token, success with a good token,
 //!   * the `performance` block is present on success responses.
@@ -331,7 +331,7 @@ fn router_cycle_is_409_router_cycle() {
 
 #[test]
 fn oversized_body_is_413_payload_too_large() {
-    use streams::config::ServerConfig;
+    use topics::config::ServerConfig;
     // Boot a server with a tiny hard body cap so we don't have to ship MiBs.
     let cfg = ServerConfig {
         max_body_bytes: 1024, // 1 KiB hard limit, pre-parse.
@@ -391,7 +391,7 @@ fn diff_wrong_content_type_is_415() {
 fn batch_over_limit_is_400_batch_too_large() {
     let h = Harness::start();
     // MAX_BATCH_RECORDS is 10_000; one more trips batch_too_large (API §2).
-    let n = streams::config::MAX_BATCH_RECORDS + 1;
+    let n = topics::config::MAX_BATCH_RECORDS + 1;
     let records: Vec<Value> = (0..n).map(|_| json!({ "data": 0 })).collect();
     let (status, body) = h.post("/v0/topics/jobs", json!({ "records": records }));
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -403,7 +403,7 @@ fn record_over_byte_limit_is_400_record_too_large() {
     let h = Harness::start();
     // A single record whose data exceeds MAX_RECORD_BYTES (1 MiB) is rejected
     // with record_too_large (distinct from a retryable 422 topic_full).
-    let big = "y".repeat(streams::config::MAX_RECORD_BYTES + 1024);
+    let big = "y".repeat(topics::config::MAX_RECORD_BYTES + 1024);
     let (status, body) = h.post("/v0/topics/jobs", json!({ "records": [{ "data": big }] }));
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(assert_error_envelope(&body), "record_too_large");
@@ -488,12 +488,12 @@ fn success_bodies_are_bare_data_with_performance() {
 }
 
 // ---------------------------------------------------------------------------
-// Bearer auth: a SECOND server configured WITH STREAMS_API_KEYS.
+// Bearer auth: a SECOND server configured WITH TOPICS_API_KEYS.
 // ---------------------------------------------------------------------------
 
 /// Boot an auth-enabled server with a single known key.
 fn auth_harness(key: &str) -> Harness {
-    use streams::config::ServerConfig;
+    use topics::config::ServerConfig;
     let cfg = ServerConfig {
         api_keys: vec![key.to_string()],
         ..Default::default()
@@ -550,7 +550,7 @@ fn auth_good_token_succeeds() {
 fn auth_probe_endpoints_skip_auth_by_default() {
     let h = auth_harness("s3cr3t");
     // Health/ready (liveness/readiness) do not require auth unless
-    // STREAMS_PROBE_AUTH is set (API §8): reachable with no token even on an
+    // TOPICS_PROBE_AUTH is set (API §8): reachable with no token even on an
     // auth-enabled server. `/v0/metrics` is gated behind auth by default.
     let (status, body) = h.get("/v0/health");
     assert_eq!(status, StatusCode::OK);

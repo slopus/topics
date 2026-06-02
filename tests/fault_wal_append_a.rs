@@ -1,8 +1,8 @@
 //! Phase-8B fault/crash catalog — boundary **wal-append**, batch A (5 strategies
-//! from `/tmp/streams-fault-catalog.json` / `docs/FAULT_TESTING.md`). Each test fn
+//! from `/tmp/topics-fault-catalog.json` / `docs/FAULT_TESTING.md`). Each test fn
 //! is named after its catalog id and asserts the CORRECT crash-consistency
 //! behavior through the Phase-8A harness: the real WAL wired through `FakeDisk` /
-//! `FaultFs` (`streams::storage::testfs`), recovered via the engine + the direct
+//! `FaultFs` (`topics::storage::testfs`), recovered via the engine + the direct
 //! `WalReader` replay path, diffed against the durability contract
 //! (acked ⇒ durable, no silent loss / no gap, torn tail truncated never misread).
 //!
@@ -39,13 +39,13 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::{Fs, OpenOpts};
-use streams::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::{Fs, OpenOpts};
+use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_batch1.rs)
@@ -128,7 +128,7 @@ fn append_durable(engine: &Engine, name: &str, n: usize) -> Vec<u64> {
 /// Read back the live records of topic `name` (seq → data string) through the
 /// engine's diff path; `None` if the topic is absent.
 fn dump_records(engine: &Engine, name: &str) -> Option<BTreeMap<u64, String>> {
-    use streams::types::DiffRequest;
+    use topics::types::DiffRequest;
     let _ = engine.topic_state(name, false).ok()?;
     let mut out = BTreeMap::new();
     let mut from = 0u64;

@@ -1,13 +1,13 @@
 ---
 title: Observability
-description: Operating streams in production — liveness and readiness probes for load balancers and Kubernetes, the auth-gated metrics endpoint, and the per-response performance block as inline observability.
+description: Operating topics in production — liveness and readiness probes for load balancers and Kubernetes, the auth-gated metrics endpoint, and the per-response performance block as inline observability.
 ---
 
 import { Callout, Tabs } from 'nextra/components'
 
 # Observability
 
-streams exposes three operational endpoints — **liveness**, **readiness**, and **metrics** —
+topics exposes three operational endpoints — **liveness**, **readiness**, and **metrics** —
 plus an inline `performance` block on every JSON response. The probes are designed for
 load-balancer and Kubernetes health checks, and crucially the readiness probe gates traffic
 during **WAL replay** on boot. The metrics surface is a **full catalog** — process/aggregate
@@ -46,7 +46,7 @@ curl localhost:4000/v0/health
 
 <div className="route"><span className="verb get">GET</span><span className="path">/v0/ready</span></div>
 
-Returns `200` only when the server is **actually serving**. During boot, streams replays the WAL
+Returns `200` only when the server is **actually serving**. During boot, topics replays the WAL
 to rebuild in-memory state; until that completes the server is not ready, and `/v0/ready` returns
 `503` so a load balancer or Kubernetes keeps traffic away. Root alias: `GET /readyz`.
 
@@ -111,7 +111,7 @@ Readiness/traffic → GET /readyz    (expect 200; 503 means "do not route yet")
 </Tabs>
 
 By default the probes **skip auth** so a load balancer can poll liveness/readiness without a
-key. Set `STREAMS_PROBE_AUTH=true` to require auth on the health/ready/metrics endpoints too.
+key. Set `TOPICS_PROBE_AUTH=true` to require auth on the health/ready/metrics endpoints too.
 
 ## Metrics
 
@@ -135,16 +135,16 @@ curl -H 'accept: application/json' localhost:4000/v0/metrics
   scope (a full-access key suffices). In dev mode (no keys) it is open.
 </Callout>
 
-`/v0/metrics` emits a **full catalog**: process/aggregate gauges (`streams_topics`,
-`streams_topics_by_class{class=…}`, `streams_routers`, `streams_records_live`,
-`streams_bytes_live`, `streams_queue_topics`, `streams_queue_leases_in_flight`,
-`streams_sse_connections`, `streams_watch_sessions`, `streams_ready`,
-`streams_recovery_progress`, `streams_uptime_ms`), **per-topic gauges** (`streams_topic_head_seq` /
+`/v0/metrics` emits a **full catalog**: process/aggregate gauges (`topics_topics`,
+`topics_topics_by_class{class=…}`, `topics_routers`, `topics_records_live`,
+`topics_bytes_live`, `topics_queue_topics`, `topics_queue_leases_in_flight`,
+`topics_sse_connections`, `topics_watch_sessions`, `topics_ready`,
+`topics_recovery_progress`, `topics_uptime_ms`), **per-topic gauges** (`topics_topic_head_seq` /
 `_earliest_seq` / `_records_live` / `_bytes_live` / `_queue_ready` / `_queue_in_flight`,
-labelled `{topic=…}`, bounded by `streams_topic_metrics_truncated`), real **WAL counters**
-(`streams_wal_frames_total` / `_batches_total` / `_fsyncs_total` / `_bytes_written_total` /
+labelled `{topic=…}`, bounded by `topics_topic_metrics_truncated`), real **WAL counters**
+(`topics_wal_frames_total` / `_batches_total` / `_fsyncs_total` / `_bytes_written_total` /
 `_rotations_total` / `_queue_depth` / `_queue_depth_peak` / `_submit_full_total` /
-`_read_only`), and a **fsync-latency histogram** `streams_wal_fsync_latency_us`. There are no
+`_read_only`), and a **fsync-latency histogram** `topics_wal_fsync_latency_us`. There are no
 per-topic append/read/eviction/tombstone counters and no scheduler-throttle metric.
 
 ```json
@@ -167,7 +167,7 @@ counts inline.
 
 Every JSON response (and most errors) carries a `performance` object, so observability lives in
 the response itself, not a side channel. This is the primary way to observe per-call cost in
-streams today.
+topics today.
 
 ```json
 "performance": {
@@ -214,6 +214,6 @@ A few patterns these enable without any external metrics:
 ## See also
 
 - [API · Health & Metrics](/api/health-metrics) — the endpoint reference for the probes and metrics.
-- [Configuration](/deployment/configuration) — `STREAMS_PROBE_AUTH` and the resource-limit caps.
+- [Configuration](/deployment/configuration) — `TOPICS_PROBE_AUTH` and the resource-limit caps.
 - [Storage & Tiering](/deployment/storage-and-tiering) — what `cold_segments_read` reflects.
 - [Performance](/how-it-works/performance) — measured latency and throughput numbers.

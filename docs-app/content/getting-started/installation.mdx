@@ -1,13 +1,13 @@
 ---
 title: Install & Run
-description: Build the streams binary or pull the Docker image, run it, wait for the readiness gate during WAL replay, and shut it down cleanly.
+description: Build the topics binary or pull the Docker image, run it, wait for the readiness gate during WAL replay, and shut it down cleanly.
 ---
 
 import { Callout, Steps, Tabs } from 'nextra/components'
 
 # Install & Run
 
-streams ships as a single static binary or a multi-arch Docker image — no external
+topics ships as a single static binary or a multi-arch Docker image — no external
 services, no runtime dependencies. This page covers building and running it, the default
 loopback bind and dev-mode auth, the `/v0/ready` readiness gate during WAL replay, and
 graceful shutdown. For the complete environment variable set see
@@ -27,21 +27,21 @@ graceful shutdown. For the complete environment variable set see
   <Tabs.Tab>
 
 Building from source needs a Rust toolchain. The release build is a single self-contained
-binary named `streams`.
+binary named `topics`.
 
 ```bash
 # Build the single binary.
 cargo build --release
 
 # Run it. Defaults: bind 127.0.0.1:4000, auth disabled (dev mode),
-# WAL + segments + snapshots under ./streams-data.
-./target/release/streams
+# WAL + segments + snapshots under ./topics-data.
+./target/release/topics
 # Listening on 127.0.0.1:4000 — auth disabled (dev mode).
 ```
 
 On start the server opens the data directory, loads the latest snapshot, and **replays the
 WAL forward** before serving (see [the readiness gate](#the-readiness-gate) below). The
-data directory defaults to `./streams-data`; a missing or empty directory is a fresh start.
+data directory defaults to `./topics-data`; a missing or empty directory is a fresh start.
 
 ```bash
 # Confirm it is up.
@@ -52,32 +52,32 @@ curl -fsS http://127.0.0.1:4000/v0/health   # → 200 {"status":"ok", ...}
   <Tabs.Tab>
 
 A multi-arch image (`linux/amd64` + `linux/arm64`) is published to GHCR at
-`ghcr.io/slopus/streams`. The image binds `0.0.0.0:4000`, stores durable state in the
+`ghcr.io/slopus/topics`. The image binds `0.0.0.0:4000`, stores durable state in the
 `/data` volume, runs as a non-root user, and ships a `HEALTHCHECK` that hits `/v0/health`.
 
 Because the image binds a **non-loopback** address, the server refuses to start with no
-keys — so pass `STREAMS_API_KEYS` for any real run, or `STREAMS_ALLOW_INSECURE_NO_AUTH=1`
+keys — so pass `TOPICS_API_KEYS` for any real run, or `TOPICS_ALLOW_INSECURE_NO_AUTH=1`
 for a local-only one.
 
 ```bash
 # Production-ish: real auth, durable state on a named volume.
-docker run --rm -p 4000:4000 -v streams-data:/data \
-  -e STREAMS_API_KEYS=replace-with-a-real-secret \
-  ghcr.io/slopus/streams:latest
+docker run --rm -p 4000:4000 -v topics-data:/data \
+  -e TOPICS_API_KEYS=replace-with-a-real-secret \
+  ghcr.io/slopus/topics:latest
 ```
 
 ```bash
 # Local / dev only: auth disabled. Never use this on a network-exposed deployment.
-docker run --rm -p 4000:4000 -v streams-data:/data \
-  -e STREAMS_ALLOW_INSECURE_NO_AUTH=1 \
-  ghcr.io/slopus/streams:latest
+docker run --rm -p 4000:4000 -v topics-data:/data \
+  -e TOPICS_ALLOW_INSECURE_NO_AUTH=1 \
+  ghcr.io/slopus/topics:latest
 ```
 
 - `-p 4000:4000` maps the container's listen port to the host.
-- `-v streams-data:/data` is a named volume holding the WAL, segments, and snapshots
-  (`STREAMS_DATA_DIR` defaults to `/data` in the image). Reuse it across restarts to
+- `-v topics-data:/data` is a named volume holding the WAL, segments, and snapshots
+  (`TOPICS_DATA_DIR` defaults to `/data` in the image). Reuse it across restarts to
   preserve durable state.
-- `-e STREAMS_API_KEYS=...` is a comma-separated list of bearer keys; clients then send
+- `-e TOPICS_API_KEYS=...` is a comma-separated list of bearer keys; clients then send
   `Authorization: Bearer <key>`.
 
 Images are tag-driven: pushing a `vX.Y.Z` git tag publishes `:1.2.3`, `:1.2`, and
@@ -93,7 +93,7 @@ full image reference.
 
 ### Start the server
 
-Pick the binary or Docker path above. With no `STREAMS_API_KEYS`, a loopback bind comes up
+Pick the binary or Docker path above. With no `TOPICS_API_KEYS`, a loopback bind comes up
 in dev mode with auth disabled.
 
 ### Wait for ready
@@ -111,7 +111,7 @@ curl -fsS http://127.0.0.1:4000/v0/ready
 A topic is created lazily on first write — no setup needed.
 
 ```bash
-curl -X POST $STREAMS/v0/topics/orders \
+curl -X POST $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "records": [ { "data": { "sku": "AEROPRESS-GO", "qty": 1, "total": 3499 } } ] }'
 ```
@@ -129,7 +129,7 @@ cursor, watching over SSE, fanning out with a router, and deleting.
 
 ## The readiness gate
 
-streams separates **liveness** from **readiness** so an orchestrator never routes traffic
+topics separates **liveness** from **readiness** so an orchestrator never routes traffic
 to a process that is still recovering.
 
 - `GET /v0/health` (alias `/healthz`) always returns `200` with
@@ -154,7 +154,7 @@ to a process that is still recovering.
 </Callout>
 
 By default the probe endpoints (`/v0/health`, `/v0/ready`, `/v0/metrics`) **skip auth** so
-they work behind a probe with no credentials. Set `STREAMS_PROBE_AUTH=true` to require auth
+they work behind a probe with no credentials. Set `TOPICS_PROBE_AUTH=true` to require auth
 on them too.
 
 ## Graceful shutdown
@@ -177,12 +177,12 @@ Everything above runs on defaults. To go further:
   segment size limits, hot-retention bounds, and every resource cap — are documented in
   [Configuration](/deployment/configuration).
 - **Production hardening** — API keys (hashed at rest, with optional per-key scopes and a
-  topic-name prefix allowlist), the loopback/`STREAMS_ALLOW_INSECURE_NO_AUTH` interlock, TLS
+  topic-name prefix allowlist), the loopback/`TOPICS_ALLOW_INSECURE_NO_AUTH` interlock, TLS
   via a reverse proxy, and the DoS resource limits — is covered in
   [Security](/deployment/security).
 
 <Callout type="warning">
-  streams speaks **plain HTTP** — it does not terminate TLS. For any non-loopback exposure,
+  topics speaks **plain HTTP** — it does not terminate TLS. For any non-loopback exposure,
   run it behind a TLS-terminating reverse proxy (or bind loopback and tunnel). See
   [Security](/deployment/security).
 </Callout>

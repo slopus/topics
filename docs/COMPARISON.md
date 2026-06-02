@@ -1,4 +1,4 @@
-# streams — Comparative Engineering Report
+# topics — Comparative Engineering Report
 
 A synthesis of six independent analyses (codex full-codebase pass + five dimension
 deep-dives: storage engine, durability/recovery, API & data model, operational
@@ -15,7 +15,7 @@ incorrect or risky — and an ordered plan.
 > - **Implemented since:** `/v0/metrics` is a full gauge/WAL/histogram surface, **not** a one-gauge
 >   stub (M3); bounded graceful drain with SSE wind-down (M11); queue `lease_id` fencing —
 >   validate-when-supplied (R4); bounded WAL submission with `503` backpressure (R5); off-gate
->   segment seal (R6); the **sharded** WAL (`STREAMS_WAL_SHARDS`); **async + derived** routers; the
+>   segment seal (R6); the **sharded** WAL (`TOPICS_WAL_SHARDS`); **async + derived** routers; the
 >   `queue` topic type; advisory data-dir single-writer fencing. The WAL is **sharded**,
 >   not a single global writer.
 > - **Decided OUT OF SCOPE (will not be built):** multi-server / replication / HA
@@ -25,7 +25,7 @@ incorrect or risky — and an ordered plan.
 >   hard multi-tenancy beyond per-key scopes + prefix allowlists (M13). Deletion is **no compaction /
 >   no reclaim** by design.
 
-**One-paragraph framing.** streams is a genuinely well-built *single-node, append-mostly*
+**One-paragraph framing.** topics is a genuinely well-built *single-node, append-mostly*
 event engine. Its durability core (sharded ordered WAL writers, XXH3 framing,
 torn-tail truncation, adaptive group commit, tail-rewind on fsync failure,
 checkpoint = `(wal_idx, wal_offset)`, idempotent convergent replay) and its
@@ -45,7 +45,7 @@ system that does it well and how.
 
 ### M1 — Replication / HA / failover  · **high**
 > **UPDATE — OUT OF SCOPE (decided).** Multi-server / replication / HA / failover are
-> **not** on the roadmap; streams is single-server by design. Single-writer data-dir
+> **not** on the roadmap; topics is single-server by design. Single-writer data-dir
 > fencing is now implemented with an advisory lock. The text below is retained as the
 > original analysis only.
 
@@ -75,7 +75,7 @@ analyses independently rank it #1–2.
 > histogram (`src/http/health.rs`). It is **not** a one-gauge stub. The text below describes the old
 > state.
 
-`render_prometheus` emits exactly **one** gauge (`streams_topics`) with an in-code TODO
+`render_prometheus` emits exactly **one** gauge (`topics_topics`) with an in-code TODO
 (`src/http/health.rs:79-86`), even though the data already exists: `WalMetrics`
 (fsyncs/frames/batches/bytes/rotations, `src/storage/wal.rs:989`) and per-topic
 head/earliest/count/bytes/last_write/last_read/queue counters (`src/engine/mod.rs:1222`).
@@ -122,7 +122,7 @@ used for delete (§5) and router rules (§6.1) — but is **not exposed on reads
 by tag-at-delete-time. The API analysis calls this the single highest-leverage *ergonomic*
 add (lowest cost, reuses existing machinery).
 - **Borrows from:** turbopuffer (attribute filters on query), Redis (`XRANGE` + client filter), Kafka (no native, so this is a differentiator).
-- **Recommend:** expose the existing filter tuples on `diff`/`watch` (`match`/`filter` param). Together with M5 this converts streams from a pure log into a queryable, materializable store with minimal new surface.
+- **Recommend:** expose the existing filter tuples on `diff`/`watch` (`match`/`filter` param). Together with M5 this converts topics from a pure log into a queryable, materializable store with minimal new surface.
 - **Where:** `src/engine/filters.rs`, `src/http/topics.rs`, `docs/API.md:122-124`.
 
 ### M7 — Admin verify / repair / scrub tooling  · **med**
@@ -149,7 +149,7 @@ mirrored under cold. With the 1h age trigger sealing partial segments, even idle
 accrete tiny 2-file segments forever. 100k low-traffic topics ⇒ 100k+ directories, O(files)
 `read_dir` per topic per recovery (`reclaim_orphans_below`), dentry-cache churn. No segment
 coalescing, no per-topic file budget, no column-family-style sharing.
-- **Borrows from:** RocksDB (column families share one LSM/WAL across logical streams), InnoDB/SQLite (single-file packing).
+- **Borrows from:** RocksDB (column families share one LSM/WAL across logical topics), InnoDB/SQLite (single-file packing).
 - **Recommend:** (a) a bounded **segment-coalescing** pass that merges adjacent small sealed segments (and rewrites sparsely-deleted segments to drop dead frames — also closes the intra-segment reclaim gap, B3), and/or (b) a "packed" `SegmentStore` impl (the trait seam already exists) that packs cold/idle segments into a shared blob. Threshold-triggered so the common append-mostly case keeps its zero-rewrite property.
 - **Where:** `src/engine/mod.rs:485`, `src/storage/segment.rs:38-53`, `src/engine/segwriter.rs`, `src/engine/topic_state.rs:1031-1089`.
 
@@ -414,7 +414,7 @@ state can degrade into defensive `Null` payload fallback for sealed live records
 WAL frames are logical redo, not page images, and absorbed WAL is deleted at checkpoint. Once a
 record lives only in a segment, a torn/bit-rot segment frame is *detected*
 (`src/storage/segment.rs:208`) but **cannot be repaired** — the redo source is gone. PG's
-`full_page_writes` re-derives; streams surfaces `Corrupt` with no recovery path. The root cause
+`full_page_writes` re-derives; topics surfaces `Corrupt` with no recovery path. The root cause
 behind M2/M7's urgency.
 - **Borrows from:** PostgreSQL (`full_page_writes` + WAL retention), any replicated system (recover from a peer).
 - **Recommend:** retain a redo window (don't drop absorbed WAL covering still-only-in-segment data until a second copy exists) — folds into M2 (archiving) and M1 (replica).

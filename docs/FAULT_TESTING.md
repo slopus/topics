@@ -1,6 +1,6 @@
-# streams — Fault-Injection & Crash-Consistency Test Suite
+# topics — Fault-Injection & Crash-Consistency Test Suite
 
-This documents how `streams` is tested against hostile filesystems and crashes, in the
+This documents how `topics` is tested against hostile filesystems and crashes, in the
 tradition of SQLite's VFS fault tests and PostgreSQL's recovery/WAL-consistency checks. The
 promise under test: **data loss is explicit, never silent** — an acked durable write survives any
 crash; an unacked write may vanish but never creates a rule-violating gap.
@@ -39,7 +39,7 @@ LAYERED TOOLS: proptest generates the op sequence + chooses the crash step + shr
 - xxhash-rust (already a dep, xxh3 feature) — reuse XXH3-64 inside FakeDisk to verify torn-write/bit-rot detection matches the engine's own frame checksum (XXH3-64, not CRC32)
 - tempfile (already dev-dep) — per-test isolated data dirs for the RealFs ground-truth crash job
 - arbitrary 1.x — derive structured op/fault generation for fuzz-style sequence input (feeds proptest or a cargo-fuzz target over the recovery decoder)
-- OWN CODE (not a crate, highest leverage): an `Fs`/`File` trait abstracting std::fs (open/read_at/write_at/set_len/sync_data/sync_all/rename/remove_file/read_dir/File::sync), with RealFs (production), FaultFs (EIO/ENOSPC/short-write injection at call indices), and FakeDisk (in-memory page store with pending-vs-durable byte ranges, crash()=drop-pending, torn-write tearing at 512B/4KB granularity, rename+dir-fsync atomicity model). The WAL ActiveFile, snapshot writer, LocalSegmentStore, and recovery all route through this trait. NO rocksdb/redb/sled/3p storage engine — streams owns its WAL/segment/snapshot format
+- OWN CODE (not a crate, highest leverage): an `Fs`/`File` trait abstracting std::fs (open/read_at/write_at/set_len/sync_data/sync_all/rename/remove_file/read_dir/File::sync), with RealFs (production), FaultFs (EIO/ENOSPC/short-write injection at call indices), and FakeDisk (in-memory page store with pending-vs-durable byte ranges, crash()=drop-pending, torn-write tearing at 512B/4KB granularity, rename+dir-fsync atomicity model). The WAL ActiveFile, snapshot writer, LocalSegmentStore, and recovery all route through this trait. NO rocksdb/redb/sled/3p storage engine — topics owns its WAL/segment/snapshot format
 - NOTE: explicitly NOT adopting turmoil/unstable-fs (requires std::fs swap + async, API unstable, gives nothing FakeDisk doesn't); NOT adopting any third-party storage/KV engine
 
 ## Model-oracle invariants (checked after every injected fault + recovery)
@@ -86,7 +86,7 @@ LAYERED TOOLS: proptest generates the op sequence + chooses the crash step + shr
 | `F-WAL-EIO-OPEN` | io-error | recovery-replay | EIO opening the active WAL file on recovery | FaultFs op=open fail-once on WalReader::open | recovery returns an io error (engine does not silently start empty discarding durable data); retry/abort, never a silent fresh-start over real data | critical |
 | `F-WAL-ROTATE-CRASH-PRE-SEAL` | crash-point | segment-seal | crash during WAL file rotation: after old-file fdatasync, before new ActiveFile::create completes | fail-rs failpoint wal::after_rotate_fsync + FakeDisk.crash() | old WAL file fully durable; new file absent or empty; recovery resumes from old file tail, next append re-rotates; no frame lost across the rotation boundary | high |
 | `F-WAL-ROTATE-NEW-FILE-TORN` | torn/partial | segment-seal | new rotated WAL file's first batch torn after rotation | FakeDisk tears the first append into the freshly created file | new file truncates to empty/clean prefix; old file's data intact; recovery picks the highest-index file as active and truncates its torn tail | high |
-| `F-WAL-DOUBLE-WRITER-FENCING` | concurrency | wal-open | two processes open the same data dir | RealFs ground-truth: spawn a second streams process on the same data_dir | the second opener fails startup on the advisory `.streams.lock`; no two live processes append to the same WAL | high |
+| `F-WAL-DOUBLE-WRITER-FENCING` | concurrency | wal-open | two processes open the same data dir | RealFs ground-truth: spawn a second topics process on the same data_dir | the second opener fails startup on the advisory `.topics.lock`; no two live processes append to the same WAL | high |
 | `F-WAL-MISDIRECTED-FRAME` | corruption | recovery-replay | a frame's bytes land at the wrong offset (right data, wrong place) producing a wrong-seq frame | FaultFs write_at to a shifted offset for one batch | replay's seq-skip (seq<=head) + contiguity expectation catches a non-monotone/duplicate seq; assert recovery does not insert a record at a non-contiguous seq creating a gap | high |
 | `F-WAL-CRASH-DURING-SHUTDOWN-DRAIN` | crash-point | wal-fsync | crash during the Drop/shutdown drain_and_commit_remaining final forced fsync | fail-rs wal::shutdown_drain + FakeDisk.crash() | frames queued at shutdown that were acked survived; an unacked queued frame may vanish; no torn tail; recovery clean | high |
 | `F-WAL-EIO-MIDLOG-READ-RECOVERY` | compound | recovery-replay | EIO reading a WAL frame during replay (not the tail) | FaultFs op=read_at fail-once mid-replay | recovery surfaces the io error / stops deterministically; re-running recovery converges; no partial index left committed as final state | critical |

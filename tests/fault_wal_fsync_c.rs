@@ -1,7 +1,7 @@
 //! Phase-8B fault/crash batch — `wal-fsync` boundary, group **c** (3 strategies
-//! from `/tmp/streams-fault-catalog.json`, each test fn named after its catalog
+//! from `/tmp/topics-fault-catalog.json`, each test fn named after its catalog
 //! id). Every test asserts the CORRECT crash-consistency behavior through the
-//! Phase-8A harness (`FakeDisk` / `MonitorFs` from `streams::storage::testfs`,
+//! Phase-8A harness (`FakeDisk` / `MonitorFs` from `topics::storage::testfs`,
 //! the real WAL / engine wired through `Wal::open_at_with` and
 //! `Engine::with_data_dir_fs`, the same model-oracle contract as
 //! `tests/crash_oracle.rs`).
@@ -42,13 +42,13 @@ use std::time::Duration;
 use proptest::prelude::*;
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, MonitorFs, TornDamage};
-use streams::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, MonitorFs, TornDamage};
+use topics::storage::wal::{Wal, WalConfig, WalReader, WalRecord};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_batch1.rs)
@@ -294,10 +294,10 @@ fn f_sweep_durable_append() {
         TornDamage::ZeroSector,
         TornDamage::Garble,
     ];
-    // Tiered sweep (streams::testutil::crash_points): bounded deterministic sample
-    // of crash points by default, full `0..=cap` under STREAMS_TEST_EXHAUSTIVE. All
+    // Tiered sweep (topics::testutil::crash_points): bounded deterministic sample
+    // of crash points by default, full `0..=cap` under TOPICS_TEST_EXHAUSTIVE. All
     // four torn-damage modes always run in full at each sampled crash point.
-    for crash_point in streams::testutil::crash_points(cap) {
+    for crash_point in topics::testutil::crash_points(cap) {
         for (di, &damage) in damages.iter().enumerate() {
             let disk = FakeDisk::with_seed(crash_point * 7 + di as u64 + 1);
             let trip = CrashAfterAny::new(disk.clone(), crash_point, damage);

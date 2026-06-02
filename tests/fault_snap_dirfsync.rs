@@ -1,8 +1,8 @@
 //! Phase-8B fault/crash strategies on the **snapshot-dir-fsync** boundary
-//! (catalog `/tmp/streams-fault-catalog.json`, `docs/FAULT_TESTING.md`). Each test
+//! (catalog `/tmp/topics-fault-catalog.json`, `docs/FAULT_TESTING.md`). Each test
 //! fn is named after its catalog id and asserts the CORRECT crash-consistency
 //! behavior through the Phase-8A harness (`FakeDisk` / `FaultFs` from
-//! `streams::storage::testfs`, the real WAL + snapshot writer + recovery wired
+//! `topics::storage::testfs`, the real WAL + snapshot writer + recovery wired
 //! through `Engine::with_data_dir_fs` and the snapshot `*_with` constructors).
 //!
 //! The snapshot atomic swap is `tmp-write → fsync → rename → **dir-fsync** →
@@ -43,13 +43,13 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::snapshot::{load_latest_with, write_snapshot_with, Checkpoint, Snapshot};
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::{File, Fs, OpenOpts};
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::snapshot::{load_latest_with, write_snapshot_with, Checkpoint, Snapshot};
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::{File, Fs, OpenOpts};
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs, tests/fault_batch1.rs)

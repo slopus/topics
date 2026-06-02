@@ -7,7 +7,7 @@ import { Callout, Cards } from 'nextra/components'
 
 # Core Guarantees
 
-streams is a durability-focused engine, so its guarantees are the product. Two of them are the
+topics is a durability-focused engine, so its guarantees are the product. Two of them are the
 headline, and they answer the two questions that matter most about any log:
 
 - **How durable is a write?** Durability is a **dial you turn per topic** — `memory`
@@ -35,7 +35,7 @@ One rule sits underneath everything:
 
 Mixing those two would make the gap alarm useless. If a delete you issued looked identical to
 data that fell off a retention window, you could never trust a tombstone to mean "something
-was lost that I wanted." So streams keeps the two structurally separate.
+was lost that I wanted." So topics keeps the two structurally separate.
 
 The mechanism is a **dual watermark** per topic. `earliest_seq` is the first currently-live seq
 — it advances on eviction, TTL expiry, **and** deletion. `evict_floor` advances **only** on

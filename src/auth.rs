@@ -4,7 +4,7 @@
 //! scopes, no prefixes) authorizes **full access** to every topic/router, exactly
 //! as before this module existed.
 //!
-//! # `STREAMS_API_KEYS` syntax (extended, back-compatible)
+//! # `TOPICS_API_KEYS` syntax (extended, back-compatible)
 //!
 //! Comma-separated entries; each entry is one of:
 //!
@@ -175,7 +175,7 @@ impl ApiKey {
         self.hash.ct_eq(presented_digest)
     }
 
-    /// Parse one `STREAMS_API_KEYS` entry (`key` | `key:scopes` |
+    /// Parse one `TOPICS_API_KEYS` entry (`key` | `key:scopes` |
     /// `key:scopes:prefixes`). Returns `Ok(None)` for an empty (whitespace-only)
     /// entry so the caller can skip it; `Err` names a malformed scope token.
     pub fn parse_entry(entry: &str) -> std::result::Result<Option<ApiKey>, String> {
@@ -280,7 +280,7 @@ impl KeyStore {
         KeyStore { keys }
     }
 
-    /// Parse a comma-separated `STREAMS_API_KEYS` value into a [`KeyStore`].
+    /// Parse a comma-separated `TOPICS_API_KEYS` value into a [`KeyStore`].
     /// Malformed *scope* tokens abort the parse with an error (fail-closed at
     /// startup rather than silently granting the wrong scope); empty entries are
     /// skipped.

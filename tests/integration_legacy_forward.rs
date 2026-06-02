@@ -1,4 +1,4 @@
-//! Legacy synchronous in-line forwarding (`STREAMS_FORWARD_V2=0`) — the explicit
+//! Legacy synchronous in-line forwarding (`TOPICS_FORWARD_V2=0`) — the explicit
 //! OPT-OUT path. The shipped default is the async + derived model
 //! (`integration_forward_v2.rs`); these tests pin the legacy contract so the
 //! opt-out keeps working and is not silently broken by the cutover (codex P1 #6).
@@ -8,7 +8,7 @@
 //! ack path) and PERMITS multi-source fan-in into a single dest (no single-owner
 //! derived-dest rule).
 //!
-//! This is a dedicated test BINARY: it sets `STREAMS_FORWARD_V2=0` before any
+//! This is a dedicated test BINARY: it sets `TOPICS_FORWARD_V2=0` before any
 //! engine is constructed, and the env capture happens at `Engine` construction, so
 //! the whole binary runs legacy. The env set never races the v2-default tests (they
 //! live in separate binaries with their own process env).
@@ -17,16 +17,16 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde_json::json;
-use streams::clock::{SharedClock, SystemClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::types::{DiffRequest, RecordIn, RouterCreateRequest, TopicConfig, WriteRequest};
+use topics::clock::{SharedClock, SystemClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::types::{DiffRequest, RecordIn, RouterCreateRequest, TopicConfig, WriteRequest};
 
 /// Force the legacy synchronous forwarding path for THIS test process. Idempotent;
 /// every test in this binary wants it off, and the engine captures the flag at
 /// construction (so this must run BEFORE `engine_at`).
 fn force_legacy() {
-    std::env::set_var("STREAMS_FORWARD_V2", "0");
+    std::env::set_var("TOPICS_FORWARD_V2", "0");
 }
 
 fn config_at(dir: &std::path::Path) -> ServerConfig {

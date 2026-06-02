@@ -40,7 +40,7 @@ A durable, unbounded `transcode` queue that fails loudly rather than dropping un
 ```
 
 ```bash
-curl -X PUT $STREAMS/v0/topics/orders \
+curl -X PUT $TOPICS/v0/topics/orders \
   -H 'content-type: application/json' \
   -d '{ "durable": true, "cap_records": 1000000, "ttl_ms": 0 }'
 ```
@@ -101,7 +101,7 @@ auto-priority recency clock.
 recency (for monitoring scrapes that should not make a topic look "hot").
 
 ```bash
-curl $STREAMS/v0/topics/orders
+curl $TOPICS/v0/topics/orders
 ```
 
 **Response** (`200`) — a plain log topic
@@ -194,7 +194,7 @@ prefix-restricted key sees only the names inside its allowlist.
 | `touch` | bool | `false` | Listing does not bump auto-priority unless set `true`. |
 
 ```bash
-curl "$STREAMS/v0/topics?prefix=orders&page_size=100"
+curl "$TOPICS/v0/topics?prefix=orders&page_size=100"
 ```
 
 **Response** (`200`)
@@ -239,7 +239,7 @@ every router referencing it as `source` or `dest`. Idempotent and irreversible. 
 else `409 topic_not_empty`.
 
 ```bash
-curl -X DELETE $STREAMS/v0/topics/orders
+curl -X DELETE $TOPICS/v0/topics/orders
 ```
 
 **Response** (`200`)

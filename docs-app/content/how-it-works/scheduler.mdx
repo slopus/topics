@@ -1,13 +1,13 @@
 ---
 title: Scheduler & Backpressure
-description: How streams schedules post-write delivery work — a banded weighted-fair queue over dirty topics with aging and recency-based priority — and how the elastic governor sheds latency under CPU pressure while never sacrificing correctness.
+description: How topics schedules post-write delivery work — a banded weighted-fair queue over dirty topics with aging and recency-based priority — and how the elastic governor sheds latency under CPU pressure while never sacrificing correctness.
 ---
 
 import { Callout } from 'nextra/components'
 
 # Scheduler & Backpressure
 
-After a write commits, streams still has to *propagate* it — wake the topic's SSE watchers,
+After a write commits, topics still has to *propagate* it — wake the topic's SSE watchers,
 run its routers, flush its commit batch. That post-write work is what the scheduler
 governs, and it is what has to hit the 1–5 ms delivery target. The scheduler is a banded
 weighted-fair queue over **dirty topics**, with aging to prevent starvation and a

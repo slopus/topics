@@ -1,5 +1,5 @@
-//! streams-probe — a standalone black-topic tool that runs against a LIVE
-//! streams server over HTTP (Phase-3 §4).
+//! topics-probe — a standalone black-topic tool that runs against a LIVE
+//! topics server over HTTP (Phase-3 §4).
 //!
 //! Two subcommands:
 //!   - `conformance <base_url>`: asserts the documented `/v0` contract for every
@@ -11,7 +11,7 @@
 //!     watchers, router forwarding overhead). Prints numbers and, with `--json`,
 //!     a machine-readable summary for BENCHMARKS.md.
 //!
-//! The crate is deliberately black-topic: it does NOT depend on the `streams`
+//! The crate is deliberately black-topic: it does NOT depend on the `topics`
 //! crate — only its public HTTP contract.
 
 use std::process::ExitCode;
@@ -23,7 +23,7 @@ use argh::FromArgs;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
-/// streams-probe: black-topic conformance + benchmark tool for a live streams server.
+/// topics-probe: black-topic conformance + benchmark tool for a live topics server.
 #[derive(FromArgs, Debug)]
 struct TopLevel {
     #[argh(subcommand)]
@@ -513,7 +513,7 @@ async fn run_conformance(cmd: ConformanceCmd) -> ExitCode {
     // Best-effort cleanup of the topics we created.
     cleanup(&c, &ns).await;
 
-    println!("=== streams-probe conformance: {} ===", cmd.base_url);
+    println!("=== topics-probe conformance: {} ===", cmd.base_url);
     print!("{}", rep.render());
     println!(
         "\n\n{} passed, {} failed ({} checks)",
@@ -2113,7 +2113,7 @@ async fn conformance_sse(c: &Client, rep: &mut Report, ns: &str) {
 }
 
 /// Auth checks (only run when --token is supplied). They additionally require
-/// the SERVER to be started with that key (STREAMS_API_KEYS); otherwise auth is
+/// the SERVER to be started with that key (TOPICS_API_KEYS); otherwise auth is
 /// disabled server-side and the unauthorized check is skipped as inconclusive.
 async fn conformance_auth(base_url: &str, c: &Client, rep: &mut Report, ns: &str) {
     // An anonymous client (no token) hitting a data endpoint should be 401 IF
@@ -2584,7 +2584,7 @@ fn print_durable_bench_table(s: &Value) {
             tp["elapsed_s"].as_f64().unwrap_or(0.0),
         );
     };
-    println!("=== streams-probe bench-durable: {} ===", s["base_url"]);
+    println!("=== topics-probe bench-durable: {} ===", s["base_url"]);
     println!("single-record write-ack latency + concurrent batched throughput:");
     row("durable", &s["durable"]);
     row("non-durable", &s["non_durable"]);
@@ -2799,7 +2799,7 @@ async fn bench_sse_fanout(c: &Client, ns: &str, watcher_counts: &[usize]) -> Val
         }
         drop(tx);
 
-        // Give the watchers a moment to establish their streams and reach the
+        // Give the watchers a moment to establish their topics and reach the
         // caught-up (tailing) state before timed writes begin.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -3005,7 +3005,7 @@ async fn bench_router(c: &Client, ns: &str) -> Value {
 
 fn print_bench_table(s: &Value) {
     println!(
-        "\n=== streams-probe bench: {} ===",
+        "\n=== topics-probe bench: {} ===",
         s.get("base_url").and_then(|v| v.as_str()).unwrap_or("?")
     );
 
@@ -3289,7 +3289,7 @@ async fn run_broadcast(cmd: BroadcastCmd) -> ExitCode {
     if cmd.json {
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     } else {
-        println!("\n=== streams-probe broadcast: {} ===", cmd.base_url);
+        println!("\n=== topics-probe broadcast: {} ===", cmd.base_url);
         println!("one source topic -> N SSE watchers (shared zero-copy frame fan-out):");
         let mut keys: Vec<&String> = tiers.keys().collect();
         keys.sort_by_key(|k| {
@@ -3426,7 +3426,7 @@ async fn run_distribution(cmd: DistributionCmd) -> ExitCode {
     if cmd.json {
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     } else {
-        println!("\n=== streams-probe distribution: {} ===", cmd.base_url);
+        println!("\n=== topics-probe distribution: {} ===", cmd.base_url);
         println!(
             "1 source -> {} topics via {} batched writers (batch={}):",
             n_topics, writers, batch
@@ -3628,7 +3628,7 @@ async fn run_queue(cmd: QueueCmd) -> ExitCode {
     if cmd.json {
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     } else {
-        println!("\n=== streams-probe queue: {} ===", cmd.base_url);
+        println!("\n=== topics-probe queue: {} ===", cmd.base_url);
         println!(
             "{} workers claim/ack {} jobs (claim_max={}, jitter={}ms):",
             workers, jobs, cmd.claim_max, cmd.jitter
@@ -3784,7 +3784,7 @@ async fn run_actors(cmd: ActorsCmd) -> ExitCode {
     if cmd.json {
         println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     } else {
-        println!("\n=== streams-probe actors: {} ===", cmd.base_url);
+        println!("\n=== topics-probe actors: {} ===", cmd.base_url);
         println!(
             "{} actor topics x {} inferences (chain_len={}, snapshot every {}):",
             actors, inferences, chain_len, cmd.snapshot_every

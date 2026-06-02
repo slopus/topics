@@ -1,6 +1,6 @@
 ---
 title: Performance
-description: Measured streams performance — engine-core throughput, the realistic single-topic HTTP ceiling by durability class, SSE fan-out latency, and recovery time — framed honestly against the hardware floor.
+description: Measured topics performance — engine-core throughput, the realistic single-topic HTTP ceiling by durability class, SSE fan-out latency, and recovery time — framed honestly against the hardware floor.
 ---
 
 import { Callout } from 'nextra/components'
@@ -120,7 +120,7 @@ loosened contract:
 
 | Gate | Result |
 |---|---|
-| `streams-probe conformance` (live release server) | **117 / 117**, exit 0 |
+| `topics-probe conformance` (live release server) | **117 / 117**, exit 0 |
 | `cargo test --workspace` | 310 passed, 0 failed |
 | `cargo test --features test-fs` | 455 passed, 0 failed |
 | `cargo clippy --workspace --all-targets` | clean (0 warnings) |

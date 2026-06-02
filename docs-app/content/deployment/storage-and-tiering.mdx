@@ -7,7 +7,7 @@ import { Callout, FileTree } from 'nextra/components'
 
 # Storage & Tiering
 
-streams persists everything under one data directory: a **sharded write-ahead log**,
+topics persists everything under one data directory: a **sharded write-ahead log**,
 periodic **metadata snapshots**, and per-topic **segment files** that are the long-term store and
 read source. Segments **seal** (become immutable) after a size, count, or age trigger. An
 optional **cold tier** relocates older sealed segments to a second directory — **disabled by
@@ -23,17 +23,17 @@ delivery.**
 
 ## On-disk layout
 
-Everything lives under `STREAMS_DATA_DIR` (default `./streams-data`), the **hot tier**. Three
+Everything lives under `TOPICS_DATA_DIR` (default `./topics-data`), the **hot tier**. Three
 top-level subtrees: `meta/`, `wal/`, and `topics/`.
 
 <FileTree>
-  <FileTree.Folder name="streams-data (STREAMS_DATA_DIR)" defaultOpen>
-    <FileTree.File name=".streams.lock" />
+  <FileTree.Folder name="topics-data (TOPICS_DATA_DIR)" defaultOpen>
+    <FileTree.File name=".topics.lock" />
     <FileTree.Folder name="meta" defaultOpen>
       <FileTree.File name="snapshot.0007.bin" />
       <FileTree.File name="snapshot.0006.bin" />
     </FileTree.Folder>
-    <FileTree.Folder name="wal (sharded; STREAMS_WAL_SHARDS, default min(num_cpus,8))" defaultOpen>
+    <FileTree.Folder name="wal (sharded; TOPICS_WAL_SHARDS, default min(num_cpus,8))" defaultOpen>
       <FileTree.Folder name="shard-00 (one dir per shard when shards>1; shards==1 ⇒ flat wal/)">
         <FileTree.File name="CURRENT" />
         <FileTree.File name="wal-0000000000001024.log" />
@@ -53,10 +53,10 @@ top-level subtrees: `meta/`, `wal/`, and `topics/`.
   </FileTree.Folder>
 </FileTree>
 
-- **`wal/`** — the WAL is **sharded** (`STREAMS_WAL_SHARDS`, default `min(num_cpus, 8)`): N
-  independent ordered, append-only, mixed-topic streams, each a single sequential stream (so group
+- **`wal/`** — the WAL is **sharded** (`TOPICS_WAL_SHARDS`, default `min(num_cpus, 8)`): N
+  independent ordered, append-only, mixed-topic topics, each a single sequential stream (so group
   commit stays trivial per shard) and each topic mapped to exactly one shard by a stable hash of
-  its id. When shards > 1 each shard is its own `wal/shard-NN/` directory; `STREAMS_WAL_SHARDS=1`
+  its id. When shards > 1 each shard is its own `wal/shard-NN/` directory; `TOPICS_WAL_SHARDS=1`
   is the flat `wal/` layout. Within a shard, files are named `wal-<first-frame-seq>.log`
   (zero-padded); the highest-numbered is active, and the tiny `CURRENT` file (atomically renamed)
   names it. Files are **64 MiB preallocated** so appends never extend the inode. Recovery is
@@ -69,12 +69,12 @@ top-level subtrees: `meta/`, `wal/`, and `topics/`.
 - **`topics/`** — one directory **per topic**, named by the interned **numeric topic id** (hex), not
   the topic name (this is what makes [path traversal impossible](/deployment/security#no-path-traversal)).
   Segments are per-topic so eviction, mmap, and read locality are independent across topics.
-- **`.streams.lock`** — an advisory exclusive lock held by the running process. A second process
+- **`.topics.lock`** — an advisory exclusive lock held by the running process. A second process
   pointed at the same data directory fails startup instead of appending to the same WAL.
 
 <Callout type="warning">
   The data directory holds **every record's payload in the clear** (WAL frames and segment
-  `.data` files). streams does not encrypt payloads. Protect it with filesystem permissions and
+  `.data` files). topics does not encrypt payloads. Protect it with filesystem permissions and
   at-rest disk encryption — see [Security](/deployment/security#whats-not-in-scope).
 </Callout>
 
@@ -102,9 +102,9 @@ The **newest** segment for a topic is "active" — still being appended. A segme
 
 | Trigger | Default | Env knob |
 |---|---|---|
-| Record count | `10000` records | `STREAMS_SEGMENT_MAX_EVENTS` |
-| `.data` size | `64 MiB` | `STREAMS_SEGMENT_MAX_BYTES` |
-| Age (idle/partial) | `1 h` (`3600000` ms) | `STREAMS_SEGMENT_MAX_AGE_MS` (`0` disables) |
+| Record count | `10000` records | `TOPICS_SEGMENT_MAX_EVENTS` |
+| `.data` size | `64 MiB` | `TOPICS_SEGMENT_MAX_BYTES` |
+| Age (idle/partial) | `1 h` (`3600000` ms) | `TOPICS_SEGMENT_MAX_AGE_MS` (`0` disables) |
 
 The byte trigger is a guard for topics with large payloads (the count trigger alone could let a
 segment grow huge); the age trigger seals an idle topic's partial segment so it can be relocated or
@@ -128,24 +128,24 @@ segments drop) — the documented, accepted approximation. See
 A topic's segments can be split across **two tiers**:
 
 - **HOT** — the active segment plus recent sealed segments, on fast local NVMe (the per-topic
-  directory under `STREAMS_DATA_DIR`). The live tail (active segment + in-memory index + a
+  directory under `TOPICS_DATA_DIR`). The live tail (active segment + in-memory index + a
   bounded recent-record cache) is always hot and independent of cold access.
 - **COLD** — older sealed segments, on a slower tier. Today the cold tier is simply a **different
-  configured folder**, `STREAMS_COLD_DIR`. (An object-store backend such as S3 is explicitly
+  configured folder**, `TOPICS_COLD_DIR`. (An object-store backend such as S3 is explicitly
   future work; only the local-folder cold store exists now. Both tiers sit behind one
   `SegmentStore` trait, so S3 drops in later without touching the engine.)
 
 <Callout type="info">
-  **Tiering is disabled by default.** When `STREAMS_COLD_DIR` is **unset**, nothing relocates and
+  **Tiering is disabled by default.** When `TOPICS_COLD_DIR` is **unset**, nothing relocates and
   behavior is unchanged by construction — every segment stays hot. You opt in by setting the cold
   directory.
 </Callout>
 
-When enabled, the cold tier mirrors the per-topic layout under `STREAMS_COLD_DIR` using the **same**
+When enabled, the cold tier mirrors the per-topic layout under `TOPICS_COLD_DIR` using the **same**
 `seg-<first_seq>` naming, so a relocated segment keeps its identity:
 
 <FileTree>
-  <FileTree.Folder name="STREAMS_COLD_DIR" defaultOpen>
+  <FileTree.Folder name="TOPICS_COLD_DIR" defaultOpen>
     <FileTree.Folder name="topics" defaultOpen>
       <FileTree.Folder name="0000000A" defaultOpen>
         <FileTree.File name="seg-0000000000000001.data" />
@@ -161,8 +161,8 @@ Sealed segments beyond the hot-retention bound relocate to cold:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Keep this many newest sealed segments hot before relocating older ones to cold. |
-| `STREAMS_HOT_RETAIN_BYTES` | `0` (off) | Optional hot sealed-byte bound. When both are set, the **stricter** wins. |
+| `TOPICS_HOT_RETAIN_SEGMENTS` | `4` | Keep this many newest sealed segments hot before relocating older ones to cold. |
+| `TOPICS_HOT_RETAIN_BYTES` | `0` (off) | Optional hot sealed-byte bound. When both are set, the **stricter** wins. |
 
 Relocation is **crash-safe and idempotent**: copy the segment to cold → fsync → durably flip the
 tier pointer → delete the hot copy. If interrupted, restart prefers the surviving copy (a
@@ -195,19 +195,19 @@ The complete set of storage-related environment variables. All are also document
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `STREAMS_DATA_DIR` | `./streams-data` | Hot tier + WAL + meta root. |
-| `STREAMS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread / file set / group commit). Each topic maps to one shard; recovery is shard-count-agnostic. `1` = the flat single-writer layout. |
-| `STREAMS_COLD_DIR` | *(unset)* | Cold tier root. **Unset ⇒ tiering disabled (all hot).** |
-| `STREAMS_SEGMENT_MAX_EVENTS` | `10000` | Seal a segment after this many records. |
-| `STREAMS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Seal after this many `.data` bytes. |
-| `STREAMS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Seal an idle/partial segment after this age; `0` disables. |
-| `STREAMS_HOT_RETAIN_SEGMENTS` | `4` | Newest sealed segments kept hot before relocating to cold. |
-| `STREAMS_HOT_RETAIN_BYTES` | `0` (off) | Optional hot sealed-byte bound; stricter of the two wins. |
+| `TOPICS_DATA_DIR` | `./topics-data` | Hot tier + WAL + meta root. |
+| `TOPICS_WAL_SHARDS` | `min(num_cpus, 8)` | Number of independent WAL shards (each its own writer thread / file set / group commit). Each topic maps to one shard; recovery is shard-count-agnostic. `1` = the flat single-writer layout. |
+| `TOPICS_COLD_DIR` | *(unset)* | Cold tier root. **Unset ⇒ tiering disabled (all hot).** |
+| `TOPICS_SEGMENT_MAX_EVENTS` | `10000` | Seal a segment after this many records. |
+| `TOPICS_SEGMENT_MAX_BYTES` | `67108864` (64 MiB) | Seal after this many `.data` bytes. |
+| `TOPICS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Seal an idle/partial segment after this age; `0` disables. |
+| `TOPICS_HOT_RETAIN_SEGMENTS` | `4` | Newest sealed segments kept hot before relocating to cold. |
+| `TOPICS_HOT_RETAIN_BYTES` | `0` (off) | Optional hot sealed-byte bound; stricter of the two wins. |
 
 ## See also
 
 - [Segments & Snapshots](/how-it-works/segments-and-snapshots) — how checkpointing, sealing, and reclaim work internally.
 - [WAL & Group Commit](/how-it-works/wal-and-group-commit) — the durability boundary and the commit path.
 - [Recovery](/how-it-works/recovery) — how the data directory is replayed on restart.
-- [Configuration](/deployment/configuration) — the full `STREAMS_*` env-var set.
+- [Configuration](/deployment/configuration) — the full `TOPICS_*` env-var set.
 - [Durability](/guarantees/durability) — the `memory` / `disk` / `fsync` commit classes.

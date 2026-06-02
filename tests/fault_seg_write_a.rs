@@ -38,14 +38,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use streams::storage::segment::{
+use topics::storage::segment::{
     data_name, decode_data_frame, idx_name, lookup, SegmentBuilder, SegmentError, SegmentRecord,
 };
-use streams::storage::segstore::{
+use topics::storage::segstore::{
     LocalSegmentStore, SegmentPart, SegmentStore, StoreError, Tier, TopicTier,
 };
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
-use streams::storage::Fs;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp, TornDamage};
+use topics::storage::Fs;
 
 // ===========================================================================
 // Shared fixtures: a tiny deterministic segment + a store rooted on a FakeDisk.
@@ -313,7 +313,7 @@ fn f_seg_torn_data_frame() {
     // Write the `.idx` durably (it survives intact, still describing every frame).
     {
         let mut f = fs
-            .open(&idx_path, streams::storage::OpenOpts::create_truncate())
+            .open(&idx_path, topics::storage::OpenOpts::create_truncate())
             .unwrap();
         let mut off = 0usize;
         while off < idx.len() {
@@ -325,7 +325,7 @@ fn f_seg_torn_data_frame() {
     // tear: only a strict prefix of `.data` lands durable — the last frame torn.
     {
         let mut f = fs
-            .open(&data_path, streams::storage::OpenOpts::create_truncate())
+            .open(&data_path, topics::storage::OpenOpts::create_truncate())
             .unwrap();
         let mut off = 0usize;
         while off < data.len() {
@@ -419,14 +419,14 @@ fn f_seg_crc_corrupt_data() {
     let fs = disk.arc();
     {
         let f = fs
-            .open(&data_path, streams::storage::OpenOpts::rw_existing())
+            .open(&data_path, topics::storage::OpenOpts::rw_existing())
             .unwrap();
         let mut one = [0u8; 1];
         let n = f.read_at(flip_off, &mut one).unwrap();
         assert_eq!(n, 1, "byte to flip is within .data");
         drop(f);
         let mut f = fs
-            .open(&data_path, streams::storage::OpenOpts::rw_existing())
+            .open(&data_path, topics::storage::OpenOpts::rw_existing())
             .unwrap();
         one[0] ^= 0xFF; // single-byte (multi-bit) flip — bit-rot.
         f.write_at(flip_off, &one).unwrap();

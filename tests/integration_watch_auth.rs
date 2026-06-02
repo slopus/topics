@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use common::{Harness, StatusCode};
 use serde_json::json;
-use streams::config::ServerConfig;
+use topics::config::ServerConfig;
 
 /// Open `path` with optional `Authorization: Bearer <bearer>` and return just the
 /// HTTP status (draining nothing for a non-200, reading a little for a 200 so the

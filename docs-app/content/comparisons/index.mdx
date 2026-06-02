@@ -1,13 +1,13 @@
 ---
 title: Comparisons
-description: How streams positions against Redis Streams, Kafka, NATS JetStream, and cloud queues — a single-machine peer that trades horizontal scale for operational simplicity and an explicit in-band loss signal.
+description: How topics positions against Redis Streams, Kafka, NATS JetStream, and cloud queues — a single-machine peer that trades horizontal scale for operational simplicity and an explicit in-band loss signal.
 ---
 
 import { Callout, Cards } from 'nextra/components'
 
 # Comparisons
 
-streams is a single-binary, single-machine event engine: an append-only log over plain
+topics is a single-binary, single-machine event engine: an append-only log over plain
 HTTP and JSON, with per-topic durability classes, lease queues, server-side routers, and
 multiplexed SSE. These pages compare it honestly against the systems people reach for
 instead — Redis Streams, Apache Kafka, NATS JetStream, and managed cloud queues — and are
@@ -17,13 +17,13 @@ explicit about where each of those wins.
 
 Every page below follows the same rule: **no strawmen.** Each alternative is excellent at
 what it was built for, and each comparison includes a "where it wins" section that is true,
-not grudging. streams is not a Kafka replacement and does not pretend to be. It occupies a
+not grudging. topics is not a Kafka replacement and does not pretend to be. It occupies a
 specific point in the design space, and the comparisons exist to help you find out whether
 that point fits your problem.
 
 ## Positioning
 
-streams makes one deliberate trade: it is a **single machine**. There is no replication,
+topics makes one deliberate trade: it is a **single machine**. There is no replication,
 no failover, and no horizontal scale-out — one process on one NVMe-backed machine is both the
 durability domain and the failure domain. In exchange you get two things the distributed
 systems mostly do not offer:
@@ -35,16 +35,16 @@ systems mostly do not offer:
   destroys records *below a reader's cursor*, the next read returns a **tombstone** with
   the exact `[gap_from, gap_to]` range — at HTTP 200, at delivery time. The four systems
   below all trim or age data out **silently** and leave gap detection to lag metrics or
-  sequence-number jumps. streams treats "you missed data" as a first-class event.
+  sequence-number jumps. topics treats "you missed data" as a first-class event.
 
-On top of that single substrate, streams runs **logs, lease queues, and fan-out** together,
+On top of that single substrate, topics runs **logs, lease queues, and fan-out** together,
 bridged by [routers](/api/routers) with [node loop-prevention](/guarantees/node-loop-prevention),
 and offers **per-topic durability classes** (`memory` / `disk` / `fsync`) instead of one
 server-wide persistence mode, plus **targeted, permanent, point-in-time deletes** by seq
 range and/or tag.
 
 <Callout type="warning">
-  The honest, recurring "alternative wins" axis is the same on every page: streams has **no
+  The honest, recurring "alternative wins" axis is the same on every page: topics has **no
   replication, no HA/failover, no horizontal scale-out**, and is **at-least-once only** (no
   exactly-once or transactions). It is self-hosted with **no native TLS** (run it behind a
   reverse proxy). If you need any of those, the alternative is the right tool. See
@@ -54,10 +54,10 @@ range and/or tag.
 ## Capability matrix
 
 A high-level, deliberately blunt comparison. "Single node / no replication" is stated
-plainly for streams because it is the central trade. Each system has nuance the dedicated
+plainly for topics because it is the central trade. Each system has nuance the dedicated
 pages cover — this table is the 30-second version.
 
-| Capability | streams | Redis Streams | Kafka | NATS JetStream | Cloud queues |
+| Capability | topics | Redis Streams | Kafka | NATS JetStream | Cloud queues |
 |---|---|---|---|---|---|
 | **Durability model** | Per-topic class: `memory` / `disk` (group commit) / `fsync` (fsync-gated ack), single node, **no replication** | Global RDB / AOF (`appendfsync always\|everysec\|no`); async replicas | Per-partition log via **replication** (`acks`, `min.insync.replicas`) | Per-stream `file` / `memory`; optional **RAFT** replicas (1/3/5) | Managed, **multi-AZ / regional** replicated |
 | **Gap / loss signal** | **Explicit in-band tombstone** `[gap_from, gap_to]` at read time | Silent (`MAXLEN` / `MINID` / `XDEL` trim quietly) | Silent (offset reset per `auto.offset.reset`) | Silent (infer from stream-seq jumps) | Silent (no per-consumer gap signal) |

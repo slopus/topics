@@ -10,7 +10,7 @@
 //! disk, NOT by the configured shard count: it discovers and replays the flat
 //! layout (`wal/wal-<idx>.log`, the single-shard / legacy layout) AND every
 //! `wal/shard-NN/` subdir, dispatching each frame to its topic by `topic_id` (never
-//! assuming a topic lives in `topic_id % N`). This lets `STREAMS_WAL_SHARDS` be
+//! assuming a topic lives in `topic_id % N`). This lets `TOPICS_WAL_SHARDS` be
 //! reconfigured between restarts with no data loss — a dir written with K shards
 //! recovers correctly when reopened with any N. The NEW writers use the current
 //! layout; previous-layout files are absorbed + dropped at the next snapshot.
@@ -352,7 +352,7 @@ pub fn recover_and_open_with(
     };
 
     // 2) DISCOVER every WAL shard group on disk (flat + every `shard-NN/`),
-    //    shard-count-agnostically. This is the property that lets STREAMS_WAL_SHARDS
+    //    shard-count-agnostically. This is the property that lets TOPICS_WAL_SHARDS
     //    be reconfigured between restarts: replay is driven by the files on disk,
     //    NOT by the configured shard count.
     //
@@ -556,7 +556,7 @@ pub fn recover_and_open_with(
 /// the live shard count (so the per-shard subdir layout matches). Also prunes any
 /// ORPHAN `shard-NN/` subdir left by a prior run with MORE shards than the current
 /// `shard_count` (its data was already replayed + absorbed by the snapshot), so a
-/// shrink in `STREAMS_WAL_SHARDS` does not leak files forever.
+/// shrink in `TOPICS_WAL_SHARDS` does not leak files forever.
 pub fn drop_absorbed_wal_files(data_dir: &Path, positions: &[(u64, u64)], shard_count: usize) {
     let fs = RealFs::arc();
     let wal_dir = data_dir.join("wal");

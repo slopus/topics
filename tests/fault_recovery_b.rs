@@ -1,8 +1,8 @@
 //! Phase-8B fault/crash batch — 5 `recovery-replay` boundary strategies from the
-//! catalog (`/tmp/streams-fault-catalog.json`), each one test fn named after its
+//! catalog (`/tmp/topics-fault-catalog.json`), each one test fn named after its
 //! catalog id. Every test asserts the CORRECT crash-consistency behavior via the
 //! durability contract, reusing the Phase-8A harness (`FakeDisk` / `FaultFs` from
-//! `streams::storage::testfs`, the real WAL + recovery wired through
+//! `topics::storage::testfs`, the real WAL + recovery wired through
 //! `Engine::with_data_dir_fs` and the `*_with` constructors, per
 //! tests/crash_oracle.rs).
 //!
@@ -42,16 +42,16 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use streams::clock::{SharedClock, TestClock};
-use streams::config::ServerConfig;
-use streams::engine::Engine;
-use streams::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp};
-use streams::storage::wal::encode_frame;
-use streams::storage::{
+use topics::clock::{SharedClock, TestClock};
+use topics::config::ServerConfig;
+use topics::engine::Engine;
+use topics::storage::testfs::{FakeDisk, FaultFs, FaultKind, FaultOp};
+use topics::storage::wal::encode_frame;
+use topics::storage::{
     write_snapshot_with, Checkpoint, File, Fs, OpenOpts, Snapshot, TopicConfigOp, WalReader,
     WalRecord,
 };
-use streams::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
+use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest};
 
 // ===========================================================================
 // Shared plumbing (mirrors tests/crash_oracle.rs + tests/fault_wal_append_b.rs)
@@ -595,7 +595,7 @@ fn f_snap_checkpoint_ahead_of_wal() {
     }
 
     // The latest snapshot's checkpoint position (the legitimate WAL end at capture).
-    let snap = streams::storage::load_latest_with(&disk.arc(), Path::new(DATA_DIR))
+    let snap = topics::storage::load_latest_with(&disk.arc(), Path::new(DATA_DIR))
         .expect("load snapshot")
         .expect("a snapshot exists");
     let real_ckpt = snap.checkpoint.clone();
