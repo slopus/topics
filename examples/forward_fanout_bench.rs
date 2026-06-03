@@ -78,6 +78,7 @@ fn measure(fanout: usize) {
                     create_dest: false,
                     filter: None,
                     allow_cycle: false,
+                    guarantee: Default::default(),
                 },
             )
             .unwrap();
