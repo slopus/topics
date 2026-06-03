@@ -1007,9 +1007,9 @@ and the recovered state is held to the model every time.</p>
 
 <h4>The numbers</h4>
 <div class="kv">
-  <div class="k">WAL header / crc</div><div class="v">30 B header · 8 B XXH3-64</div>
+  <div class="k">WAL header / crc</div><div class="v">34 B header · 8 B XXH3-64</div>
   <div class="k">Segment header / crc</div><div class="v">25 B header · 8 B XXH3-64 · 20 B idx stride</div>
-  <div class="k">Snapshot header</div><div class="v">20 B (magic "SNP1" + version 2 + body_len + XXH3)</div>
+  <div class="k">Snapshot header</div><div class="v">20 B (magic "SNP1" + version 3 + body_len + XXH3)</div>
   <div class="k">Group commit window</div><div class="v">500 µs min … 10 ms max (durable batches only)</div>
   <div class="k">Limits</div><div class="v">data+meta 1 MiB · tag 256 B · node 128 B · meta 16 KiB/64 keys · 10 000 rec/write · 64 MiB body</div>
 </div>

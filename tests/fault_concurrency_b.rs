@@ -122,7 +122,7 @@ fn ap(topic_id: u64, seq: u64) -> WalRecord {
 
 /// Replay every `wal-*.log` on a disk image, stopping each file at its torn
 /// tail. Returns the decoded (topic_id, seq) pairs in file order.
-fn replay_wal(disk: &FakeDisk, data_dir: &std::path::Path) -> Vec<(u32, u64)> {
+fn replay_wal(disk: &FakeDisk, data_dir: &std::path::Path) -> Vec<(u64, u64)> {
     let fs = disk.arc();
     let wal_dir = data_dir.join("wal");
     let mut files: Vec<PathBuf> = fs
@@ -252,7 +252,7 @@ fn f_ct_commit_token_handoff() {
 
 #[test]
 fn f_ct_mpsc_single_consumer() {
-    const TOPICS: u32 = 8;
+    const TOPICS: u64 = 8;
     const PER_TOPIC: u64 = 60;
 
     let disk = FakeDisk::new();
@@ -284,7 +284,7 @@ fn f_ct_mpsc_single_consumer() {
 
     // (1) NO SUBMISSION DROPPED + NO DUPLICATE: exactly TOPICS*PER_TOPIC frames, each
     //     (topic,seq) present exactly once.
-    let mut seen: BTreeMap<(u32, u64), u32> = BTreeMap::new();
+    let mut seen: BTreeMap<(u64, u64), u32> = BTreeMap::new();
     for f in &frames {
         *seen.entry(*f).or_insert(0) += 1;
     }
@@ -307,7 +307,7 @@ fn f_ct_mpsc_single_consumer() {
     // (2) PER-TOPIC SUBMIT ORDER: within each topic the seqs appear ascending in the
     //     write stream (the single consumer drains the mpsc FIFO; per-topic frames
     //     were submitted in seq order, so they must land in seq order).
-    let mut last_per_topic: BTreeMap<u32, u64> = BTreeMap::new();
+    let mut last_per_topic: BTreeMap<u64, u64> = BTreeMap::new();
     for (b, seq) in &frames {
         let last = last_per_topic.entry(*b).or_insert(0);
         assert!(

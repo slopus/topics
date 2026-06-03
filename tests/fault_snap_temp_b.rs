@@ -65,7 +65,7 @@ use topics::types::{RecordIn, TopicConfig, TopicType, WriteRequest};
 const HEADER_LEN: usize = 20;
 const MAGIC: [u8; 4] = *b"SNP1";
 /// The current snapshot version the decoder accepts (any other ⇒ Framing).
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const OFF_MAGIC: usize = 0;
 const OFF_VERSION: usize = 4;
 const OFF_BODYLEN: usize = 8;
