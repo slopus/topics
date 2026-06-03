@@ -1,9 +1,6 @@
-//! Async + derived router forwarding (`TOPICS_FORWARD_V2`) — Stage 2 properties.
+//! Async + derived router forwarding properties.
 //!
-//! This binary runs with the async/derived forwarding path ENABLED for its whole
-//! process (the flag is captured per-engine at construction from the env var; this
-//! binary sets it once before building any engine). It asserts the four Stage-2
-//! goals that the legacy synchronous `forward_from` path cannot meet:
+//! This binary asserts the four router-forwarding guarantees:
 //!
 //!   1. NO AMPLIFICATION — one source append fanning to N dests does exactly ONE
 //!      WAL append (the source's), not N. Forwarded dest records are derived off
@@ -30,14 +27,9 @@ use topics::clock::{SharedClock, TestClock};
 use topics::config::ServerConfig;
 use topics::engine::Engine;
 use topics::types::{
-    DiffRequest, Discard, RecordIn, RouterCreateRequest, TombstoneReason, TopicConfig, WriteRequest,
+    DiffRequest, Discard, RecordIn, RouterCreateRequest, RouterGuarantee, TombstoneReason,
+    TopicConfig, WriteRequest,
 };
-
-/// Enable the async/derived path for THIS test process. Idempotent; every test in
-/// this binary wants it on, and the engine captures it at construction.
-fn enable_v2() {
-    std::env::set_var("TOPICS_FORWARD_V2", "1");
-}
 
 fn durable_engine(dir: &std::path::Path) -> (Arc<Engine>, TestClock) {
     let clock = TestClock::new(1_000_000);
@@ -79,6 +71,7 @@ fn router_req(source: &str, dest: &str) -> RouterCreateRequest {
         create_dest: true,
         filter: None,
         allow_cycle: false,
+        guarantee: Default::default(),
     }
 }
 
@@ -102,7 +95,6 @@ fn diff_all(engine: &Engine, topic_name: &str) -> topics::types::DiffResponse {
 
 #[test]
 fn one_source_append_to_n_dests_is_one_wal_append() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
     let (engine, _clock) = durable_engine(dir.path());
 
@@ -161,8 +153,7 @@ fn one_source_append_to_n_dests_is_one_wal_append() {
         .frames
         .load(std::sync::atomic::Ordering::Relaxed);
     let appended = frames_after - frames_before;
-    // EXACTLY ONE WAL frame for the whole fan-out (the source append). The legacy
-    // path would have logged 1 (source) + 5 (dests) = 6.
+    // EXACTLY ONE WAL frame for the whole fan-out (the source append).
     assert_eq!(
         appended, 1,
         "fanning one source write to {n_dests} dests must be ONE WAL append (no amplification); got {appended}"
@@ -175,13 +166,75 @@ fn one_source_append_to_n_dests_is_one_wal_append() {
     );
 }
 
+#[test]
+fn exactly_once_router_stamps_key_without_dest_wal_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, _clock) = durable_engine(dir.path());
+    let fsync_cfg = || TopicConfig {
+        durable: true,
+        ..TopicConfig::default()
+    };
+    engine.put_topic("src", fsync_cfg()).unwrap();
+    engine.put_topic("dst", fsync_cfg()).unwrap();
+    engine
+        .put_router(
+            "src->dst",
+            RouterCreateRequest {
+                create_dest: false,
+                guarantee: RouterGuarantee::ExactlyOnce,
+                ..router_req("src", "dst")
+            },
+        )
+        .unwrap();
+
+    let frames_before = engine
+        .wal_metrics()
+        .unwrap()
+        .frames
+        .load(std::sync::atomic::Ordering::Relaxed);
+    engine
+        .write(
+            "src",
+            write_req(vec![one(json!({"k": 1}), None, Some("o"))]),
+            true,
+        )
+        .unwrap();
+    let d = diff_all(&engine, "dst");
+    assert_eq!(d.records.len(), 1);
+    let router_meta = d.records[0]
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("_topics_router"))
+        .expect("exactly-once router metadata");
+    assert_eq!(router_meta["router"], "src->dst");
+    assert_eq!(router_meta["source_topic"], "src");
+    assert_eq!(router_meta["source_seq"], 1);
+    assert!(router_meta["idempotency_key"]
+        .as_str()
+        .unwrap()
+        .starts_with("router:src->dst:"));
+
+    let frames_after = engine
+        .wal_metrics()
+        .unwrap()
+        .frames
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        frames_after - frames_before,
+        1,
+        "exactly-once forwarding stays derived/no-WAL"
+    );
+
+    let router = engine.get_router("src->dst").unwrap();
+    assert_eq!(router.guarantee, RouterGuarantee::ExactlyOnce);
+}
+
 // ---------------------------------------------------------------------------
 // 2. No silent loss: a back-pressured forward is delivered once the dest drains.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn backpressured_forward_is_retried_not_dropped() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
     let (engine, _clock) = durable_engine(dir.path());
 
@@ -267,7 +320,6 @@ fn backpressured_forward_is_retried_not_dropped() {
 
 #[test]
 fn dest_rematerializes_deterministically_across_restart() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
 
     let pre_seqs: Vec<u64>;
@@ -347,7 +399,6 @@ fn dest_rematerializes_deterministically_across_restart() {
 
 #[test]
 fn source_trim_surfaces_tombstone_not_silent_gap() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
     let (engine, clock) = durable_engine(dir.path());
 
@@ -422,7 +473,7 @@ fn source_trim_surfaces_tombstone_not_silent_gap() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. No multi-source fan-in into a derived dest (codex P0 #2/#4): a SECOND router
+// 5. No multi-source fan-in into a derived dest: a SECOND router
 //    with a DIFFERENT source into the same dest is rejected (its derived seq
 //    stream must have a single owner for deterministic re-materialization). A topic
 //    that ALSO takes direct writes / closes a cycle is still permitted (the /v0
@@ -431,7 +482,6 @@ fn source_trim_surfaces_tombstone_not_silent_gap() {
 
 #[test]
 fn derived_dest_rejects_multi_source_fan_in() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
     let (engine, _clock) = durable_engine(dir.path());
 
@@ -497,7 +547,7 @@ fn derived_dest_rejects_multi_source_fan_in() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Durable cursor under recovery WITHOUT a snapshot (codex P0 #3): the
+// 6. Durable cursor under recovery WITHOUT a snapshot: the
 //    create-time cursor is logged in the RouterCreate frame, so a router created
 //    AFTER source history does NOT backfill that history on a snapshot-less
 //    restart (recovery replays the cursor from the WAL frame, not the live head).
@@ -505,7 +555,6 @@ fn derived_dest_rejects_multi_source_fan_in() {
 
 #[test]
 fn router_create_cursor_is_durable_without_snapshot() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
 
     {
@@ -556,7 +605,7 @@ fn router_create_cursor_is_durable_without_snapshot() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Snapshot ⇄ router-advance atomicity under concurrency (codex P0 #1): with a
+// 7. Snapshot ⇄ router-advance atomicity under concurrency: with a
 //    background drain racing source writes and a mid-stream snapshot, recovery
 //    re-materializes the derived dest with NEITHER duplication NOR loss (the
 //    cursor + derived dest are one consistent checkpoint unit).
@@ -564,7 +613,6 @@ fn router_create_cursor_is_durable_without_snapshot() {
 
 #[test]
 fn snapshot_cursor_and_dest_stay_consistent_under_concurrency() {
-    enable_v2();
     let dir = tempfile::tempdir().unwrap();
     let n: i64 = 200;
 

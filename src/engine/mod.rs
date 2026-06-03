@@ -182,24 +182,14 @@ pub struct Engine {
     pub config: ServerConfig,
     /// Process start, for `uptime_ms`.
     pub started_at: Instant,
-    /// Whether the ASYNC + derived (compact-WAL, cursor-driven, no-silent-loss)
-    /// forwarding path is active for this engine. Captured ONCE at construction
-    /// from [`config::forward_v2_enabled`] (env `TOPICS_FORWARD_V2`) so the flag is
-    /// stable for the engine's lifetime and not re-read per op. When `false`
-    /// (default) the live synchronous `forward_from` path runs unchanged. When
-    /// `true` the write/ack path stops forwarding; a background worker +
-    /// read-path catch-up drive `advance_router` instead (forwarded dest records
-    /// are derived, never separately WAL-logged — one WAL append per source append
-    /// regardless of fan-out).
-    forward_v2: bool,
-    /// Per-router advance serialization (`forward_v2`). The read-path catch-up and
+    /// Per-router advance serialization. The read-path catch-up and
     /// the background worker both call `advance_router(name)`; this map hands each
     /// router its own `Mutex<()>` so the two drivers never double-forward the same
     /// source records concurrently (the cursor is the single source of truth for
     /// progress). Created lazily on first advance; entries are pruned with the
     /// router. A `DashMap` so taking one router's lock never blocks another.
     router_advance_locks: DashMap<String, Arc<Mutex<()>>>,
-    /// Snapshot ⇄ router-advance barrier (`forward_v2`; codex P0 #1). `advance_router`
+    /// Snapshot ⇄ router-advance barrier. `advance_router`
     /// publishes a router's derived dest records and THEN advances that router's
     /// cursor; a snapshot captures topic state (incl. derived dest records) first and
     /// router cursors second. Without coordination a snapshot could capture a dest
@@ -208,8 +198,7 @@ pub struct Engine {
     /// SHARED for its whole pass (dest publish + cursor advance are one unit);
     /// snapshot `capture` holds it EXCLUSIVE across BOTH topic capture and cursor
     /// capture, so the (derived dest, cursor) pair is one consistent checkpoint unit.
-    /// A `parking_lot::RwLock` (reader-preferring is fine: capture is rare). Inert
-    /// under v2-off (no `advance_router` ever runs).
+    /// A `parking_lot::RwLock` (reader-preferring is fine: capture is rare).
     router_snapshot_lock: parking_lot::RwLock<()>,
 }
 
@@ -289,7 +278,6 @@ impl Engine {
             clock,
             config,
             started_at: Instant::now(),
-            forward_v2: config::forward_v2_enabled(),
             router_advance_locks: DashMap::new(),
             router_snapshot_lock: parking_lot::RwLock::new(()),
         })
@@ -375,7 +363,6 @@ impl Engine {
             clock,
             config,
             started_at: Instant::now(),
-            forward_v2: config::forward_v2_enabled(),
             router_advance_locks: DashMap::new(),
             router_snapshot_lock: parking_lot::RwLock::new(()),
         });
@@ -708,8 +695,8 @@ impl Engine {
     }
 
     /// Allocate the next interned topic id (ARCHITECTURE §2.1).
-    fn alloc_topic_id(&self) -> u32 {
-        self.next_topic_id.fetch_add(1, Ordering::Relaxed) as u32
+    fn alloc_topic_id(&self) -> u64 {
+        self.next_topic_id.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Build a per-topic [`segwriter::SegmentWriter`] for a durable engine, or
@@ -719,7 +706,7 @@ impl Engine {
     /// any store-open error we fall back to `None` (no writer) so a topic stays
     /// fully functional via resident in-memory payloads — sealing/relocation is
     /// derivable, never load-bearing for correctness.
-    fn build_segment_writer(&self, topic_id: u32) -> Option<segwriter::SegmentWriter> {
+    fn build_segment_writer(&self, topic_id: u64) -> Option<segwriter::SegmentWriter> {
         use crate::storage::{LocalSegmentStore, TopicTier};
         let data_dir = self.data_dir.as_ref()?;
         let sub = format!("topics/{topic_id:08X}");
@@ -922,7 +909,7 @@ impl Engine {
     /// (propagated) API §5 `delete`.
     pub(crate) fn wal_log_delete_seqs(
         &self,
-        topic_id: u32,
+        topic_id: u64,
         seqs: Vec<u64>,
         now: i64,
         durable: bool,
@@ -960,7 +947,7 @@ impl Engine {
     /// carried SEPARATELY so the from-0 tombstone reason survives restart. The
     /// commit result is returned so the caller hardens the floor (fsync) before
     /// treating the eviction as durable.
-    fn log_evict_watermark(&self, topic_id: u32, adv: &RetentionAdvance, now: i64) -> Result<()> {
+    fn log_evict_watermark(&self, topic_id: u64, adv: &RetentionAdvance, now: i64) -> Result<()> {
         let floor = adv.evict_floor.max(adv.expiry_floor);
         if self.wal.is_none() || floor == 0 {
             return Ok(());
@@ -992,7 +979,7 @@ impl Engine {
     /// in-memory engine (no WAL) has no reservation to make and returns `Ok`.
     fn ensure_disk_head_reserved(
         &self,
-        topic_id: u32,
+        topic_id: u64,
         b: &TopicState,
         head: u64,
         now: i64,
@@ -1081,7 +1068,7 @@ impl Engine {
     /// drop the lower-seq frame — see `TopicState::append_lock`).
     fn wal_enqueue_batch(
         &self,
-        topic_id: u32,
+        topic_id: u64,
         seqs: &[u64],
         records: &[StoredRecord],
         now: i64,
@@ -1250,7 +1237,7 @@ impl Engine {
         Ok(seqs)
     }
 
-    /// Append DERIVED router-forwarded records into `dest` (`forward_v2`): stage +
+    /// Append DERIVED router-forwarded records into `dest`: stage +
     /// publish + materialize into the segment writer, but write **NO WAL frame**
     /// (the no-amplification property — a forwarded dest record is derived off the
     /// source WAL + the per-router cursor, never separately logged). Used only by
@@ -1316,6 +1303,26 @@ impl Engine {
         Ok(seqs)
     }
 
+    fn router_dest_idempotency_keys(&self, dest: &TopicState) -> std::collections::HashSet<String> {
+        let mut keys = std::collections::HashSet::new();
+        let head = dest.head_seq();
+        let start = dest.earliest_seq();
+        if start > head {
+            return keys;
+        }
+        for seq in start..=head {
+            let Some((rec, alive)) = dest.forward_lookup(seq) else {
+                continue;
+            };
+            if alive {
+                if let Some(key) = router_meta_idempotency_key(&rec.meta) {
+                    keys.insert(key.to_string());
+                }
+            }
+        }
+        keys
+    }
+
     /// Compute the effective priority of a topic right now (DESIGN §3.1).
     fn effective_priority(&self, b: &TopicState) -> i64 {
         let cfg = b.config.read();
@@ -1345,7 +1352,7 @@ impl Engine {
         }
         // Resolve + pin the durability class so the persisted config and every
         // response carry the resolved `durability` (and `durable` stays consistent
-        // with it for back-compat). A later in-place PUT can still change it.
+        // with it). A later in-place PUT can still change it.
         let mut config = config;
         normalize_config(&mut config);
         validate_config(&config)?;
@@ -1383,7 +1390,7 @@ impl Engine {
         }
 
         // A control frame for a topic config mutation, encoded once.
-        let frame = |topic_id: u32| WalRecord::TopicConfig {
+        let frame = |topic_id: u64| WalRecord::TopicConfig {
             topic_id,
             op: crate::storage::TopicConfigOp {
                 name: name.to_string(),
@@ -1495,7 +1502,7 @@ impl Engine {
     /// concurrent create race. Returns `None` when the cap is full (the caller maps
     /// that to `429 throttled`); the returned slot must be released
     /// (`topic_count.fetch_sub`) if the create later fails or resolves as an update.
-    fn reserve_topic_slot(&self, cap: u64) -> Option<u32> {
+    fn reserve_topic_slot(&self, cap: u64) -> Option<u64> {
         if cap != 0 {
             let mut cur = self.topic_count.load(Ordering::Relaxed);
             loop {
@@ -1529,7 +1536,7 @@ impl Engine {
         &self,
         name: &str,
         config: TopicConfig,
-        topic_id: u32,
+        topic_id: u64,
     ) -> Result<bool> {
         use dashmap::mapref::entry::Entry;
         match self.topics.entry(name.to_string()) {
@@ -1576,10 +1583,10 @@ impl Engine {
         &self,
         name: &str,
         config: TopicConfig,
-        forced_id: Option<u32>,
+        forced_id: Option<u64>,
         forced_epoch: Option<u64>,
         cap: u64,
-    ) -> Option<(bool, u32)> {
+    ) -> Option<(bool, u64)> {
         use dashmap::mapref::entry::Entry;
         match self.topics.entry(name.to_string()) {
             Entry::Occupied(e) => {
@@ -1618,10 +1625,10 @@ impl Engine {
                 if let Some(fid) = forced_id {
                     // Keep the allocator ahead of any replayed id.
                     let mut cur = self.next_topic_id.load(Ordering::Relaxed);
-                    while (fid as u64) >= cur {
+                    while fid >= cur {
                         match self.next_topic_id.compare_exchange_weak(
                             cur,
-                            fid as u64 + 1,
+                            fid + 1,
                             Ordering::Relaxed,
                             Ordering::Relaxed,
                         ) {
@@ -1657,7 +1664,7 @@ impl Engine {
 
     /// Find a topic by its interned id (linear over the registry; used only by
     /// recovery, which is one-shot at startup).
-    pub(crate) fn get_topic_by_id(&self, topic_id: u32) -> Option<Arc<TopicState>> {
+    pub(crate) fn get_topic_by_id(&self, topic_id: u64) -> Option<Arc<TopicState>> {
         self.topics
             .iter()
             .find(|e| e.value().topic_id == topic_id)
@@ -1672,8 +1679,8 @@ impl Engine {
         &self,
         name: &str,
         config: TopicConfig,
-        forced_id: Option<u32>,
-    ) -> (bool, u32) {
+        forced_id: Option<u64>,
+    ) -> (bool, u64) {
         self.apply_put_topic(name, config, forced_id, None, 0)
             .expect("recovery topic create is never cap-refused (cap bypassed)")
     }
@@ -1684,7 +1691,6 @@ impl Engine {
             self.topic_count.fetch_sub(1, Ordering::AcqRel);
         }
         self.routers.lock().remove_touching_topic(name);
-        self.refresh_router_source_flags();
     }
 
     /// Re-insert a replayed record at its logged seq (no WAL logging). Appends in
@@ -1732,78 +1738,47 @@ impl Engine {
             create_dest: op.create_dest,
             filter: op.filter.as_ref().map(matchsel_to_filter),
             allow_cycle: op.allow_cycle,
+            guarantee: if op.exactly_once {
+                RouterGuarantee::ExactlyOnce
+            } else {
+                RouterGuarantee::AtLeastOnce
+            },
         };
-        // A frame written by the current encoder carries the create-time cursor +
-        // dest_base it was seeded at as `Some(_)` (codex P0 #3). A LEGACY frame carries
-        // `None`/`None` (the trailing fields were absent on the wire); for that we fall
-        // back to the source head at replay time (the pre-fix behavior — correct for
-        // the single-shard layout those frames came from). The distinction is the
-        // wire-level PRESENCE of the pair, NOT its value: a genuine v2 router created
-        // against an empty source logs `Some(0)`/`Some(0)`, which must be honored
-        // verbatim (recomputing from the live source head could skip records appended
-        // after creation when WAL sharding replays them onto a different shard first).
-        // v1 (sync) recovery: seed the cursor to the source's current head so a
-        // replayed router doesn't re-forward historical records (matches live
-        // `put_router`). v2 (derived) recovery re-materializes the dest by replaying
-        // forwarding from the cursor in `reforward_routers_on_recovery`, so it must
-        // NOT clobber a snapshot-restored cursor here — a router newly created after
-        // the last snapshot keeps its logged create-time cursor (durable, replay-order
-        // independent under WAL sharding).
+        // The current router WAL frame carries its create-time cursor + dest_base
+        // (codex P0 #3). Recovery re-materializes the dest by replaying forwarding
+        // from that cursor in `reforward_routers_on_recovery`, so it must NOT
+        // clobber a snapshot-restored cursor here. A router newly created after the
+        // last snapshot keeps its logged create-time cursor/base (durable,
+        // replay-order independent under WAL sharding).
         {
             let mut graph = self.routers.lock();
             let created = graph.upsert(router).unwrap_or(false);
-            if self.forward_v2 {
-                // Derived model: preserve any restored cursor/total; seed the cursor +
-                // dest_base only for a fresh (post-snapshot) router so re-derivation
-                // numbers dest seqs from the right base. Use the LOGGED create-time
-                // values (durable, replay-order independent) when present; only a
-                // legacy frame (absent pair) recomputes from the live source head.
-                if created {
-                    let cursor = op.initial_cursor.unwrap_or_else(|| {
-                        self.get_topic(&op.source)
-                            .map(|b| b.head_seq())
-                            .unwrap_or(0)
-                    });
-                    let dest_base = op.initial_dest_base.unwrap_or_else(|| {
-                        self.get_topic(&op.dest).map(|b| b.head_seq()).unwrap_or(0)
-                    });
-                    graph.note_forwarded(&op.name, cursor, 0);
-                    graph.seed_dest_base(&op.name, dest_base);
-                }
-            } else {
-                let src_head = self
-                    .get_topic(&op.source)
-                    .map(|b| b.head_seq())
-                    .unwrap_or(0);
-                graph.note_forwarded(&op.name, src_head, 0);
+            if created {
+                graph.note_forwarded(&op.name, op.initial_cursor, 0);
+                graph.seed_dest_base(&op.name, op.initial_dest_base);
             }
         }
-        self.refresh_router_source_flags();
     }
 
     /// Remove a router during replay (no WAL logging).
     pub(crate) fn apply_router_delete_for_recovery(&self, name: &str) {
         self.routers.lock().remove(name);
-        self.refresh_router_source_flags();
     }
 
     /// Re-materialize every derived dest by replaying forwarding from each router's
-    /// recovered cursor (`forward_v2` recovery; design §4). The durable truth after
+    /// recovered cursor. The durable truth after
     /// recovery is the source WAL + the router defs + the per-router cursor (from the
     /// snapshot). Forwarded dest records were NEVER WAL-logged, so the dest content
     /// past the last snapshot is re-derived here by replaying `source[cursor..head]`
     /// through each router's filter, re-forwarding with the SAME deterministic dest
     /// seqs (a consumer cursor into the dest stays valid across the restart). A
     /// source that trimmed below a router's cursor surfaces the un-derivable gap as a
-    /// `source_trim` tombstone (never a silent skip). No-op unless `forward_v2`.
+    /// `source_trim` tombstone (never a silent skip).
     ///
     /// Ordering: routers are replayed source-first via a topological pass over the
     /// edge set so a chain A→B→C re-materializes A's writes into B before B→C runs.
     /// Cycles fall out via the per-record hop cap (carried on each re-derived record).
     pub(crate) fn reforward_routers_on_recovery(&self) {
-        if !self.forward_v2 {
-            return;
-        }
         // Drain each router to its source head, iterating to a fixed point so a
         // chain (forwarding into a dest that is itself a source) fully propagates.
         // Bounded by a generous pass cap so a pathological topology cannot spin.
@@ -1834,24 +1809,9 @@ impl Engine {
             }
             pass += 1;
             if pass > 64 {
-                tracing::warn!("forward_v2 recovery re-forward did not reach a fixed point");
+                tracing::warn!("router recovery re-forward did not reach a fixed point");
                 break;
             }
-        }
-    }
-
-    /// Recompute every topic's `is_router_source` atomic from the current router
-    /// graph (codex P1). Called after ANY graph mutation (create / delete / topic
-    /// delete / replay / restore) — all rare control-plane ops — so the write hot
-    /// path can read the per-topic atomic instead of locking the global graph on
-    /// every append. O(topics + routers); never on the write path.
-    pub(crate) fn refresh_router_source_flags(&self) {
-        let sources = self.routers.lock().source_names();
-        for entry in self.topics.iter() {
-            let b = entry.value();
-            let is_src = sources.contains(&b.name);
-            b.is_router_source
-                .store(is_src, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -1861,9 +1821,9 @@ impl Engine {
         let b = self
             .get_topic(name)
             .ok_or_else(|| Error::topic_not_found(name))?;
-        // Read-path catch-up (forward_v2): drain routers feeding this dest so the
+        // Read-path catch-up: drain routers feeding this dest so the
         // reported head_seq/count reflect forwarded records on an immediate state
-        // read after a source write (read-your-writes). Inert under v2-off.
+        // read after a source write (read-your-writes).
         self.catch_up_dest(name);
         let now = self.clock.now_ms();
 
@@ -2047,7 +2007,6 @@ impl Engine {
             self.release_total_bytes(freed_bytes);
         }
         self.routers.lock().remove_touching_topic(name);
-        self.refresh_router_source_flags();
 
         Ok(TopicDeleteResponse {
             topic_name: name.to_string(),
@@ -2251,24 +2210,11 @@ impl Engine {
         // --- WAL-FIRST append (ARCHITECTURE §2.2). -------------------------
         // The resolved records are needed in two places AFTER `stage_append`
         // consumes the input vec: (a) WAL frame encoding, which happens whenever a
-        // WAL actually exists, and (b) router forwarding when this topic is a router
-        // source. A write that needs NEITHER (no WAL, no routers — e.g. any topic on
-        // an in-memory engine) skips the deep clone of every `serde_json::Value`
-        // entirely on that hot path (codex P0 #2). The router check reads the topic's
-        // lock-free `is_router_source` atomic (maintained by the rare graph-mutation
-        // control path) instead of taking the GLOBAL router-graph mutex on every
-        // append — that global lock capped WAL-shard write scaling (codex P1). The
-        // synchronous `forward_from` below still re-reads the graph under its lock to
-        // get the actual routes, so a momentarily-stale flag never drops/duplicates a
-        // record; it only decides whether to snapshot the payloads for forwarding.
-        //
-        let need_forward = b.is_router_source.load(Ordering::Relaxed);
+        // WAL actually exists. A write with no WAL (e.g. an in-memory engine or an
+        // `ephemeral` topic) skips the deep clone of every `serde_json::Value` on
+        // that hot path.
         let need_wal = self.wal.is_some() && class != Durability::Ephemeral;
-        let stored_snapshot = if need_wal || need_forward {
-            stored.clone()
-        } else {
-            Vec::new()
-        };
+        let stored_snapshot = if need_wal { stored.clone() } else { Vec::new() };
 
         // The per-topic append lock spans only the SEQ-ORDER critical section:
         // stage seqs → enqueue the WAL frame → take a publish ticket. The fsync
@@ -2455,29 +2401,13 @@ impl Engine {
         }
 
         // --- Router forwarding (at-least-once, per-source FIFO). -----------
-        // Forward off the freshly-stored records (carrying resolved $node/$tag),
-        // recursing through chained routers with a bounded hop counter. Skipped
-        // entirely when this topic is not a router source (the common case): the
-        // snapshot was never even cloned above, so there is nothing to forward.
-        // `forward_v2`: the write/ack path does NOT forward. Forwarded dest records
-        // are DERIVED off the durable source log + the per-router cursor, never
+        // Forwarding is driven later from the committed source log.
+        // The write/ack path does NOT forward inline. Forwarded dest records are
+        // DERIVED off the durable source log + the per-router cursor, never
         // separately WAL-logged, so a source append fanning to N dests is ONE WAL
-        // append (this topic's) + the periodic cursor, not N (no amplification). The
-        // `mark_dirty_fast` below wakes the background router worker; an immediate
-        // dest read also catches up via `catch_up_dest` (read-your-writes). The
-        // legacy synchronous `forward_from` path runs only with v2 OFF.
-        if need_forward && !self.forward_v2 {
-            let forwarded: Vec<ForwardRecord> = stored_snapshot
-                .into_iter()
-                .map(|sr| ForwardRecord {
-                    data: sr.data,
-                    tag: sr.tag,
-                    node: sr.node,
-                    meta: sr.meta,
-                })
-                .collect();
-            self.forward_from(name, &forwarded, now, 0);
-        }
+        // append (this topic's) + the periodic cursor, not N. The `mark_dirty_fast`
+        // below wakes the background router worker; an immediate dest read also
+        // catches up via `catch_up_dest` (read-your-writes).
 
         // Mark the topic dirty in the scheduler (advisory in phase 2). Lock-free once
         // the topic is already dirty, so this no longer takes a GLOBAL mutex on every
@@ -2508,163 +2438,17 @@ impl Engine {
         })
     }
 
-    /// Forward freshly-committed records from `source` to every router whose
-    /// source is this topic (at-least-once, per-source FIFO; DESIGN §8).
-    ///
-    /// Recurses through chained routers (A→B→C) so a forward into a topic that is
-    /// itself a router source fans on. `hops` is the bounded loop-breaker: a
-    /// record carrying `hops >= MAX_ROUTER_HOPS` is not forwarded again, so even
-    /// `allow_cycle` topologies terminate (DESIGN §8.5).
-    ///
-    /// Phase 2 forwards synchronously on the append path but routes the delivery
-    /// work through the scheduler (`mark_dirty` on each dest) so the phase-4
-    /// DWRR governor can take over without changing call sites.
-    fn forward_from(&self, source: &str, records: &[ForwardRecord], now: i64, hops: u8) {
-        if hops >= config::MAX_ROUTER_HOPS {
-            // Hop budget exhausted: stop forwarding (loop-breaking). The records
-            // already landed in this topic; we just don't fan them out further.
-            return;
-        }
-        let routes = self.routers.lock().routers_for_source(source);
-        for r in routes {
-            let Some(dest) = self.get_topic(&r.dest) else {
-                continue; // dest gone; cascade should have removed the router.
-            };
-
-            // Build the forwarded copies, applying the optional forward filter
-            // and preserve_node/preserve_tag.
-            let mut to_append = Vec::new();
-            let mut forwarded_next = Vec::new();
-            for rec in records {
-                if let Some(f) = &r.filter {
-                    match &rec.tag {
-                        Some(t) if f.matches(t) => {}
-                        _ => continue, // no tag, or tag doesn't match ⇒ skip.
-                    }
-                }
-                let fwd_node = if r.preserve_node {
-                    rec.node.clone()
-                } else {
-                    None
-                };
-                let fwd_tag = if r.preserve_tag {
-                    rec.tag.clone()
-                } else {
-                    None
-                };
-                if let Ok(sr) = build_stored_owned(
-                    rec.data.clone(),
-                    fwd_tag.clone(),
-                    fwd_node.clone(),
-                    rec.meta.clone(),
-                    now,
-                ) {
-                    to_append.push(sr);
-                    forwarded_next.push(ForwardRecord {
-                        data: rec.data.clone(),
-                        tag: fwd_tag,
-                        node: fwd_node,
-                        meta: rec.meta.clone(),
-                    });
-                }
-            }
-
-            if to_append.is_empty() {
-                continue;
-            }
-
-            // dst.discard="reject": if the forward would overflow, drop it and do
-            // not advance the cursor (backpressure; DESIGN §6.4). Phase 2 has no
-            // background retry, so an unforwardable record is simply not
-            // forwarded this tick — at-least-once is preserved by the source log.
-            let cfg = dest.config.read();
-            let discard = cfg.discard;
-            let cap_records = cfg.cap_records;
-            let cap_bytes = cfg.cap_bytes;
-            drop(cfg);
-            if discard == Discard::Reject {
-                if let Err(e) = self.enforce_retention_durable(&dest, now) {
-                    tracing::warn!(
-                        router = %r.name, dest = %r.dest, error = %e,
-                        "forward: dest retention harden failed; leaving in source"
-                    );
-                    continue;
-                }
-                let incoming_bytes: u64 = to_append.iter().map(|s| s.bytes).sum();
-                let decision = eviction::admit(
-                    discard,
-                    cap_records,
-                    cap_bytes,
-                    dest.count(),
-                    dest.bytes(),
-                    to_append.len() as u64,
-                    incoming_bytes,
-                );
-                if decision == AdmitDecision::Reject {
-                    continue; // backpressure: leave it in src, don't advance.
-                }
-            }
-
-            let count = to_append.len() as u64;
-            // Forwarded copies go through the SAME WAL-first durable append path
-            // as user writes (ARCHITECTURE §2.2), so a routed copy into a durable
-            // destination topic is durable by construction and recovers naturally via
-            // WAL replay — it no longer lives only in memory and vanishes on restart
-            // (the bug this fixes). A WAL/fsync failure publishes nothing and is
-            // treated as backpressure: don't advance the router cursor, so the
-            // source log (the durable at-least-once source of truth) re-drives it.
-            match self.durable_append(&dest, to_append, now) {
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        router = %r.name, dest = %r.dest, error = %e,
-                        "forward: durable dest append failed; leaving in source (backpressure)"
-                    );
-                    continue; // don't advance the cursor; recover via the source log.
-                }
-            }
-            // A forwarded append that pushes the dest past its TTL/byte-cap floor
-            // durably persists the new floor (R7 / codex P0 #4) — watermark fsynced
-            // BEFORE the floor advances. Forwarding is a background at-least-once
-            // loop with no caller to return to, so a hardening failure is logged and
-            // the eviction is left UN-applied (the planned floor was not committed),
-            // to be retried on the next pass — never silently advancing an
-            // un-hardened floor.
-            if let Err(e) = self.enforce_retention_durable(&dest, now) {
-                tracing::warn!(
-                    dest = %dest.name, error = %e,
-                    "forward: eviction watermark fsync failed; deferring eviction"
-                );
-            }
-
-            // Mark the dest dirty in the scheduler (delivery work; advisory).
-            self.scheduler.mark_dirty_fast(
-                &r.dest,
-                self.effective_priority(&dest),
-                &dest.sched_dirty,
-            );
-
-            // Advance the per-router cursor + forwarded_total.
-            let src_head = self.get_topic(source).map(|b| b.head_seq()).unwrap_or(0);
-            self.routers.lock().note_forwarded(&r.name, src_head, count);
-
-            // Recurse: the dest may itself be a router source (chains / cycles).
-            self.forward_from(&r.dest, &forwarded_next, now, hops + 1);
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Async + derived forwarding (docs/ASYNC_ROUTER_DESIGN.md)
     //
-    // Active only when `self.forward_v2` is set (env `TOPICS_FORWARD_V2`). The
-    // write/ack path then stops forwarding entirely; these are the idempotent,
-    // cursor-driven step the two drivers (read-path catch-up + background worker)
-    // share. Forwarded dest records are DERIVED off the source log + per-router
-    // cursor and never separately WAL-logged (no amplification); the cursor
-    // advances ONLY by the committed count (no silent loss — the R2 fix).
+    // The write/ack path does not forward inline. These idempotent cursor-driven
+    // steps are shared by read-path catch-up and the background worker. Forwarded
+    // dest records are DERIVED off the source log + per-router cursor and never
+    // separately WAL-logged (no amplification); the cursor advances ONLY by the
+    // committed count (no silent loss).
     // -----------------------------------------------------------------------
 
-    /// The per-router advance lock (`forward_v2`), creating it on first use. Held
+    /// The per-router advance lock, creating it on first use. Held
     /// across one `advance_router` pass so the read-path catch-up and the
     /// background worker never double-forward the same source records.
     fn router_advance_lock(&self, name: &str) -> Arc<Mutex<()>> {
@@ -2688,9 +2472,6 @@ impl Engine {
     /// is re-marked dirty when it is still behind). Returns the number of source
     /// records consumed (forwarded + filtered) this pass.
     pub(crate) fn advance_router(&self, name: &str) -> u64 {
-        if !self.forward_v2 {
-            return 0;
-        }
         // Serialize the two drivers per router.
         let lock = self.router_advance_lock(name);
         let _guard = lock.lock();
@@ -2731,7 +2512,7 @@ impl Engine {
         if let Err(e) = self.enforce_retention_durable(&source, now) {
             tracing::warn!(
                 source = %source.name, error = %e,
-                "forward_v2: source retention harden failed; deferring forward"
+                "router forward: source retention harden failed; deferring forward"
             );
             return 0;
         }
@@ -2774,6 +2555,7 @@ impl Engine {
         let batch_end = src_head.min(cursor + config::ROUTER_BATCH as u64);
         let mut to_append: Vec<StoredRecord> = Vec::new();
         let mut consumed: u64 = 0; // source records the cursor will pass this call.
+        let mut forwarded: u64 = 0; // records delivered or already present for this router.
         let mut deferred = false;
 
         // Resolve discard policy / caps of the dest once for the back-pressure check.
@@ -2785,11 +2567,16 @@ impl Engine {
             if let Err(e) = self.enforce_retention_durable(&dest, now) {
                 tracing::warn!(
                     router = %router.name, dest = %router.dest, error = %e,
-                    "forward_v2: dest retention harden failed; deferring forward"
+                    "router forward: dest retention harden failed; deferring forward"
                 );
                 return 0;
             }
         }
+        let existing_router_keys = if router.guarantee == RouterGuarantee::ExactlyOnce {
+            Some(self.router_dest_idempotency_keys(&dest))
+        } else {
+            None
+        };
 
         let mut seq = cursor + 1;
         while seq <= batch_end {
@@ -2811,7 +2598,7 @@ impl Engine {
 
             // Hop cap (cycle loop-breaker): a record already at the cap is not
             // forwarded again, but IS consumed (the cursor passes it) so the loop
-            // terminates exactly like the legacy `hops` recursion.
+            // terminates cleanly.
             if rec.hops >= config::MAX_ROUTER_HOPS {
                 consumed += 1;
                 seq += 1;
@@ -2829,7 +2616,8 @@ impl Engine {
                 }
             }
 
-            // preserve_node / preserve_tag, and the hop increment.
+            // preserve_node / preserve_tag, hop increment, and optional router
+            // idempotency metadata.
             let fwd_node = if router.preserve_node {
                 rec.node.clone()
             } else {
@@ -2840,17 +2628,35 @@ impl Engine {
             } else {
                 None
             };
-            let mut sr =
-                match build_stored_owned(rec.data.clone(), fwd_tag, fwd_node, rec.meta, now) {
-                    Ok(sr) => sr,
-                    Err(_) => {
-                        // A record we cannot rebuild (oversized after transform) is
-                        // consumed rather than wedging the cursor forever.
-                        consumed += 1;
-                        seq += 1;
-                        continue;
+            let meta = if router.guarantee == RouterGuarantee::ExactlyOnce {
+                let key = router_idempotency_key(&router, &source, seq);
+                if existing_router_keys
+                    .as_ref()
+                    .map_or(false, |keys| keys.contains(&key))
+                {
+                    forwarded += 1;
+                    consumed += 1;
+                    seq += 1;
+                    continue;
+                }
+                with_router_idempotency_meta(rec.meta, &key, &router, &source, seq)
+            } else {
+                rec.meta
+            };
+            let mut sr = match build_stored_owned(rec.data.clone(), fwd_tag, fwd_node, meta, now) {
+                Ok(sr) => sr,
+                Err(_) => {
+                    if router.guarantee == RouterGuarantee::ExactlyOnce {
+                        deferred = true;
+                        break;
                     }
-                };
+                    // A record we cannot rebuild (oversized after transform) is
+                    // consumed rather than wedging the cursor forever.
+                    consumed += 1;
+                    seq += 1;
+                    continue;
+                }
+            };
             sr.hops = rec.hops.saturating_add(1);
 
             // Back-pressure (discard:"reject" full dest): stop the prefix HERE. The
@@ -2875,6 +2681,7 @@ impl Engine {
             }
 
             to_append.push(sr);
+            forwarded += 1;
             consumed += 1;
             seq += 1;
         }
@@ -2887,12 +2694,11 @@ impl Engine {
         // cursor advances ONLY after this append commits + only by the count
         // forwarded, so a crash/retry re-derives the same records with the same
         // deterministic seqs (at-least-once, no silent loss).
-        let forwarded = to_append.len() as u64;
         if !to_append.is_empty() {
             if let Err(e) = self.derived_append(&dest, to_append, now) {
                 tracing::warn!(
                     router = %router.name, dest = %router.dest, error = %e,
-                    "forward_v2: derived dest append failed; leaving cursor behind"
+                    "router forward: derived dest append failed; leaving cursor behind"
                 );
                 self.scheduler.mark_dirty_fast(
                     &router.source,
@@ -2906,7 +2712,7 @@ impl Engine {
             if let Err(e) = self.enforce_retention_durable(&dest, now) {
                 tracing::warn!(
                     dest = %dest.name, error = %e,
-                    "forward_v2: eviction watermark fsync failed; deferring eviction"
+                    "router forward: eviction watermark fsync failed; deferring eviction"
                 );
             }
             // Wake the dest's readers / its own routers (chains).
@@ -2943,13 +2749,9 @@ impl Engine {
     /// Read-path catch-up: before a dest topic is read (`diff`/SSE/queue/GET
     /// state), drain every router whose `dest == dest_name` up to the source
     /// head, so an immediate read after a source write is read-your-writes
-    /// consistent (what keeps the no-sleep router tests green under async ack).
-    /// No-op unless `forward_v2` is active. Repeats the advance until each feeding
-    /// router is fully caught up (a large fan-out yields in `ROUTER_BATCH` chunks).
+    /// consistent. Repeats the advance until each feeding router is fully caught
+    /// up (a large fan-out yields in `ROUTER_BATCH` chunks).
     pub(crate) fn catch_up_dest(&self, dest_name: &str) {
-        if !self.forward_v2 {
-            return;
-        }
         let feeders: Vec<String> = {
             let graph = self.routers.lock();
             graph
@@ -2976,11 +2778,8 @@ impl Engine {
     /// Background-worker pass: drain every dirty router source off the write/ack
     /// path (elastic throttle; reuses the `sched_dirty` wake hook via the
     /// scheduler ready-set). Returns the number of source records consumed this
-    /// pass. No-op unless `forward_v2` is active.
+    /// pass.
     pub fn drain_router_sources(&self) -> u64 {
-        if !self.forward_v2 {
-            return 0;
-        }
         // Drain the scheduler's dirty set, clearing each topic's `sched_dirty` flag so
         // a future write re-enqueues it. For every drained topic that is a router
         // source, advance each of its routers one bounded pass. A router still
@@ -3194,9 +2993,8 @@ impl Engine {
         let b = self
             .get_topic(name)
             .ok_or_else(|| Error::topic_not_found(name))?;
-        // Read-path catch-up (forward_v2): drain routers feeding this dest so an
+        // Read-path catch-up: drain routers feeding this dest so an
         // immediate read after a source write is read-your-writes consistent.
-        // Inert under the default flag (Stage 1), so the live path is unchanged.
         self.catch_up_dest(name);
         let now = self.clock.now_ms();
 
@@ -3602,7 +3400,7 @@ impl Engine {
             return Err(Error::topic_not_found(&req.dest));
         }
 
-        // No-fan-in rule for a derived dest (`forward_v2`; codex P0 #2/#4). A derived
+        // No-fan-in rule for a derived dest (codex P0 #2/#4). A derived
         // dest's seq stream must have exactly ONE forwarding owner for deterministic
         // re-materialization: two routers with DIFFERENT sources interleaving derived
         // records into one dest would assign seqs non-deterministically across a
@@ -3616,33 +3414,31 @@ impl Engine {
         // so a refused router leaves no phantom topic. (Mixed direct-write + derived
         // topics — e.g. an `allow_cycle` loop — are supported but their derived tail is
         // re-materialized best-effort on recovery; see ASYNC_ROUTER_DESIGN.md §4.1.)
-        if self.forward_v2 {
-            let fan_in = {
-                let graph = self.routers.lock();
-                graph
-                    .routers_touching_topic(&req.dest)
-                    .into_iter()
-                    .any(|rn| {
-                        rn != name
-                            && graph
-                                .get(&rn)
-                                .is_some_and(|r| r.dest == req.dest && r.source != req.source)
-                    })
-            };
-            if fan_in {
-                return Err(Error::new(
-                    ErrorCode::TopicExistsIncompatible,
-                    format!(
-                        "topic {:?} is already the destination of another router with a \
-                         different source; a derived dest is single-owner (no multi-source \
-                         fan-in) while TOPICS_FORWARD_V2 is on",
-                        req.dest
-                    ),
-                )
-                .with_detail(
-                    serde_json::json!({ "topic": req.dest, "reason": "router_dest_fan_in" }),
-                ));
-            }
+        let fan_in = {
+            let graph = self.routers.lock();
+            graph
+                .routers_touching_topic(&req.dest)
+                .into_iter()
+                .any(|rn| {
+                    rn != name
+                        && graph
+                            .get(&rn)
+                            .is_some_and(|r| r.dest == req.dest && r.source != req.source)
+                })
+        };
+        if fan_in {
+            return Err(Error::new(
+                ErrorCode::TopicExistsIncompatible,
+                format!(
+                    "topic {:?} is already the destination of another router with a \
+                     different source; a derived dest is single-owner (no multi-source \
+                     fan-in)",
+                    req.dest
+                ),
+            )
+            .with_detail(
+                serde_json::json!({ "topic": req.dest, "reason": "router_dest_fan_in" }),
+            ));
         }
 
         // Re-pointing an existing router's source or dest is REJECTED (codex P0 #1):
@@ -3681,6 +3477,7 @@ impl Engine {
             create_dest: req.create_dest,
             filter: req.filter.clone(),
             allow_cycle: req.allow_cycle,
+            guarantee: req.guarantee,
         };
 
         // Forward cursor starts at the source's current head: only records
@@ -3723,14 +3520,10 @@ impl Engine {
             if created {
                 self.routers.lock().remove(name);
             }
-            self.refresh_router_source_flags();
             return Err(e);
         }
-        // The source topic now (auto-)exists; refresh its lock-free router-source flag
-        // so the write hot path forwards without taking the graph lock (codex P1).
-        self.refresh_router_source_flags();
 
-        // Seed the deterministic dest-seq base (`forward_v2`): a router attached to a
+        // Seed the deterministic dest-seq base: a router attached to a
         // (possibly pre-populated) dest numbers its first forwarded record after the
         // dest's current head, so derived dest seqs (`dest_base + forwarded_total`)
         // never collide with existing records. Only on a fresh create (idempotent
@@ -3764,12 +3557,11 @@ impl Engine {
                     preserve_tag: req.preserve_tag,
                     create_dest: req.create_dest,
                     allow_cycle: req.allow_cycle,
+                    exactly_once: req.guarantee == RouterGuarantee::ExactlyOnce,
                     filter: req.filter.as_ref().map(filter_to_matchsel),
-                    // Always `Some(_)` for a live create/re-PUT: the frame is v2 and
-                    // carries its durable cursor/base verbatim (codex P0 #3). Only
-                    // historical on-disk frames decode to `None` (legacy fallback).
-                    initial_cursor: Some(logged_cursor),
-                    initial_dest_base: Some(logged_dest_base),
+                    // Carry the durable cursor/base verbatim (codex P0 #3).
+                    initial_cursor: logged_cursor,
+                    initial_dest_base: logged_dest_base,
                 },
                 ts: self.clock.now_ms().max(0) as u64,
             },
@@ -3777,7 +3569,6 @@ impl Engine {
         ) {
             if created {
                 self.routers.lock().remove(name);
-                self.refresh_router_source_flags();
             }
             return Err(e);
         }
@@ -3793,6 +3584,7 @@ impl Engine {
                 preserve_tag: req.preserve_tag,
                 filter: req.filter,
                 allow_cycle: req.allow_cycle,
+                guarantee: req.guarantee,
                 performance: Performance::with_total(elapsed_ms(start)),
             },
         ))
@@ -3801,18 +3593,15 @@ impl Engine {
     /// `GET /v0/routers/:router`.
     pub fn get_router(&self, name: &str) -> Result<RouterGetResponse> {
         let start = Instant::now();
-        // Read-path catch-up (forward_v2): drive THIS router to its source head so
+        // Read-path catch-up: drive THIS router to its source head so
         // the reported `forwarded_total` is read-your-writes consistent on a router
-        // GET after a source write (forwarding is otherwise async/eventual). No-op
-        // under the legacy opt-out (`advance_router` returns 0 when v2 is off). Drive
-        // it BEFORE taking the graph lock — `advance_router` locks the graph itself.
-        if self.forward_v2 {
-            let mut guard = 0u32;
-            while self.advance_router(name) > 0 {
-                guard += 1;
-                if guard > 1_000_000 {
-                    break;
-                }
+        // GET after a source write. Drive it BEFORE taking the graph lock —
+        // `advance_router` locks the graph itself.
+        let mut guard = 0u32;
+        while self.advance_router(name) > 0 {
+            guard += 1;
+            if guard > 1_000_000 {
+                break;
             }
         }
         let graph = self.routers.lock();
@@ -3827,6 +3616,7 @@ impl Engine {
             preserve_tag: r.preserve_tag,
             filter: r.filter.clone(),
             allow_cycle: r.allow_cycle,
+            guarantee: r.guarantee,
             forwarded_total: graph.forwarded_total(name),
             performance: Performance::with_total(elapsed_ms(start)),
         };
@@ -3874,6 +3664,7 @@ impl Engine {
                 router: r.name.clone(),
                 source: r.source.clone(),
                 dest: r.dest.clone(),
+                guarantee: r.guarantee,
                 forwarded_total: graph.forwarded_total(&r.name),
             })
             .collect();
@@ -3928,9 +3719,6 @@ impl Engine {
             )?;
         }
         let deleted = self.routers.lock().remove(name);
-        if deleted {
-            self.refresh_router_source_flags();
-        }
         Ok(RouterDeleteResponse {
             router: name.to_string(),
             deleted,
@@ -3980,17 +3768,6 @@ impl Engine {
 // ---------------------------------------------------------------------------
 // Free helpers
 // ---------------------------------------------------------------------------
-
-/// A record in flight through the router fan-out. Carries the resolved
-/// `$node`/`$tag` (post-`preserve_*`) so chained forwards see the canonical
-/// values, decoupled from the `seq`/`ts` which each dest reassigns.
-#[derive(Debug, Clone)]
-struct ForwardRecord {
-    data: serde_json::Value,
-    tag: Option<String>,
-    node: Option<String>,
-    meta: Option<serde_json::Value>,
-}
 
 /// Resolve a sealed (non-resident) record's payload for `seq` **without holding
 /// the index lock**, and increment `cold_reads` when an actual COLD-tier read was
@@ -4137,7 +3914,7 @@ fn decode_record_payload(blob: &[u8]) -> (serde_json::Value, Option<serde_json::
             let meta = obj.remove("m");
             (data, meta)
         }
-        // Defensive: a malformed/legacy blob round-trips as raw data.
+        // Defensive: a malformed blob round-trips as raw data.
         _ => (serde_json::Value::Null, None),
     }
 }
@@ -4226,6 +4003,72 @@ fn build_stored_owned(
         payload_resident: true,
         hops: 0,
     })
+}
+
+const ROUTER_META_KEY: &str = "_topics_router";
+
+fn router_idempotency_key(router: &Router, source: &TopicState, source_seq: u64) -> String {
+    format!(
+        "router:{}:{}:{}:{}",
+        router.name,
+        source.topic_id,
+        source.epoch(),
+        source_seq
+    )
+}
+
+fn with_router_idempotency_meta(
+    meta: Option<serde_json::Value>,
+    key: &str,
+    router: &Router,
+    source: &TopicState,
+    source_seq: u64,
+) -> Option<serde_json::Value> {
+    let router_meta = serde_json::json!({
+        "idempotency_key": key,
+        "router": router.name,
+        "source_topic": source.name,
+        "source_topic_id": source.topic_id,
+        "source_epoch": source.epoch(),
+        "source_seq": source_seq,
+    });
+
+    match meta {
+        Some(serde_json::Value::Object(mut obj)) => {
+            if obj.contains_key(ROUTER_META_KEY) || obj.len() < config::MAX_META_KEYS {
+                obj.insert(ROUTER_META_KEY.to_string(), router_meta);
+                Some(serde_json::Value::Object(obj))
+            } else {
+                let mut wrapped = serde_json::Map::new();
+                wrapped.insert(ROUTER_META_KEY.to_string(), router_meta);
+                wrapped.insert(
+                    "_topics_original_meta".to_string(),
+                    serde_json::Value::Object(obj),
+                );
+                Some(serde_json::Value::Object(wrapped))
+            }
+        }
+        Some(value) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(ROUTER_META_KEY.to_string(), router_meta);
+            obj.insert("_topics_original_meta".to_string(), value);
+            Some(serde_json::Value::Object(obj))
+        }
+        None => {
+            let mut obj = serde_json::Map::new();
+            obj.insert(ROUTER_META_KEY.to_string(), router_meta);
+            Some(serde_json::Value::Object(obj))
+        }
+    }
+}
+
+fn router_meta_idempotency_key(meta: &Option<serde_json::Value>) -> Option<&str> {
+    meta.as_ref()?
+        .as_object()?
+        .get(ROUTER_META_KEY)?
+        .as_object()?
+        .get("idempotency_key")?
+        .as_str()
 }
 
 /// Encode an opaque list-pagination cursor as base64url JSON `{"after": name}`.
@@ -5047,6 +4890,7 @@ mod tests {
             create_dest: true,
             filter: None,
             allow_cycle: false,
+            guarantee: RouterGuarantee::AtLeastOnce,
         }
     }
 
@@ -5163,6 +5007,89 @@ mod tests {
         let d = engine.diff("d", diff_from(0)).unwrap();
         let data: Vec<_> = d.records.iter().map(|r| r.data.clone()).collect();
         assert_eq!(data, vec![json!({"a": 1})]); // only public:1 forwarded.
+    }
+
+    #[test]
+    fn router_exactly_once_stale_cursor_skips_existing_key() {
+        let (engine, _clock) = engine_with_clock();
+        engine
+            .put_router(
+                "s->d",
+                RouterCreateRequest {
+                    guarantee: RouterGuarantee::ExactlyOnce,
+                    ..router_req("s", "d")
+                },
+            )
+            .unwrap();
+        engine
+            .write("s", write_req(vec![rec(json!({"x": 1}), None, None)]), true)
+            .unwrap();
+
+        let first = engine.diff("d", diff_from(0)).unwrap();
+        assert_eq!(first.records.len(), 1);
+        assert!(first.records[0]
+            .meta
+            .as_ref()
+            .and_then(|m| m.get(ROUTER_META_KEY))
+            .is_some());
+        assert_eq!(engine.topic_state("d", false).unwrap().head_seq, 1);
+
+        {
+            let mut graph = engine.routers.lock();
+            let router = graph.get("s->d").unwrap().clone();
+            let dest_base = graph.dest_base("s->d");
+            graph.restore(router, 0, 0, dest_base);
+        }
+
+        assert_eq!(engine.advance_router("s->d"), 1);
+        assert_eq!(
+            engine.topic_state("d", false).unwrap().head_seq,
+            1,
+            "existing idempotency key prevented a duplicate dest append"
+        );
+        assert_eq!(engine.get_router("s->d").unwrap().forwarded_total, 1);
+    }
+
+    #[test]
+    fn router_exactly_once_wraps_full_meta_object() {
+        let (engine, _clock) = engine_with_clock();
+        engine
+            .put_router(
+                "s->d",
+                RouterCreateRequest {
+                    guarantee: RouterGuarantee::ExactlyOnce,
+                    ..router_req("s", "d")
+                },
+            )
+            .unwrap();
+
+        let mut meta = serde_json::Map::new();
+        for i in 0..config::MAX_META_KEYS {
+            meta.insert(format!("k{i}"), json!(i));
+        }
+        engine
+            .write(
+                "s",
+                write_req(vec![RecordIn {
+                    data: json!({"x": 1}),
+                    tag: None,
+                    node: None,
+                    meta: Some(serde_json::Value::Object(meta)),
+                }]),
+                true,
+            )
+            .unwrap();
+
+        let d = engine.diff("d", diff_from(0)).unwrap();
+        assert_eq!(d.records.len(), 1);
+        let meta = d.records[0].meta.as_ref().unwrap();
+        assert!(meta.get(ROUTER_META_KEY).is_some());
+        let original = meta
+            .get("_topics_original_meta")
+            .and_then(|m| m.as_object())
+            .unwrap();
+        assert_eq!(original.len(), config::MAX_META_KEYS);
+        assert_eq!(original["k0"], json!(0));
     }
 
     #[test]
@@ -5289,7 +5216,7 @@ mod tests {
         );
         assert!(!st.config.durable, "durable normalized to (class==fsync)");
 
-        // Legacy durable:true with no class ⇒ fsync.
+        // durable:true with no explicit class ⇒ fsync.
         engine
             .put_topic(
                 "b",
@@ -5303,7 +5230,7 @@ mod tests {
             engine.topic_state("b", false).unwrap().config.durability,
             Some(Durability::Fsync)
         );
-        // Legacy default (durable:false) ⇒ disk.
+        // Default durable:false with no explicit class ⇒ disk.
         engine.put_topic("c", TopicConfig::default()).unwrap();
         assert_eq!(
             engine.topic_state("c", false).unwrap().config.durability,

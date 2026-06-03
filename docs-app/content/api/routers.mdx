@@ -31,11 +31,12 @@ design against.
   topic_exists_incompatible` with `error.detail.reason: "router_dest_fan_in"`. (Direct writes
   to a dest, or a mixed direct+derived graph under `allow_cycle`, remain best-effort
   interleavings.)
-- **At-least-once.** The router is driven off the committed `source` log, so it never
-  forwards a record that didn't durably commit to `source`. It persists its forward cursor
-  and **replays from the cursor** on restart. A crash between "appended to `dest`" and
-  "advanced the cursor" can re-forward — so **consumers must be idempotent**. There is no
-  exactly-once mode.
+- **Delivery guarantee.** The default is `guarantee:"at_least_once"`: the router persists
+  its source cursor and replays from it on restart, so a crash can re-forward and consumers
+  must be idempotent. `guarantee:"exactly_once"` keeps the derived/no-WAL design but stamps
+  a stable router idempotency key into `meta._topics_router`; if recovery or catch-up sees
+  that key already present in `dest`, it advances the cursor without appending another copy.
+  The key must still be retained in `dest`; a delete or eviction removes the evidence.
 - **Per-source FIFO.** Records forwarded from one `source` into one `dest` preserve
   `source` commit order. The forwarded copy gets a **fresh** `$seq` and `$ts` in `dest`
   (its own independent log); the `dest` seq is unrelated to the source seq. Because each
@@ -44,8 +45,9 @@ design against.
   per-source FIFO guaranteed.
 - **What carries through.** `$node` (verbatim, never rewritten when `preserve_node` — this
   is what makes loop-prevention work across the route), `$tag` (when `preserve_tag`), `meta`,
-  and `data` pass through unchanged. Original source seq/ts are optionally preserved in
-  reserved meta `$src_topic`/`$src_seq` for traceability (off by default to keep payloads lean).
+  and `data` pass through. `exactly_once` routers reserve `meta._topics_router` for source
+  identity: router name, source topic, source topic id, source epoch, source seq, and the
+  stable idempotency key.
 - **The destination's config governs how the copy is retained.** Because forwarding is async
   and the copies are derived (not WAL-logged), the source ack never waits on the destination.
   The `dest`'s [durability class](/guarantees/durability) governs how/whether the re-derived
@@ -77,16 +79,6 @@ design against.
   forwarding remains at-least-once via the source cursor.
 </Callout>
 
-<Callout type="warning">
-  **Legacy opt-out (`TOPICS_FORWARD_V2=0`).** The async + derived model above is the **shipped
-  default**. Setting `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) reverts to the legacy
-  **synchronous in-line** forward: each forwarded copy is its own WAL append written on the
-  source write/ack path — durable-by-construction but **WAL-amplified** (an N-way fan-out costs
-  N WAL writes, and the source ack waits on them). The legacy path also permits **multi-source
-  fan-in** into one `dest` (no `router_dest_fan_in` rule). It exists only for back-compat; the
-  derived default is recommended.
-</Callout>
-
 ## PUT /v0/routers/:router — create or configure a router
 
 <div className="route"><span className="verb put">PUT</span><span className="path">/v0/routers/:router</span></div>
@@ -103,7 +95,8 @@ diff, a new one returns `201`.
 ```json
 { "source": "orders", "dest": "fulfillment",
   "preserve_node": true, "preserve_tag": true,
-  "create_dest": true, "filter": null, "allow_cycle": false }
+  "create_dest": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once" }
 ```
 
 | Field | Type | Req? | Default | Meaning |
@@ -115,6 +108,7 @@ diff, a new one returns `201`.
 | `create_dest` | bool | no | `true` | Auto-create `dest` if absent. `false` ⇒ `404` if missing. |
 | `filter` | tuple \| null | no | `null` | Optional forward-time filter, same tuple language as [delete](/api/deletion) — e.g. `["tag","Glob","public:*"]`. `null` = forward all. |
 | `allow_cycle` | bool | no | `false` | If `false`, a router that would introduce a directed cycle is rejected `409 router_cycle` (DAG-by-default). If `true`, the route is permitted and runtime hop-cap loop-breaking applies instead (for intentional A↔B multi-master). |
+| `guarantee` | `"at_least_once"` \| `"exactly_once"` | no | `"at_least_once"` | Delivery mode. `exactly_once` uses a stable derived-record idempotency key in `meta._topics_router` to suppress duplicate destination appends when the key is still present in `dest`. |
 
 **Response** (`201` / `200`)
 
@@ -122,6 +116,7 @@ diff, a new one returns `201`.
 { "router": "orders->fulfillment", "created": true,
   "source": "orders", "dest": "fulfillment",
   "preserve_node": true, "preserve_tag": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once",
   "performance": { "server_total_ms": 0.20 } }
 ```
 
@@ -130,7 +125,7 @@ diff, a new one returns `201`.
 | `router` | The router name (the path you addressed). |
 | `created` | `true` only when this call brought the router into existence. |
 | `source` / `dest` | The configured endpoints. |
-| `preserve_node` / `preserve_tag` / `filter` / `allow_cycle` | The resolved config, echoed back. |
+| `preserve_node` / `preserve_tag` / `filter` / `allow_cycle` / `guarantee` | The resolved config, echoed back. |
 
 **Errors**
 
@@ -152,6 +147,7 @@ Read a single router's config plus a lifetime forward counter.
 ```json
 { "router": "orders->fulfillment", "source": "orders", "dest": "fulfillment",
   "preserve_node": true, "preserve_tag": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once",
   "forwarded_total": 480231,
   "performance": { "server_total_ms": 0.04 } }
 ```
@@ -176,8 +172,8 @@ allowlist, so a prefix-limited key cannot enumerate cross-tenant routers.
 
 ```json
 { "routers": [
-    { "router": "orders->fulfillment", "source": "orders", "dest": "fulfillment", "forwarded_total": 480231 },
-    { "router": "orders->analytics",   "source": "orders", "dest": "analytics",   "forwarded_total": 480231 }
+    { "router": "orders->fulfillment", "source": "orders", "dest": "fulfillment", "guarantee": "at_least_once", "forwarded_total": 480231 },
+    { "router": "orders->analytics",   "source": "orders", "dest": "analytics",   "guarantee": "exactly_once",  "forwarded_total": 480231 }
   ],
   "next_cursor": "eyJhZnRlciI6Im9yZGVycy0+ZnVsZmlsbG1lbnQifQ==",
   "performance": { "server_total_ms": 0.09 } }
@@ -229,6 +225,7 @@ curl -X PUT $TOPICS/v0/routers/orders-to-audit \
 { "router": "orders-to-audit", "created": true,
   "source": "orders", "dest": "audit",
   "preserve_node": true, "preserve_tag": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once",
   "performance": { "server_total_ms": 0.20 } }
 ```
   </Tabs.Tab>

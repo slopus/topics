@@ -64,11 +64,11 @@ pub struct StoredRecord {
     /// the segment. The `bytes` accounting is unchanged (the record is still
     /// live; only where its payload lives changed).
     pub payload_resident: bool,
-    /// Router forward hop count (async/derived `forward_v2` cycle loop-breaker). A
+    /// Router forward hop count for the async/derived cycle loop-breaker. A
     /// direct user write is `0`; a record forwarded by a router carries
     /// `source_record.hops + 1`. A record at/above [`crate::config::MAX_ROUTER_HOPS`]
-    /// is not forwarded again, so an `allow_cycle` topology terminates exactly as
-    /// the legacy synchronous `hops` recursion counter did. In-memory only (never
+    /// is not forwarded again, so an `allow_cycle` topology terminates cleanly.
+    /// In-memory only (never
     /// WAL-logged — derived dest records are not logged at all; a direct write is
     /// always `0`), and re-derived identically on recovery by replaying forwarding
     /// from the cursor.
@@ -433,7 +433,7 @@ pub struct TopicState {
     pub name: String,
     /// Interned numeric id used in WAL frames (ARCHITECTURE §2.1). Stable for the
     /// lifetime of this topic instance; reassigned on delete+recreate.
-    pub topic_id: u32,
+    pub topic_id: u64,
     /// Live config (read-mostly; mutated under `index` write lock on `PUT`).
     pub config: RwLock<TopicConfig>,
     /// The seq→record index (carries the per-topic tag index + `delete_below`).
@@ -478,16 +478,6 @@ pub struct TopicState {
     /// `last_consumed_at` for auto-priority (DESIGN §3).
     pub last_consumed_ms: AtomicI64,
 
-    /// Whether this topic is the SOURCE of at least one router (forwarding rule).
-    /// A lock-free fast path for the write hot path: a write checks this atomic
-    /// instead of taking the global router-graph mutex on EVERY append (codex P1).
-    /// Maintained by the router-graph mutations (create/delete/topic-delete) under the
-    /// graph lock — the rare control path — so the common write path never contends
-    /// on the graph lock just to learn "are there routers fed by me?". `Relaxed` is
-    /// sufficient: a momentarily-stale read only over- or under-triggers a forward
-    /// that the synchronous `forward_from` (which re-reads the graph under its lock)
-    /// reconciles; it never drops or duplicates a committed record.
-    pub is_router_source: std::sync::atomic::AtomicBool,
     /// Advisory "already marked dirty in the scheduler" flag (codex P1). The
     /// scheduler ready-set is drained only by the (not-yet-wired) phase-4 governor,
     /// so once a topic is dirty it stays dirty; this atomic lets the write hot path
@@ -584,7 +574,7 @@ impl TopicState {
     /// Create a fresh topic with the given config, interned id, and epoch.
     pub fn new(
         name: String,
-        topic_id: u32,
+        topic_id: u64,
         config: TopicConfig,
         seq_base: u64,
         epoch: u64,
@@ -614,7 +604,6 @@ impl TopicState {
             last_write_ms: AtomicI64::new(TS_NEVER),
             last_read_ms: AtomicI64::new(TS_NEVER),
             last_consumed_ms: AtomicI64::new(TS_NEVER),
-            is_router_source: std::sync::atomic::AtomicBool::new(false),
             sched_dirty: std::sync::atomic::AtomicBool::new(false),
             notify: Notify::new(),
             broadcast: BroadcastCache::new(),
@@ -806,7 +795,7 @@ impl TopicState {
         floors.evict_floor.max(floors.expiry_floor)
     }
 
-    /// Resolve a source record at `seq` for derived forwarding (`forward_v2`),
+    /// Resolve a source record at `seq` for derived forwarding,
     /// transparently across the resident slot, the bounded cache, and a cold
     /// segment read. Returns `(record, alive)` where `alive` is `false` for a
     /// deleted/missing slot (a deleted record is not forwarded). `None` if the seq
@@ -832,7 +821,7 @@ impl TopicState {
     }
 
     /// Record that a derived router could not materialize `count` forwarded records
-    /// into this dest because the SOURCE trimmed them (async/derived `forward_v2`,
+    /// into this dest because the SOURCE trimmed them (async/derived forwarding,
     /// design §4 source-retention bound). Appends `count` deleted-hole slots so the
     /// dest's seq space carries a real gap at the right deterministic position, and
     /// advances `source_trim_floor` so a dest consumer crossing the gap reads a
@@ -1730,8 +1719,8 @@ impl TopicState {
         // delete's point-in-time even though a concurrent append may have advanced
         // the head by the time we take the index lock. On replay the engine passes
         // the WAL-logged `bound_head`, so a record appended AFTER the original
-        // delete (seq >= bound_head) is never swept. `None` (legacy frame / no
-        // recorded bound) falls back to the current head.
+        // delete (seq >= bound_head) is never swept. `None` is used only for an
+        // explicit seq-set delete, where the selector bound is irrelevant.
         let pit = bound_head.unwrap_or_else(|| head.saturating_add(1));
         let bound = match before_seq {
             Some(b) => b.min(pit),

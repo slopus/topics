@@ -37,12 +37,12 @@ and the header is ignored — logged loudly at boot.
 
 #### Optional scopes & topic-name prefix allowlist
 
-A key **may** carry a scope set and a topic-name prefix allowlist. **This is fully additive and
-back-compatible**: a bare `key` (no scopes, no prefixes) is a **full-access** key, exactly as
-before. The `TOPICS_API_KEYS` entry syntax is extended:
+A key **may** carry a scope set and a topic-name prefix allowlist. A bare `key`
+(no scopes, no prefixes) is a **full-access** key. The `TOPICS_API_KEYS` entry
+syntax is:
 
 ```
-key                       # full access (back-compat): all scopes, all topics
+key                       # full access: all scopes, all topics
 key:scopes                # scopes only, all topics
 key:scopes:prefixes       # scopes + a topic-name PREFIX allowlist
 key::prefixes             # empty scopes field = ALL scopes, prefix-restricted
@@ -102,7 +102,7 @@ deployment rather than built in:
   loopback). This is a transport concern handled outside the binary, not a planned feature.
 - **Scopes / prefix allowlist — *implemented* (§0.2).** A key may carry a scope set
   (`read`/`write`/`delete`/`admin`) and a topic-name prefix allowlist; keys are hashed at rest.
-  A bare key is still full-access for back-compat. The `tenant:` prefix convention (§3) becomes
+  A bare key is still full-access. The `tenant:` prefix convention (§3) becomes
   a real boundary when a key is prefix-restricted. **Multi-tenancy beyond these per-key scopes +
   prefix allowlists is out of scope** — there is no hard per-tenant namespace partition (and the
   prefix allowlist is a filter, not an isolated namespace).
@@ -280,7 +280,7 @@ optional on create; omitted fields take the documented default.
 | `cap_records` | `u64` | `0` (off) | Max retained record count. On overflow the topic evicts per `discard`. `0` = unbounded. |
 | `cap_bytes` | `u64` | `0` (off) | Max retained payload bytes (`data` + `meta` + framing). `0` = unbounded. Whichever of `cap_records`/`cap_bytes` is hit first triggers eviction. |
 | `discard` | `"old" \| "reject"` | `"old"` | Full-topic policy. `old` = evict oldest (pub/sub friendly). `reject` = refuse the write with `422 topic_full` so durable queues fail loudly rather than dropping unconsumed work. |
-| `durable` | `bool` | `false` | **Back-compat alias** for `durability` (below). On create: `durable:true` ⇒ class `fsync`, `durable:false` ⇒ class `disk` (only consulted when `durability` is absent). On every response it is reported as `durable == (durability == "fsync")`, so a legacy client reading `durable` still sees the right boolean. Prefer `durability` for new clients. |
+| `durable` | `bool` | `false` | Shorthand alias for `durability` (below). On create: `durable:true` ⇒ class `fsync`, `durable:false` ⇒ class `disk` (only consulted when `durability` is absent). On every response it is reported as `durable == (durability == "fsync")`. Prefer `durability` when selecting `ephemeral` or `memory`. |
 | `durability` | `"ephemeral" \| "memory" \| "disk" \| "fsync"` | _(resolved from `durable`)_ | The **durability commit class** — where a write lands and when it is acked (the durability/perf tradeoff). **`ephemeral`**: record payloads are resident-only, even when the server has `TOPICS_DATA_DIR`; appends/deletes skip the WAL and HOT segment writer, are fully queryable while the process is running, and are intentionally lost on restart. Checkpoints preserve the published head without payloads, so post-checkpoint writes do not reuse seqs. The topic CONFIG always survives. Never `fsync`-gated, so `fsync_ms` is `0`. **`memory`** — _"disk-like but best-effort"_: takes the **same** group-committed WAL write **and** recovery path as `disk` and is fully queryable (getState / getDifference / SSE), but carries **NO durability GUARANTEE**. After a restart its records **MAY survive OR be lost** (recovery is gradual / best-effort: it does **not** block readiness and does **not** guarantee completeness or emptiness). The topic CONFIG always survives. Never `fsync`-gated, so `fsync_ms` is `0`. Effectively `disk` minus the durability promise — for caches / scratch where occasional loss is fine. **`disk`**: written to the WAL and **group-committed** (no per-write `fsync`); acked on frame enqueue (the ack is **not** `fsync`-gated — group-committed shortly after by its topic's WAL-shard writer; the WAL is sharded — see ARCHITECTURE §2); survives a crash **minus the un-fsynced tail**; reports `fsync_ms` as `0` (the fast path). **`fsync`**: the ack is **`fsync`-gated** (held until the WAL frame is durably synced, real `fsync_ms`); survives any crash. **Resolution:** an explicit `durability` always wins; otherwise it is derived from `durable` (`true`⇒`fsync`, `false`⇒`disk`) — so `ephemeral` and `memory` are reachable only by setting `durability` explicitly. The resolved class is always reported in topic-state/topic-create responses, and the class is freely mutable in place. Router-forwarded / dead-lettered copies honor the **destination** topic's class. |
 | `priority` | `i32 \| null` | `null` | Manual delivery priority (higher served first under pressure), clamped `[-1000, 1000]`. `null` ⇒ use auto-priority. |
 | `auto_priority` | `bool` | `true` | If `priority` is `null`, derive effective priority from recency of the last read/SSE/state call on this topic. A manual `priority` always overrides. |
@@ -783,19 +783,14 @@ receiving back what it produced. Routers live in their own namespace (`/v0/route
 Forwarding is **async** (off the source write/ack path — a write to `source` acks immediately
 and a background per-router worker forwards) and **derived** (the forwarded copies are **not
 separately WAL-logged**, so one source append is **one WAL write regardless of fan-out**; the
-copies are re-derived on recovery by replaying from a **durable per-router cursor**). It is
-**at-least-once, per-source FIFO** (a crash between "appended to dest" and "advanced router
-cursor" can re-forward; consumers must be idempotent — see DESIGN §6). A derived `dest` is
+copies are re-derived on recovery by replaying from a **durable per-router cursor**). The default
+delivery mode is **`guarantee:"at_least_once"`**, per-source FIFO. Optional
+**`guarantee:"exactly_once"`** keeps the derived/no-WAL design but stamps a stable router
+idempotency key into `meta._topics_router`; if recovery or catch-up sees that key already present
+in `dest`, it advances the cursor without appending another copy. The key must still be retained
+in `dest`; a delete or eviction removes the evidence. A derived `dest` is
 **single-source**: a second router with a *different* `source` into the same `dest` is rejected
 `409 topic_exists_incompatible` with `error.detail.reason: "router_dest_fan_in"`.
-
-> **Legacy opt-out (`TOPICS_FORWARD_V2=0`).** The async + derived model above is the shipped
-> default. Setting `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) reverts to the legacy
-> **synchronous in-line** forward: each forwarded copy is its own WAL append, written on the
-> source write/ack path (durable-by-construction but **WAL-amplified** — N WAL writes for an
-> N-way fan-out, and the source ack waits on them). The legacy path also permits **multi-source
-> fan-in** into a single `dest` (no `router_dest_fan_in` rule). It exists only for back-compat;
-> the derived default is recommended.
 
 ### 6.1 Create / configure — `PUT /v0/routers/:router`
 
@@ -804,9 +799,10 @@ cursor" can re-forward; consumers must be idempotent — see DESIGN §6). A deri
 **Request body**
 
 ```json
-{ "source": "jobs", "dest": "audit",
+{ "source": "orders", "dest": "audit",
   "preserve_node": true, "preserve_tag": true,
-  "create_dest": true, "filter": null, "allow_cycle": false }
+  "create_dest": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once" }
 ```
 
 | Field | Type | Req? | Default | Meaning |
@@ -818,13 +814,14 @@ cursor" can re-forward; consumers must be idempotent — see DESIGN §6). A deri
 | `create_dest` | bool | no | `true` | Auto-create `dest` if absent. `false` ⇒ `404` if missing. |
 | `filter` | tuple \| null | no | `null` | Optional forward-time filter (same tuple language as §5), e.g. `["tag","Glob","public:*"]`. `null` = forward all. |
 | `allow_cycle` | bool | no | `false` | If `false`, creating a router that would introduce a directed cycle is rejected `409 router_cycle` (DAG-by-default). If `true`, the route is permitted and runtime hop-cap loop-breaking applies instead (for intentional A↔B multi-master). |
+| `guarantee` | `"at_least_once"` \| `"exactly_once"` | no | `"at_least_once"` | Delivery mode. `exactly_once` uses a stable derived-record idempotency key in `meta._topics_router` to suppress duplicate destination appends when the key is still present in `dest`. |
 
 **Behavior**
 - Forwarding runs **asynchronously** off the `source` write/ack path (driven by the durable
   per-router cursor), not inline at append. The forwarded copy gets its own fresh `$seq` and
   `$ts` in `dest` (an independent log); `$node`/`$tag`/`data`/`meta` carry through verbatim
-  (subject to `preserve_*`). Optional reserved meta `$src_topic`/`$src_seq` aid traceability (off
-  by default).
+  (subject to `preserve_*`). `exactly_once` routers reserve `meta._topics_router` for source
+  identity and the stable idempotency key.
 - `dest`'s own config governs the forward: `discard:"old"` evicts to make room; `discard:"reject"`
   rejects the forward, the router **does not advance** its cursor and retries with backoff
   (backpressure up the route). See DESIGN §6.4.
@@ -833,9 +830,10 @@ cursor" can re-forward; consumers must be idempotent — see DESIGN §6). A deri
 **Response** (`201` / `200`)
 
 ```json
-{ "router": "jobs->audit", "created": true,
-  "source": "jobs", "dest": "audit",
+{ "router": "orders->audit", "created": true,
+  "source": "orders", "dest": "audit",
   "preserve_node": true, "preserve_tag": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once",
   "performance": { "server_total_ms": 0.20 } }
 ```
 
@@ -847,8 +845,9 @@ with a different `source` into a `dest` that is already a derived destination �
 ### 6.2 Get a router — `GET /v0/routers/:router`
 
 ```json
-{ "router": "jobs->audit", "source": "jobs", "dest": "audit",
+{ "router": "orders->audit", "source": "orders", "dest": "audit",
   "preserve_node": true, "preserve_tag": true, "filter": null, "allow_cycle": false,
+  "guarantee": "at_least_once",
   "forwarded_total": 480231, "performance": { "server_total_ms": 0.04 } }
 ```
 `404 router_not_found` if absent.
@@ -859,10 +858,10 @@ with a different `source` into a `dest` that is already a derived destination �
 
 ```json
 { "routers": [
-    { "router": "jobs->audit",  "source": "jobs", "dest": "audit",  "forwarded_total": 480231 },
-    { "router": "jobs->mirror", "source": "jobs", "dest": "mirror", "forwarded_total": 480231 }
+    { "router": "orders->audit",  "source": "orders", "dest": "audit",  "guarantee": "at_least_once", "forwarded_total": 480231 },
+    { "router": "orders->mirror", "source": "orders", "dest": "mirror", "guarantee": "exactly_once",  "forwarded_total": 480231 }
   ],
-  "next_cursor": "eyJhZnRlciI6ImpvYnMtPmF1ZGl0In0=",
+  "next_cursor": "eyJhZnRlciI6Im9yZGVycy0+YXVkaXQifQ==",
   "performance": { "server_total_ms": 0.09 } }
 ```
 `next_cursor` omitted on last page.
@@ -873,7 +872,7 @@ Idempotent. Stops forwarding immediately; already-forwarded records in `dest` ar
 (forwarding is a copy, not a link).
 
 ```json
-{ "router": "jobs->audit", "deleted": true, "performance": { "server_total_ms": 0.06 } }
+{ "router": "orders->audit", "deleted": true, "performance": { "server_total_ms": 0.06 } }
 ```
 `"deleted": false` if absent. Deleting a **topic** (§1.4) cascades to every router with that
 topic as `source` or `dest`.
@@ -1364,7 +1363,7 @@ acked+deleted job stays gone iff its delete was durable — i.e. **ack durabilit
 |---|---|---|---|
 | `node` | string | yes | The worker acking. Must be the current lease holder of each seq for the ack to count. |
 | `seqs` | array<u64> | yes | 1..=`TOPICS_MAX_CLAIM` job seqs to complete. |
-| `lease_ids` | array<string> | no | Optional **per-seq lease fence** (validate-when-supplied): the `claimed[].lease_id` tokens from the originating claim, one per entry of `seqs` (same length and order). When present, a seq is acked only if its supplied token matches the current lease — a **stale** token (the lease was superseded by a re-claim/extend by another worker) is rejected and that seq is **skipped**. Omit to fall back to the legacy `node`+`seqs` match. |
+| `lease_ids` | array<string> | no | Optional **per-seq lease fence** (validate-when-supplied): the `claimed[].lease_id` tokens from the originating claim, one per entry of `seqs` (same length and order). When present, a seq is acked only if its supplied token matches the current lease — a **stale** token (the lease was superseded by a re-claim/extend by another worker) is rejected and that seq is **skipped**. When omitted, matching uses `node` + `seqs`. |
 
 **Behavior** — only seqs currently leased to `node` are acked (deleted). A seq that is not
 leased to `node` (never claimed, already acked, or its lease expired and was reclaimed/leased
@@ -1409,7 +1408,7 @@ Records a `released` event in the leases log.
 | `node` | string | yes | — | Must be the current lease holder (else that seq is skipped). |
 | `seqs` | array<u64> | yes | — | Job seqs to release. |
 | `delay_ms` | `u64` | no | `0` | Hold the job invisible for this long before it becomes claimable again (delayed retry / backoff). `0` = claimable immediately (added to the reclaim freelist now). Clamped `[0, 86400000]`. |
-| `lease_ids` | array<string> | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as §10.4: a stale token's seq is skipped; omit for the legacy `node`+`seqs` match. |
+| `lease_ids` | array<string> | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as §10.4: a stale token's seq is skipped; omit to match by `node` + `seqs`. |
 
 A nack drops the active lease and makes the seq claimable again at `now + delay_ms` (via the
 Clock), incrementing the delivery counter on its next claim and subject to dead-lettering
@@ -1448,7 +1447,7 @@ event in the leases log.
 | `node` | string | yes | — | Must be the current lease holder. |
 | `seqs` | array<u64> | yes | — | Held job seqs to extend. |
 | `lease_ms` | `u64` | yes | — | New lease duration from **now**; the new `deadline = now + lease_ms`. Clamped `[100, 86400000]`. (Extend sets, not adds — the worker asserts "I need this much more time from now.") |
-| `lease_ids` | array<string> | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as §10.4: a stale token's seq is skipped; omit for the legacy `node`+`seqs` match. |
+| `lease_ids` | array<string> | no | — | Optional **per-seq lease fence** (validate-when-supplied), one per `seqs` entry — same semantics as §10.4: a stale token's seq is skipped; omit to match by `node` + `seqs`. |
 
 A seq whose lease has **already expired** (and was reclaimed) cannot be extended — it is
 skipped; the worker should re-claim. Extending does **not** change the delivery counter.
@@ -1636,7 +1635,7 @@ place.
   and a router's `source` **and** `dest` (which the engine would otherwise auto-create) — so a
   scoped key cannot watch, or route data into, a topic outside its allowlist. **List** endpoints
   (`GET /v0/topics`, `GET /v0/routers`) are filtered to the key's allowlist, so a prefix-limited
-  key cannot even enumerate cross-tenant names. A bare `key` is full access (back-compat). A
+  key cannot even enumerate cross-tenant names. A bare `key` is full access. A
   **malformed scope token** makes the server **refuse to start** (fail-closed — it never
   silently grants the wrong scope). `/v0/metrics` requires the `read` scope by default (§8.3).
 - **Watch capability** — the `wid` is an unguessable 128-bit random capability bound to the

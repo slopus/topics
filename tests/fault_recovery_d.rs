@@ -645,7 +645,7 @@ fn f_rec_topic_missing_for_append() {
         .unwrap();
 
     // A topic_id that NO TopicConfig frame creates — only Appends reference it.
-    let orphan_topic_id: u32 = 7;
+    let orphan_topic_id: u64 = 7;
     let frames = vec![
         WalRecord::Append {
             topic_id: orphan_topic_id,

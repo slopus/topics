@@ -99,10 +99,12 @@ Kafka is at-least-once by default and supports **exactly-once** semantics via th
 producer, transactions, and `read_committed` consumers — a genuine, production-grade
 capability for end-to-end exactly-once pipelines.
 
-topics is **at-least-once only**. There are no transactions and no exactly-once delivery.
-It provides idempotency on the *write* path (an idempotency window dedupes retried appends)
-and node loop-prevention, but consumers must tolerate redelivery. If your pipeline requires
-exactly-once processing across stages, Kafka offers it and topics does not.
+topics has no transactions and no Kafka-style end-to-end exactly-once pipeline. It provides
+idempotency on the *write* path, node loop-prevention, and an opt-in router
+`guarantee:"exactly_once"` that suppresses duplicate derived destination appends by stable
+router idempotency key. Consumers still need idempotency for external side effects. If your
+pipeline requires transactional exactly-once processing across stages, Kafka offers it and
+topics does not.
 
 ## Queues & share groups
 

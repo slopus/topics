@@ -132,7 +132,7 @@ fn a_topic_lands_in_exactly_one_shard() {
 
     // For each shard subdir, collect the set of topic ids that have an Append frame.
     let wal_dir = dir.path().join("wal");
-    let mut shard_of_topic: std::collections::HashMap<u32, Vec<usize>> =
+    let mut shard_of_topic: std::collections::HashMap<u64, Vec<usize>> =
         std::collections::HashMap::new();
     for s in 0..n {
         let sub = wal_dir.join(format!("shard-{s:02}"));
@@ -150,7 +150,7 @@ fn a_topic_lands_in_exactly_one_shard() {
             })
             .collect();
         files.sort();
-        let mut seen: HashSet<u32> = HashSet::new();
+        let mut seen: HashSet<u64> = HashSet::new();
         for f in files {
             for frame in WalReader::open(&f).unwrap() {
                 if let WalRecordKind::Append(topic_id) = classify(&frame) {
@@ -288,7 +288,7 @@ fn shards_are_independent_under_concurrent_load() {
     // Confirm every shard actually received at least one topic's writes (the load
     // really was spread, so isolation is meaningful) AND everything recovered.
     let used_shards: HashSet<usize> = (0..names.len())
-        .map(|i| shard_for_topic((i as u32) + 1, n)) // topic ids are 1..=16 in order
+        .map(|i| shard_for_topic((i as u64) + 1, n)) // topic ids are 1..=16 in order
         .collect();
     assert!(
         used_shards.len() >= 2,
@@ -303,11 +303,10 @@ fn shards_are_independent_under_concurrent_load() {
     }
 }
 
-/// shards=1 is exactly the legacy flat layout: the WAL files live directly under
-/// `<data_dir>/wal/` (no `shard-NN/` subdir), so a single-shard run is on-disk
-/// back-compatible with the pre-sharding engine.
+/// shards=1 is exactly the flat single-shard layout: the WAL files live directly
+/// under `<data_dir>/wal/` (no `shard-NN/` subdir).
 #[test]
-fn single_shard_uses_flat_legacy_layout() {
+fn single_shard_uses_flat_layout() {
     let dir = tempfile::tempdir().unwrap();
     {
         let engine = engine_at(dir.path(), 1);
@@ -592,7 +591,7 @@ fn surviving_orphan_wal_files_do_not_regress_state() {
 // ---------------------------------------------------------------------------
 
 enum WalRecordKind {
-    Append(u32),
+    Append(u64),
     Other,
 }
 

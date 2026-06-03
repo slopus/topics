@@ -273,6 +273,7 @@ fn routers_survive_restart() {
                     create_dest: true,
                     filter: None,
                     allow_cycle: false,
+                    guarantee: Default::default(),
                 },
             )
             .unwrap();
@@ -728,6 +729,7 @@ fn routers_survive_snapshot_restart() {
                     create_dest: true,
                     filter: None,
                     allow_cycle: false,
+                    guarantee: Default::default(),
                 },
             )
             .unwrap();
@@ -1989,13 +1991,9 @@ fn cap_eviction_reclaims_a_relocated_cold_segment() {
 
 /// A forwarded copy into a destination topic survives a restart and is present
 /// EXACTLY ONCE with $node/$tag fidelity. This is the observable recovery contract
-/// the product guarantees regardless of forwarding mode. Under the v2 default
-/// (async + derived) recovery RE-DERIVES the copy from the still-retained source
-/// record + the durable per-router cursor (the forwarded copy is never separately
-/// WAL-logged); the legacy opt-out (`TOPICS_FORWARD_V2=0`) instead replays the
-/// dest's own Append frame. Either way the survivor is the same single record — the
-/// legacy-specific "durable dest WAL frame" mechanism is exercised by
-/// `legacy_forwarded_copy_recovers_from_dest_wal_frame` in `integration_legacy_forward.rs`.
+/// the product guarantees. Recovery RE-DERIVES the copy from the still-retained
+/// source record + the durable per-router cursor; forwarded copies are never
+/// separately WAL-logged.
 #[test]
 fn forwarded_copy_into_durable_dest_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
@@ -2015,6 +2013,7 @@ fn forwarded_copy_into_durable_dest_survives_restart() {
                     create_dest: false,
                     filter: None,
                     allow_cycle: false,
+                    guarantee: Default::default(),
                 },
             )
             .unwrap();
@@ -2190,7 +2189,7 @@ fn memory_topic_best_effort_recovery_no_fabrication() {
     assert_eq!(st.config.cap_records, 99, "config (cap_records) survives");
     assert!(
         !st.config.durable,
-        "memory ⇒ durable:false (back-compat: class != fsync)"
+        "memory ⇒ durable:false (class != fsync)"
     );
     // head never exceeds the acked head (seq monotone, no future seq).
     assert!(
@@ -2292,9 +2291,9 @@ fn ephemeral_topic_records_are_ram_only_and_live_seq_monotone() {
     );
 }
 
-/// A `disk`-class topic (today's durable:false) survives a CLEAN restart (the WAL
+/// A `disk`-class topic (durable:false) survives a CLEAN restart (the WAL
 /// writer drains + fsyncs on a clean teardown). It reports `fsync_ms == 0` (no
-/// per-write fsync), and resolves to `durable:false` for back-compat.
+/// per-write fsync), and resolves to `durable:false`.
 #[test]
 fn disk_topic_survives_clean_restart_and_is_not_fsync_gated() {
     let dir = tempfile::tempdir().unwrap();
@@ -2347,11 +2346,11 @@ fn disk_topic_survives_clean_restart_and_is_not_fsync_gated() {
 /// it derives from `durable` (true⇒fsync, false⇒disk); and the response always
 /// reports the resolved class with `durable == (class == fsync)`.
 #[test]
-fn durability_resolution_and_back_compat_reporting() {
+fn durability_resolution_and_reporting() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path());
 
-    // Legacy durable:true (no `durability`) ⇒ resolves to fsync.
+    // durable:true (no `durability`) ⇒ resolves to fsync.
     engine
         .put_topic(
             "a",
@@ -2365,7 +2364,7 @@ fn durability_resolution_and_back_compat_reporting() {
     assert_eq!(a.durability, Some(Durability::Fsync));
     assert!(a.durable);
 
-    // Legacy durable:false (no `durability`) ⇒ resolves to disk.
+    // durable:false (no `durability`) ⇒ resolves to disk.
     engine.put_topic("b", TopicConfig::default()).unwrap();
     let b = engine.topic_state("b", false).unwrap().config;
     assert_eq!(b.durability, Some(Durability::Disk));
@@ -2432,6 +2431,7 @@ fn router_into_memory_dest_best_effort() {
                     create_dest: false, // dest already exists as a memory topic.
                     filter: None,
                     allow_cycle: false,
+                    guarantee: Default::default(),
                 },
             )
             .unwrap();

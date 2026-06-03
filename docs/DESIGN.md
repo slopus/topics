@@ -117,11 +117,11 @@ class always reflects the current config):
 - **`fsync`** — the ack is **`fsync`-gated** (held until the WAL frame is durably synced; real
   `fsync_ms`). Survives **any** crash. This is today's `durable:true`.
 
-**Resolution & back-compat.** An explicit `durability` always wins; absent it, the class is
-derived from the legacy `durable` bool (`true ⇒ fsync`, `false ⇒ disk`) — so `ephemeral` and
+**Resolution.** An explicit `durability` always wins; absent it, the class is
+derived from the `durable` bool (`true ⇒ fsync`, `false ⇒ disk`) — so `ephemeral` and
 `memory` are reachable only by setting `durability` explicitly. The resolved class is reported
 on every topic-state / topic-create response, and `durable` is normalized to
-`durable == (class == fsync)` so a legacy client reading `durable` still sees the right boolean.
+`durable == (class == fsync)`.
 `is_durable()` is `class == fsync`.
 
 **Defaults rationale.**
@@ -531,15 +531,11 @@ idempotent; a per-record flip is sector-atomic).
 ## 8. Router semantics
 
 A router is a forwarding rule `src → dst`: every record committed to `src` is forwarded (appended)
-to `dst`. `{ name, source, dest, preserve_node, preserve_tag, filter, allow_cycle, created_ts }`.
+to `dst`. `{ name, source, dest, preserve_node, preserve_tag, filter, allow_cycle, guarantee,
+created_ts }`.
 
-The **async + derived** model described below is the **shipped default**. A legacy opt-out
-(`TOPICS_FORWARD_V2=0`, also `false`/`no`/`off`) reverts to the older **synchronous in-line**
-forward: each forwarded copy is its own WAL append, written on the source write/ack path. That
-path is durable-by-construction but **WAL-amplified** (an N-way fan-out costs N WAL writes, and the
-source ack waits on them) and it permits **multi-source fan-in** into a single `dst` (no
-`router_dest_fan_in` rule). The opt-out exists only for back-compat; the derived default is
-recommended (one WAL write per source append, off the ack path, no silent loss).
+The **async + derived** model described below is the router forwarding model: one WAL write per
+source append, off the ack path, with no silent loss.
 
 ### 8.1 Forward mechanics & ordering
 
@@ -563,15 +559,20 @@ recommended (one WAL write per source append, off the ack path, no silent loss).
   stream is a single ordered sequence; direct writes plus that one router can still interleave by
   `dst` commit time, with only **per-source FIFO** guaranteed.
 
-### 8.2 Delivery guarantee: at-least-once
+### 8.2 Delivery guarantees
 
-- Forwarding is **at-least-once**. The router persists its forward cursor over `src`; on restart
+- The default is **at-least-once**. The router persists its forward cursor over `src`; on restart
   it **replays from the cursor** (re-derives un-forwarded copies). A crash between "appended to
   dst" and "advanced router cursor" can re-forward → duplicates in `dst`.
-- Exactly-once is not offered (it would require distributed-style dedup the single-process design
-  avoids). De-dup is the consumer's job; `$node` + an optional client dedup key in `meta` make
-  idempotent consumption practical. **Consumers must be idempotent** (BullMQ at-least-once
-  lesson).
+- **Exactly-once router delivery** is opt-in with `guarantee:"exactly_once"`. It keeps the
+  derived/no-WAL model: forwarded copies are still not separately WAL-logged. The forwarded
+  copy carries a stable idempotency key in `meta._topics_router`, derived from router name,
+  source topic id, source epoch, and source seq. If catch-up/recovery sees that key already
+  present in `dst`, it advances the cursor without appending another copy. The key must still
+  be retained in `dst`; a delete or eviction removes the evidence.
+- Exactly-once router delivery is scoped to the router's destination append. It does not make
+  downstream side effects or arbitrary consumers transactional; consumers still need their own
+  idempotency for external effects.
 - Because forwarding is async and the copies are derived (not WAL-logged), the source ack never
   waits on the destination; an `ephemeral`/`memory`/`disk`/`fsync` dest governs only how/whether
   the *re-derived* copy is retained and recovered, not when the source write acks.
@@ -581,8 +582,8 @@ recommended (one WAL write per source append, off the ack path, no silent loss).
 - The forwarded record in `dst` preserves `$node` (origin node — **never** rewritten when
   `preserve_node`; this is what makes loop-prevention work across the route), `$tag` (when
   `preserve_tag`), `meta`, and `data` verbatim.
-- `$seq` and `$ts` are reassigned by `dst`. Original src seq/ts are optionally preserved in
-  reserved meta `$src_topic` / `$src_seq` for traceability (off by default to keep payloads lean).
+- `$seq` and `$ts` are reassigned by `dst`. `exactly_once` routers reserve
+  `meta._topics_router` for source identity and the router idempotency key.
 - Deletes and node filters are **per-topic** and do not propagate through routers. A delete on
   `src` removes records from `src`, but a copy may already have been forwarded to `dst`; to remove
   it in `dst` too, issue a delete on `dst`. Honest and predictable.

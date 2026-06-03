@@ -320,7 +320,7 @@ fn delete_race_concurrent_appends_no_overdelete_on_crash() {
 fn replay_honors_logged_delete_bound_against_later_append_frame() {
     let disk = FakeDisk::new();
     let data_dir = std::path::PathBuf::from(DATA_DIR);
-    let topic_id = 1u32;
+    let topic_id = 1u64;
     let cfg_blob = serde_json::to_vec(&TopicConfig {
         r#type: TopicType::Log,
         durable: true,

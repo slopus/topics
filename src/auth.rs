@@ -1,15 +1,14 @@
 //! API-key authentication: optional **scopes** + **topic-name prefix allowlist**,
 //! with keys stored **hashed at rest** (SHA-256) and compared in **constant
-//! time**. All of this is *additive* and *back-compatible*: a bare key (no
-//! scopes, no prefixes) authorizes **full access** to every topic/router, exactly
-//! as before this module existed.
+//! time**. A bare key (no scopes, no prefixes) authorizes **full access** to
+//! every topic/router.
 //!
-//! # `TOPICS_API_KEYS` syntax (extended, back-compatible)
+//! # `TOPICS_API_KEYS` syntax
 //!
 //! Comma-separated entries; each entry is one of:
 //!
 //! ```text
-//! key                       # full access (back-compat: no scopes, all topics)
+//! key                       # full access: no scopes, all topics
 //! key:scopes                # scopes only, all topics
 //! key:scopes:prefixes       # scopes + a topic-name PREFIX allowlist
 //! key::prefixes             # all scopes (empty scopes field), prefix-restricted
@@ -41,7 +40,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 /// The set of permission bits a key may carry. A key with **no** bits set
-/// (`bits == 0`) is the back-compat *full-access* key.
+/// (`bits == 0`) is the *full-access* key.
 ///
 /// Per-route requirements (see [`crate::http`]):
 /// - **reads** (GET state/list, POST diff, watch/SSE) need [`Scope::READ`];
@@ -60,11 +59,11 @@ impl Scope {
     pub const ADMIN: Scope = Scope(1 << 3);
 
     /// The empty scope set (no bits). On an [`ApiKey`] this is the sentinel for
-    /// *full access* (back-compat); as a *requirement* it means "no scope needed".
+    /// *full access*; as a *requirement* it means "no scope needed".
     pub const NONE: Scope = Scope(0);
 
     /// All four scope bits set (what an empty `scopes` field in the env expands
-    /// to, and the bitset a back-compat full-access key is treated as holding).
+    /// to, and the bitset a full-access key is treated as holding).
     pub const ALL: Scope = Scope(0b1111);
 
     /// Raw bits (test/inspection helper).
@@ -115,12 +114,12 @@ impl Scope {
 /// the granted [`Scope`] set, and an optional topic-name **prefix allowlist**.
 ///
 /// A key with **no scopes and no prefixes** (`scopes == Scope::NONE` and
-/// `prefixes` empty) is a back-compat **full-access** key.
+/// `prefixes` empty) is a **full-access** key.
 #[derive(Debug, Clone)]
 pub struct ApiKey {
     /// SHA-256 of the key secret. The plaintext is intentionally not retained.
     hash: [u8; 32],
-    /// Granted scope bits. [`Scope::NONE`] (no bits) ⇒ full access (back-compat).
+    /// Granted scope bits. [`Scope::NONE`] (no bits) ⇒ full access.
     scopes: Scope,
     /// Topic-name prefix allowlist. Empty ⇒ any topic name is permitted.
     prefixes: Vec<String>,
@@ -134,8 +133,7 @@ impl ApiKey {
         h.finalize().into()
     }
 
-    /// A full-access key (no scopes, all topics) from a plaintext secret — the
-    /// back-compat shape used when an entry is a bare `key`.
+    /// A full-access key (no scopes, all topics) from a plaintext secret.
     pub fn full_access(secret: &str) -> ApiKey {
         ApiKey {
             hash: Self::digest(secret),
@@ -154,7 +152,7 @@ impl ApiKey {
         }
     }
 
-    /// This key's effective scope set: a back-compat full-access key
+    /// This key's effective scope set: a full-access key
     /// (`scopes == NONE` **and** no prefix allowlist) reports [`Scope::ALL`];
     /// otherwise the explicitly granted bits.
     pub fn effective_scopes(&self) -> Scope {
@@ -193,7 +191,7 @@ impl ApiKey {
         let scopes_field = parts.next();
         let prefixes_field = parts.next();
 
-        // No scopes field at all ⇒ bare key ⇒ full access (back-compat).
+        // No scopes field at all ⇒ bare key ⇒ full access.
         let scopes = match scopes_field {
             None => Scope::NONE,
             Some(s) => Scope::parse(s)?,

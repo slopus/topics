@@ -32,9 +32,9 @@ pub struct TopicConfig {
     pub discard: Discard,
     #[serde(default = "default_durable")]
     pub durable: bool,
-    /// Durability commit class (additive, back-compat). When present this is the
-    /// authoritative durability selector; when absent it is resolved from
-    /// `durable` (`true ⇒ fsync`, `false ⇒ disk`). See [`TopicConfig::durability_class`].
+    /// Durability commit class. When present this is the authoritative durability
+    /// selector; when absent it is resolved from `durable` (`true ⇒ fsync`,
+    /// `false ⇒ disk`). See [`TopicConfig::durability_class`].
     /// Reported (resolved) in topic-state/topic-create responses; omitted on the wire
     /// only when never set *and* on a create request (absence = "resolve from
     /// `durable`"). On a response it is always the resolved class.
@@ -158,9 +158,9 @@ impl TopicConfig {
 
     /// Resolve the single authoritative durability commit class for this topic
     /// (API §0.10). An explicit `durability` always wins; otherwise it is derived
-    /// from the legacy `durable` bool: `durable:true ⇒ fsync`, `durable:false ⇒
-    /// disk`. (`memory` and `ephemeral` are reachable only via explicit
-    /// `durability` values.)
+    /// from the `durable` bool: `durable:true ⇒ fsync`, `durable:false ⇒ disk`.
+    /// (`memory` and `ephemeral` are reachable only via explicit `durability`
+    /// values.)
     pub fn durability_class(&self) -> Durability {
         match self.durability {
             Some(d) => d,
@@ -175,8 +175,7 @@ impl TopicConfig {
     }
 
     /// Whether an acknowledged write to this topic is fsync-gated (the strongest
-    /// class). `true` iff the resolved class is `fsync`; kept as the back-compat
-    /// meaning of the old `durable` bool.
+    /// class). `true` iff the resolved class is `fsync`.
     pub fn is_durable(&self) -> bool {
         self.durability_class() == Durability::Fsync
     }
@@ -190,9 +189,8 @@ impl TopicConfig {
     }
 
     /// Normalize the config so the resolved `durability` is reported and the
-    /// legacy `durable` bool stays consistent with it (`durable == (class ==
-    /// fsync)`). Called on create/update so responses always carry the resolved
-    /// class and `durable` matches it for back-compat.
+    /// `durable` bool stays consistent with it (`durable == (class == fsync)`).
+    /// Called on create/update so responses always carry the resolved class.
     pub fn normalize_durability(&mut self) {
         let class = self.durability_class();
         self.durability = Some(class);
@@ -211,9 +209,9 @@ impl TopicConfig {
 /// - `memory` — same group-committed WAL write + recovery path as `disk`, but with
 ///   no durability guarantee. Never fsync-gated, so `fsync_ms == 0`.
 /// - `disk` — written to the WAL and group-committed (no per-write fsync).
-///   Survives a crash minus the un-fsynced tail. (The legacy `durable:false`.)
+///   Survives a crash minus the un-fsynced tail. (`durable:false`.)
 /// - `fsync` — fsync-gated ack: the response is held until the WAL frame is
-///   durably synced, so the write survives any crash. (The legacy `durable:true`.)
+///   durably synced, so the write survives any crash. (`durable:true`.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Durability {
@@ -725,8 +723,8 @@ pub struct AckRequest {
     /// Optional per-seq delivery tokens (R4 stale-worker fencing). When present,
     /// `lease_ids[i]` must be the `lease_id` handed out for `seqs[i]` at claim
     /// time, or that seq is rejected (skipped) — a worker reusing the same `node`
-    /// after its lease expired cannot ack a *newer* delivery. Omit for the legacy
-    /// node-only match (`/v0` back-compat). Length must equal `seqs` if present.
+    /// after its lease expired cannot ack a *newer* delivery. Omit for node-only
+    /// matching. Length must equal `seqs` if present.
     #[serde(default)]
     pub lease_ids: Vec<String>,
 }
@@ -807,6 +805,19 @@ pub struct Router {
     pub create_dest: bool,
     pub filter: Option<Filter>,
     pub allow_cycle: bool,
+    pub guarantee: RouterGuarantee,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterGuarantee {
+    /// Default derived-router mode: replays from the source cursor and may re-forward
+    /// when the cursor lagged the materialized dest.
+    #[default]
+    AtLeastOnce,
+    /// Stamps a stable router idempotency key in `meta._topics_router` and skips a
+    /// duplicate dest append when that key is still retained in the destination.
+    ExactlyOnce,
 }
 
 /// Request body for `PUT /v0/routers/:router`.
@@ -824,6 +835,8 @@ pub struct RouterCreateRequest {
     pub filter: Option<Filter>,
     #[serde(default)]
     pub allow_cycle: bool,
+    #[serde(default)]
+    pub guarantee: RouterGuarantee,
 }
 
 fn default_true() -> bool {
@@ -841,6 +854,7 @@ pub struct RouterCreateResponse {
     pub preserve_tag: bool,
     pub filter: Option<Filter>,
     pub allow_cycle: bool,
+    pub guarantee: RouterGuarantee,
     pub performance: Performance,
 }
 
@@ -854,6 +868,7 @@ pub struct RouterGetResponse {
     pub preserve_tag: bool,
     pub filter: Option<Filter>,
     pub allow_cycle: bool,
+    pub guarantee: RouterGuarantee,
     pub forwarded_total: u64,
     pub performance: Performance,
 }
@@ -864,6 +879,7 @@ pub struct RouterSummary {
     pub router: String,
     pub source: String,
     pub dest: String,
+    pub guarantee: RouterGuarantee,
     pub forwarded_total: u64,
 }
 

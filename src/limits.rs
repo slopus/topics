@@ -1,6 +1,6 @@
 //! Resource & rate limits (DoS hardening).
 //!
-//! A small, **additive + back-compatible** layer that caps the resources a single
+//! A small layer that caps the resources a single
 //! server instance (and a single api key) can consume, so an unauthenticated dev
 //! topic stays unbounded-friendly while a hardened deployment can refuse to be
 //! exhausted. Every cap is configurable via an env var with a sane default, and
@@ -56,8 +56,7 @@ pub const DEFAULT_MAX_SSE_CONNECTIONS_PER_KEY: u64 = 1_000;
 /// (`TOPICS_MAX_INFLIGHT_PER_KEY`). `0` ⇒ unlimited.
 pub const DEFAULT_MAX_INFLIGHT_PER_KEY: u64 = 1_000;
 /// Default cap on the **total retained record bytes** across all topics
-/// (`TOPICS_MAX_TOTAL_BYTES`). `0` ⇒ unlimited (the default, so back-compat /
-/// existing suites are unaffected). Bounds disk/RAM growth from authenticated
+/// (`TOPICS_MAX_TOTAL_BYTES`). `0` ⇒ unlimited (the default). Bounds disk/RAM growth from authenticated
 /// writers (codex HIGH #5); when set, a write that would push the live total over
 /// the cap is refused with `429 throttled` (the client can shed/delete and retry).
 pub const DEFAULT_MAX_TOTAL_BYTES: u64 = 0;

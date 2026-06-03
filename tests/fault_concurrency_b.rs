@@ -109,7 +109,7 @@ fn fast_cfg(dir: &std::path::Path) -> WalConfig {
 }
 
 /// An Append frame for `topic_id` at `seq`.
-fn ap(topic_id: u32, seq: u64) -> WalRecord {
+fn ap(topic_id: u64, seq: u64) -> WalRecord {
     WalRecord::Append {
         topic_id,
         seq,

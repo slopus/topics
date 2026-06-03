@@ -14,7 +14,7 @@ pub struct RouterGraph {
     /// Router name → definition.
     routers: HashMap<String, Router>,
     /// Per-router forward cursor over its source topic (seq last forwarded). In the
-    /// async/derived (`forward_v2`) model this is the durable progress marker: the
+    /// async/derived model this is the durable progress marker: the
     /// source seq each router has forwarded *through*. It advances ONLY by the
     /// count actually committed into the dest (no silent loss — the R2 fix), so a
     /// filtered/back-pressured/crashed forward is re-driven from the un-advanced
@@ -176,23 +176,6 @@ impl RouterGraph {
             .filter(|r| r.source == topic_name)
             .cloned()
             .collect()
-    }
-
-    /// Whether ANY router has `topic_name` as its source — a cheap existence check
-    /// for the write fast path. The common case (no routers) lets the writer skip
-    /// snapshotting/cloning every record purely for forwarding (codex P0 #2): a
-    /// no-router write never deep-clones its payloads. Short-circuits on the first
-    /// match instead of collecting owned `Router`s.
-    pub fn has_routers_for_source(&self, topic_name: &str) -> bool {
-        self.routers.values().any(|r| r.source == topic_name)
-    }
-
-    /// The distinct set of topic names that are the SOURCE of at least one router.
-    /// Used to refresh the per-topic `is_router_source` atomic after any graph
-    /// mutation, so the write hot path can check that atomic instead of taking the
-    /// graph lock on every append (codex P1).
-    pub fn source_names(&self) -> std::collections::HashSet<String> {
-        self.routers.values().map(|r| r.source.clone()).collect()
     }
 
     /// Record that `count` records were forwarded by `router` up through source

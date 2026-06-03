@@ -23,7 +23,7 @@ use std::sync::Arc;
 use crate::engine::topic_state::{StoredRecord, TopicState};
 use crate::engine::{Engine, SEQ_BASE};
 use crate::storage::{Checkpoint, Snapshot, SnapshotRecord, SnapshotRouter, SnapshotTopic};
-use crate::types::{Filter, FilterOp, Router, TopicConfig};
+use crate::types::{Filter, FilterOp, Router, RouterGuarantee, TopicConfig};
 
 /// Capture the engine's current durable state into a [`Snapshot`].
 ///
@@ -86,8 +86,7 @@ pub fn capture(engine: &Engine, id: u64) -> Option<Snapshot> {
     // content, cursor) pair is one consistent checkpoint unit — a snapshot can never
     // record a dest at one cursor and the cursor at another, which would re-derive a
     // duplicate (old cursor + new dest) or silently drop (new cursor + old dest) on
-    // recovery. Held for the rest of `capture` (released on return). Inert under
-    // v2-off (no `advance_router` ever contends).
+    // recovery. Held for the rest of `capture` (released on return).
     let _router_freeze = engine.router_snapshot_lock.write();
 
     // 3) Materialize every topic's live state + the router set. Each topic is captured
@@ -132,7 +131,7 @@ pub fn capture(engine: &Engine, id: u64) -> Option<Snapshot> {
     Some(Snapshot {
         id,
         ts: now,
-        next_topic_id: engine.next_topic_id.load(Ordering::Relaxed) as u32,
+        next_topic_id: engine.next_topic_id.load(Ordering::Relaxed),
         checkpoint: Checkpoint {
             wal_idx,
             wal_offset,
@@ -278,6 +277,7 @@ fn router_to_snapshot(r: Router, cursor: u64, total: u64, dest_base: u64) -> Sna
         preserve_tag: r.preserve_tag,
         create_dest: r.create_dest,
         allow_cycle: r.allow_cycle,
+        exactly_once: r.guarantee == RouterGuarantee::ExactlyOnce,
         filter: r.filter.map(|f| {
             (
                 match f.op {
@@ -301,7 +301,7 @@ pub fn restore(engine: &Engine, snapshot: Snapshot) -> Checkpoint {
     // snapshotted id.
     engine
         .next_topic_id
-        .store(snapshot.next_topic_id as u64, Ordering::Relaxed);
+        .store(snapshot.next_topic_id, Ordering::Relaxed);
 
     for sb in snapshot.topics {
         let config: TopicConfig = serde_json::from_slice(&sb.config_json).unwrap_or_default();
@@ -348,6 +348,11 @@ pub fn restore(engine: &Engine, snapshot: Snapshot) -> Checkpoint {
                 create_dest: sr.create_dest,
                 filter,
                 allow_cycle: sr.allow_cycle,
+                guarantee: if sr.exactly_once {
+                    RouterGuarantee::ExactlyOnce
+                } else {
+                    RouterGuarantee::AtLeastOnce
+                },
             };
             graph.restore(router, sr.forward_cursor, sr.forwarded_total, sr.dest_base);
         }

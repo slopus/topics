@@ -85,8 +85,8 @@ current config (the topic `type` is immutable, but durability/config can be upda
 | `fsync` | WAL, **fsync-gated** | after the group `fsync` (real `fsync_ms`) | **Yes, any crash** — an acked write is recovered by WAL replay. |
 
 These are **not** server-wide modes: a `memory` cache topic, a `disk` pub/sub feed, and an
-`fsync` job queue coexist in one process, each buying exactly the guarantee it needs. The
-legacy `durable` bool is a back-compat alias (`true ⇒ fsync`, `false ⇒ disk`); reach
+`fsync` queue coexist in one process, each buying exactly the guarantee it needs. The
+`durable` bool is a shorthand alias (`true ⇒ fsync`, `false ⇒ disk`); reach
 `memory` only by setting `durability: "memory"` explicitly. See
 [Durability](/guarantees/durability) for the full treatment.
 

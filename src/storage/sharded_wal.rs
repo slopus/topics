@@ -30,8 +30,7 @@
 //!
 //! # On-disk layout (shard-count-agnostic recovery)
 //!
-//! - `shards == 1`: the flat legacy layout `<data_dir>/wal/wal-<idx>.log` — exactly
-//!   the pre-sharding bytes, so a single-shard run is back-compatible.
+//! - `shards == 1`: the flat single-shard layout `<data_dir>/wal/wal-<idx>.log`.
 //! - `shards > 1`: `<data_dir>/wal/shard-<NN>/wal-<idx>.log`, one subdir per shard.
 //!
 //! Recovery (see [`crate::engine::recovery`]) replays **every** WAL file it finds
@@ -48,7 +47,7 @@ use super::fs::Fs;
 use super::wal::{CommitToken, Wal, WalConfig, WalError, WalMetrics, WalRecord, WalWriter};
 
 /// The subdirectory name for shard `s` of `n` (`shard-00`, `shard-01`, …). Only
-/// used when `n > 1`; a single shard uses the flat legacy layout (no subdir).
+/// used when `n > 1`; a single shard uses the flat layout (no subdir).
 pub fn shard_subdir(s: usize) -> String {
     format!("shard-{s:02}")
 }
@@ -73,7 +72,7 @@ pub fn shard_group_key(s: usize, n: usize) -> String {
 /// shard 0 so those frames always have a home; they are topic-agnostic and replay
 /// shard-independently, so their shard is irrelevant to recovery.
 #[inline]
-pub fn shard_for_topic(topic_id: u32, n: usize) -> usize {
+pub fn shard_for_topic(topic_id: u64, n: usize) -> usize {
     debug_assert!(n >= 1);
     if n <= 1 || topic_id == 0 {
         // Single shard ⇒ everything on shard 0. topic_id 0 (topic-agnostic control
@@ -81,7 +80,7 @@ pub fn shard_for_topic(topic_id: u32, n: usize) -> usize {
         // shard-independently, so a deterministic home keeps placement predictable.
         return 0;
     }
-    // XXH3 of the 4 id bytes, modulo the shard count. Cheap, even, deterministic.
+    // XXH3 of the 8 id bytes, modulo the shard count. Cheap, even, deterministic.
     let h = xxhash_rust::xxh3::xxh3_64(&topic_id.to_le_bytes());
     (h % n as u64) as usize
 }
@@ -130,7 +129,7 @@ impl ShardedWalWriter {
     /// a pre-committed token, exactly like [`WalWriter::submit_batch`]).
     pub fn submit_batch(
         &self,
-        topic_id: u32,
+        topic_id: u64,
         records: Vec<WalRecord>,
         durable: bool,
     ) -> Result<CommitToken, WalError> {
@@ -268,8 +267,7 @@ impl ShardedWal {
     /// `first_idx[s]` / `existing_len[s]` (recovery resumes each shard after its
     /// own truncated tail), routing all I/O through `fs`.
     ///
-    /// `n == 1` uses the flat legacy layout (no shard subdir), so a single-shard
-    /// run is byte-for-byte the pre-sharding WAL. `n > 1` gives each shard its own
+    /// `n == 1` uses the flat single-shard layout (no shard subdir). `n > 1` gives each shard its own
     /// `shard-<NN>/` subdir. `first_idx`/`existing_len` are indexed by shard and
     /// must have length `n` (recovery computes them per shard); a fresh start
     /// passes `(1, 0)` for every shard.
@@ -344,7 +342,7 @@ mod tests {
     use std::sync::{Condvar, Mutex};
     use std::time::Duration;
 
-    fn append(topic_id: u32, seq: u64) -> WalRecord {
+    fn append(topic_id: u64, seq: u64) -> WalRecord {
         WalRecord::Append {
             topic_id,
             seq,
@@ -359,14 +357,14 @@ mod tests {
     #[test]
     fn routing_is_deterministic_and_in_range() {
         for n in [1usize, 2, 4, 8, 16] {
-            for id in 0..1000u32 {
+            for id in 0..1000u64 {
                 let s = shard_for_topic(id, n);
                 assert!(s < n, "shard {s} in range for n={n}");
                 assert_eq!(s, shard_for_topic(id, n), "stable");
             }
         }
         // n == 1 routes everything to shard 0.
-        for id in 0..100u32 {
+        for id in 0..100u64 {
             assert_eq!(shard_for_topic(id, 1), 0);
         }
         // topic_id 0 (control frames) pins to shard 0.
@@ -381,7 +379,7 @@ mod tests {
     fn routing_spreads_across_all_shards() {
         let n = 8usize;
         let mut counts = vec![0usize; n];
-        for id in 1..=10_000u32 {
+        for id in 1..=10_000u64 {
             counts[shard_for_topic(id, n)] += 1;
         }
         for (s, c) in counts.iter().enumerate() {
@@ -405,7 +403,7 @@ mod tests {
         .unwrap();
         let w = wal.writer();
         // Write a handful of distinct topics; record which shard each routes to.
-        let ids: Vec<u32> = (1..=12).collect();
+        let ids: Vec<u64> = (1..=12).collect();
         for &id in &ids {
             for seq in 1..=3u64 {
                 w.append(append(id, seq), true).unwrap();
@@ -445,8 +443,7 @@ mod tests {
         }
     }
 
-    /// `n == 1` uses the flat legacy layout (no shard subdir) — byte-for-byte the
-    /// pre-sharding on-disk shape.
+    /// `n == 1` uses the flat single-shard layout (no shard subdir).
     #[test]
     fn single_shard_is_flat_layout() {
         let dir = tempfile::tempdir().unwrap();
@@ -553,10 +550,10 @@ mod tests {
     fn a_stalled_shard_does_not_block_others() {
         let n = 4usize;
         // Find two topic ids on different shards (one of them shard 0).
-        let id_a = (1..1000u32)
+        let id_a = (1..1000u64)
             .find(|&id| shard_for_topic(id, n) == 0)
             .unwrap();
-        let id_b = (1..1000u32)
+        let id_b = (1..1000u64)
             .find(|&id| shard_for_topic(id, n) != 0)
             .unwrap();
         let stalled_sub = shard_subdir(0);

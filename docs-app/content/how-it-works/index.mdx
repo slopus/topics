@@ -89,7 +89,7 @@ the bytes.
 ```
 
 - **HTTP / SSE.** A typed [`/v0` API](/api) over axum/hyper. The request path validates the
-  body, resolves the topic name to an interned `u32` id, and assigns the monotonic `$seq`
+  body, resolves the topic name to an interned `u64` id, and assigns the monotonic `$seq`
   before the frame is handed off — so the seq can be returned even though the record is not
   yet *visible* until its commit class is satisfied.
 - **Engine.** Each topic holds a base+offset location vector, the dual floor as atomics

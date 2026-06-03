@@ -1,0 +1,74 @@
+---
+title: Storage Formats
+description: Current WAL, segment, and snapshot byte layouts and version numbers.
+---
+
+# Storage Formats
+
+This page records the current on-disk format. [Storage Integrity](/guarantees/storage-integrity)
+describes the crash and recovery guarantees; this page describes versions and bytes.
+
+## Versions
+
+| Layer | Version | Constant |
+|---|---:|---|
+| Storage contract | `2` | `STORAGE_FORMAT_VERSION` |
+| WAL frame bodies | `2` | `WAL_FORMAT_VERSION` |
+| Segment `.data` / `.idx` | `1` | `SEGMENT_FORMAT_VERSION` |
+| Snapshot body | `3` | `SNAPSHOT_VERSION` |
+
+Event sequence numbers are `u64` everywhere. Topic ids are interned `u64` storage ids; the
+public topic identity remains the topic name.
+
+## WAL v2
+
+```text
+off  size  field
+  0    4   frame_len   u32
+  4    1   type        u8
+  5    1   flags       u8
+  6    8   topic_id    u64
+ 14    8   seq         u64
+ 22    8   ts          u64
+ 30    2   node_len    u16
+ 32    2   tag_len     u16
+ 34    4   data_len    u32
+ 38    N   node
+  .    M   tag
+  .    P   data
+  .    8   xxh3        u64
+```
+
+Control records encode their body in `data`. `RouterCreate` carries the router definition,
+filter, initial cursor, initial destination base, and delivery guarantee bit.
+
+## Segments v1
+
+Sealed segment `.data` frames contain:
+
+```text
+frame_len:u32, flags:u8, seq:u64, ts:u64,
+node_len:u16, tag_len:u16, data_len:u32,
+node, tag, data+meta, xxh3:u64, del_flag:u8
+```
+
+The delete flag sits outside the checksum so a crash mid-delete leaves the record either live
+or deleted, never structurally corrupt.
+
+Segment `.idx` entries are fixed-width:
+
+```text
+offset:u32, len:u32, ts:u64, flags:u8, pad:3
+```
+
+## Snapshots v3
+
+Snapshot files contain:
+
+```text
+magic:u32, version:u32, body_len:u32, reserved:u32, xxh3:u64, body:bytes
+```
+
+The body stores `next_topic_id: u64`, per-topic materialized state, per-router cursor/base
+state, router guarantee bits, and per-WAL-group checkpoint positions. Unsupported snapshot
+versions are skipped instead of decoded.

@@ -130,13 +130,13 @@ recovery start without replaying the WAL from time zero.
 ```rust
 // The snapshotted metadata (compact bincode). Tiny and changes rarely.
 struct Meta {
-    topics:        HashMap<String, TopicId>,      // name -> interned u32 id (stable across restart)
+    topics:        HashMap<String, TopicId>,      // name -> interned u64 id (stable across restart)
     topic_cfg:      HashMap<TopicId, TopicConfig>,
     watermarks:   HashMap<TopicId, (u64, u64)>,  // persisted (evict_floor, earliest_seq) per topic
     delete_below: HashMap<TopicId, u64>,         // max before_seq applied (snapshot delete)
     routers:      Vec<Router>,
     epochs:       HashMap<TopicId, u64>,         // delete+recreate detection
-    next_topic_id:  u32,
+    next_topic_id:  u64,
     current_wal:  String,
     last_checkpoint_seq: u64,                  // global lower bound for WAL replay
 }

@@ -38,7 +38,7 @@ is **loopback**, so an unconfigured server is never accidentally public.
   [Security](/deployment/security) page.
 </Callout>
 
-A bare `key` grants full access (back-compat). The `scopes` field draws from
+A bare `key` grants full access. The `scopes` field draws from
 `read`/`write`/`delete`/`admin` (single-letter aliases `r`/`w`/`d`/`a`, plus `rw`); an empty
 scopes field means all scopes. The `prefixes` field is a topic-name prefix allowlist. A
 **malformed scope token makes the server refuse to start** (fail-closed). See
@@ -67,12 +67,6 @@ rotation; the hot-retention knobs govern when sealed segments relocate to cold s
   the retention knobs have no effect. Cold reads run on a separate I/O pool and **never block
   writes or live SSE delivery**. See [Storage & Tiering](/deployment/storage-and-tiering).
 </Callout>
-
-## Routers
-
-| Env var | Default | Meaning |
-|---|---|---|
-| `TOPICS_FORWARD_V2` | `1` (on) | The **async + derived** router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged so one source append is one WAL write regardless of fan-out, single-source-per-dest, replay-from-cursor recovery) described in [Routers](/api/routers) is now the **default**. Set `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) to **opt out** to the legacy synchronous in-line forward: durable-by-construction but **WAL-amplified** (N WAL writes per N-way fan-out, on the source ack path) and it permits multi-source fan-in into one dest. |
 
 ## Resource limits
 

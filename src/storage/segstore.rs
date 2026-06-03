@@ -5,7 +5,7 @@
 //!
 //! Tiered storage (the Phase-6 milestone) keeps the active + recent sealed
 //! segments on fast NVMe (HOT, under the data dir) and relocates older sealed
-//! segments to a slower tier (COLD). v1's cold tier is a different configured
+//! segments to a slower tier (COLD). The local cold tier is a different configured
 //! folder (`TOPICS_COLD_DIR`); putting both behind one trait lets an object
 //! store (S3) drop in later as another impl **without touching the engine**. The
 //! S3 impl is explicitly future work — only [`LocalSegmentStore`] exists now.
@@ -136,7 +136,7 @@ pub trait SegmentStore: Send + Sync {
 
 /// A [`SegmentStore`] backed by a local directory: each segment is the file pair
 /// `seg-<start_seq>.data` + `seg-<start_seq>.idx` under `root`. This is both the
-/// HOT store (a per-topic dir under the data dir) and v1's COLD store (a per-topic
+/// HOT store (a per-topic dir under the data dir) and the local COLD store (a per-topic
 /// dir under `TOPICS_COLD_DIR`).
 pub struct LocalSegmentStore {
     root: PathBuf,

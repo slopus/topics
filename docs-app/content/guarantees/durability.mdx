@@ -59,7 +59,7 @@ even though the old resident records are gone. The ack is never `fsync`-gated, s
 
 Reach for `ephemeral` for RAM-only live fan-out where the wire contract and monotonic seqs
 matter, but replay across restart does not. It is reachable **only** by setting
-`durability:"ephemeral"` explicitly — no legacy bool produces it.
+`durability:"ephemeral"` explicitly.
 
 ### `memory`
 
@@ -77,7 +77,7 @@ regress the head if the un-fsynced tail was lost — there is no durable seq res
 
 Effectively `disk` minus the durability promise. Reach for `memory` for caches and scratch
 state where occasional loss is an acceptable trade for the lowest disk-like latency. It is
-reachable **only** by setting `durability:"memory"` explicitly — no legacy bool produces it.
+reachable **only** by setting `durability:"memory"` explicitly.
 
 ### `disk`
 
@@ -143,9 +143,9 @@ The class defaults to `disk` when neither `durability` nor `durable` is set, so 
 auto-created topic (one materialized lazily on first write) is `disk`. To get `ephemeral` or
 `memory`, you must say so explicitly.
 
-### The legacy `durable` bool
+### The `durable` bool
 
-`durable` is a back-compat alias kept so older clients keep working:
+`durable` is a shorthand alias for the common `disk` / `fsync` cases:
 
 - `durable: true` ⇒ `fsync`
 - `durable: false` ⇒ `disk`
@@ -153,8 +153,8 @@ auto-created topic (one materialized lazily on first write) is `disk`. To get `e
 - `memory` is reachable **only** via `durability:"memory"`
 
 An explicit `durability` always wins over `durable`. On the way out, `durable` is normalized
-to `durable == (durability == "fsync")`, so a legacy client reading the `durable` boolean on a
-topic-state response still sees the right value regardless of how the topic was configured.
+to `durable == (durability == "fsync")`, so the boolean reports whether the topic is
+fsync-gated regardless of how the topic was configured.
 Internally, `is_durable()` is simply `class == "fsync"`.
 
 <Callout type="info">

@@ -38,13 +38,13 @@ as one batch.
                                 8=CheckpointMark 9=ConfigUpdate 10=Lease
                                 11=HeadWatermark
    5    1   flags       u8    bit0=has_tag bit1=has_node bit2=durable
-   6    4   topic_id      u32   interned numeric topic id (name<->id in the meta store)
-  10    8   seq         u64   server-assigned (0 for non-Append control frames)
-  18    8   ts          u64   server commit ms
-  26    2   node_len    u16
-  28    2   tag_len     u16
-  30    4   data_len    u32
-  34    N   node        bytes (node_len)
+   6    8   topic_id    u64   interned numeric topic id (name<->id in the meta store)
+  14    8   seq         u64   server-assigned (0 for non-Append control frames)
+  22    8   ts          u64   server commit ms
+  30    2   node_len    u16
+  32    2   tag_len     u16
+  34    4   data_len    u32
+  38    N   node        bytes (node_len)
    .    M   tag         bytes (tag_len)
    .    P   data+meta   bytes (data_len)   -- opaque JSON payload
    .    8   xxh3        u64   XXH3-64 over bytes [4 .. checksum_start)
@@ -59,7 +59,7 @@ Three properties make this crash-safe:
   hash over everything between `frame_len` and the checksum. It is fast and 64-bit, with
   roughly 2³² lower false-accept than a 32-bit CRC. A mismatch means a torn or partial
   frame — the logical end of the log. This is the crash-consistency anchor.
-- **`topic_id` is an interned `u32`,** not the string name, so frames stay small; the name↔id
+- **`topic_id` is an interned `u64`,** not the string name, so frames stay small; the name↔id
   mapping lives in the [metadata store](/how-it-works/segments-and-snapshots).
 
 <Callout type="info">

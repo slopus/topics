@@ -51,12 +51,12 @@ A missing or unknown token returns **`401 unauthorized`**.
 
 ## Authorization: scopes & the prefix allowlist
 
-A bare key is **full access**, exactly as before — scopes and prefixes are fully additive and
-back-compatible. A key **may** additionally carry a scope set and a topic-name prefix allowlist.
-The `TOPICS_API_KEYS` entry syntax is extended with `:`-delimited fields:
+A bare key is **full access**. A key **may** additionally carry a scope set and a
+topic-name prefix allowlist. The `TOPICS_API_KEYS` entry syntax uses
+`:`-delimited fields:
 
 ```text
-key                       # full access (back-compat): all scopes, all topics
+key                       # full access: all scopes, all topics
 key:scopes                # scopes only, all topics
 key:scopes:prefixes       # scopes + a topic-name PREFIX allowlist
 key::prefixes             # empty scopes field = ALL scopes, prefix-restricted

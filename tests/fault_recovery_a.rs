@@ -46,7 +46,7 @@ use topics::types::{DiffRequest, RecordIn, TopicConfig, TopicType, WriteRequest}
 // WAL frame layout constants (mirrors src/storage/wal.rs; those are crate-private
 // so we re-declare the few we need for byte-poking).
 const FRAME_LEN_PREFIX: usize = 4;
-const FRAME_HEADER_LEN: usize = 30;
+const FRAME_HEADER_LEN: usize = 34;
 const FRAME_CRC_LEN: usize = 8;
 /// Smallest legal `frame_len` value (header + crc, no body).
 const MIN_FRAME_LEN: usize = FRAME_HEADER_LEN + FRAME_CRC_LEN;

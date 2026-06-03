@@ -720,7 +720,7 @@ Phases 4–5, now built with the Phase-6 layered/tiered segment store: each topi
 log is split into sealed, immutable **segment files** (`seg-<first_seq>.data` +
 `.idx`); the active + newest `hot_retain_segments` sealed segments stay **HOT**
 (the data dir on NVMe) and older sealed segments **relocate to a COLD tier**
-(`TOPICS_COLD_DIR`, a second folder in v1; the `SegmentStore` trait lets S3 drop
+(`TOPICS_COLD_DIR`, a second folder; the `SegmentStore` trait lets S3 drop
 in later). **The Phase-2/3, Phase-4, and Phase-5 numbers above are unchanged** —
 this section is purely additive.
 
@@ -913,12 +913,11 @@ conformance` 117/117.
    later writer having staged past them). Snapshot capture now `quiesce`s the
    publish gate under the append lock so an in-flight (ticketed-but-unpublished)
    durable write whose frame precedes the checkpoint offset is never excluded.
-2. **Skip the router-forward clone on the no-router fast path**
-   (`engine/mod.rs`, `engine/router.rs`). A write only deep-clones its records
-   for forwarding when the topic is actually a router source (cheap
-   `has_routers_for_source` existence scan) and only clones for the WAL when a
-   WAL exists on a non-`memory` topic. A plain write with no routers no longer
-   clones every `serde_json::Value`.
+2. **Skip router-forward clones on the write path**
+   (`engine/mod.rs`). Router forwarding is derived from the committed source log,
+   so source writes no longer clone payloads for inline fan-out and only clone for
+   the WAL when a WAL frame is needed. A plain write with no WAL no longer clones
+   every `serde_json::Value`.
 3. **Single-pass diff projection** (`engine/mod.rs::diff`). The deliverable walk
    builds `RecordOut` directly under the index read lock for resident payloads
    (the common case); only sealed (non-resident) payloads are deferred and
@@ -1119,7 +1118,7 @@ start of the iteration; "After" = these final verified numbers.
 | # | Optimization | Site | Before → After |
 |---|---|---|---|
 | 1 | **Off-lock fsync + per-topic commit sequencer** (group-commit; `append_lock` covers only stage+enqueue+ticket, fsync `wait()` off-lock, publish gated back into strict seq order) | `engine/mod.rs` write + `durable_append`; `engine/topic_state.rs` ticket gate; `engine/snapshot.rs` quiesce | **durable throughput 17.9 K → 143 K rec/s (~8×)**; durable single-write p50 unchanged (~5.2 ms, the fsync floor). Surfaced + fixed two real races (staged-but-unpublished seq; snapshot-capture-vs-in-flight-write) — both green. |
-| 2 | **No-router / no-WAL write fast path** (skip the per-record `serde_json::Value` deep clone when the topic has no routers and no WAL frame is needed) | `engine/mod.rs`; `engine/router.rs::has_routers_for_source` | append/64B/1 1.272 → 1.239 µs; append/1KiB/1 1.737 → 1.648 µs |
+| 2 | **No-WAL write fast path** (skip the per-record `serde_json::Value` deep clone when no WAL frame is needed) | `engine/mod.rs` | append/64B/1 1.272 → 1.239 µs; append/1KiB/1 1.737 → 1.648 µs |
 | 3 | **Single-pass diff projection** (build `RecordOut` directly under the read lock for resident payloads; defer only sealed; removed `DiffSlot`) | `engine/mod.rs::diff` | diff/256 22.82 → 20.51 µs (−10%); diff/1000 84.44 → 76.45 µs (−9%) |
 | 4 | **Read-path retention fast path** (no-TTL/no-cap topic returns immediately, skipping two locks per diff/SSE) | `engine/topic_state.rs::enforce_retention` | diff/1 207.8 → 153.4 ns (−26%); cap_evict/1 −18%, cap_evict/100 −28% |
 
@@ -1195,11 +1194,9 @@ the bottleneck (the planned dedicated Linux/NVMe + per-core `taskset` iteration)
 
 To prove the **engine's** write path scales with shard count once the device wall is
 removed, measure the `memory`-class path (no `fsync` at all, so only software cost +
-contention remains). This iteration also removed the two GLOBAL locks that previously
-sat on the per-write hot path and capped scaling regardless of shard count (codex
-P1): the router-graph mutex (`has_routers_for_source` on every append → a lock-free
-per-topic `is_router_source` atomic) and the scheduler ready-set mutex (`mark_dirty` on
-every append → a lock-free `sched_dirty` fast path). With those gone the memory-class
+contention remains). This iteration also removed the GLOBAL write-path costs that previously
+capped scaling regardless of shard count: inline router fan-out/cloning and the scheduler
+ready-set mutex (`mark_dirty` on every append → a lock-free `sched_dirty` fast path). With those gone the memory-class
 path scales positively with shards up to the core/contention limit:
 
 | shards | 1 | 2 | 4 | 8 |
@@ -1235,10 +1232,9 @@ per-write critical section, so adding shards bought little.)
 NVMe target one writer thread per core (capped at 8) matches available fsync
 parallelism without oversharding (which fragments each shard's group commit and
 spawns idle writer threads). The cap of 8 bounds the writer-thread count and keeps
-per-shard cohorts fat enough to amortize fsync. `shards = 1` is the flat legacy
-layout, byte-for-byte identical to the pre-sharding WAL (back-compat, and the right
-setting for a single shared-fsync-volume host like this Mac). Operators on a
-single-volume host should set `TOPICS_WAL_SHARDS=1`.
+per-shard cohorts fat enough to amortize fsync. `shards = 1` is the flat
+single-writer layout and the right setting for a single shared-fsync-volume host
+like this Mac. Operators on a single-volume host should set `TOPICS_WAL_SHARDS=1`.
 
 ## Verified (this iteration)
 
@@ -1254,13 +1250,12 @@ single-volume host should set `TOPICS_WAL_SHARDS=1`.
 
 ---
 
-# Async + Derived Router Forwarding (`TOPICS_FORWARD_V2`) — Fan-out
+# Async + Derived Router Forwarding — Fan-out
 
-The async/derived forwarding path (`TOPICS_FORWARD_V2=1`) removes the WAL
-amplification of router fan-out and takes forwarding off the write/ack path. This
-section records the **before (v1, legacy synchronous `forward_from`)** vs. **after
-(v2, async + derived)** numbers for a single source write fanning to **1 / 10 / 100
-/ 1000** router destinations.
+The async/derived forwarding path removes WAL amplification from router fan-out
+and takes forwarding off the write/ack path. This section records the current
+numbers for a single source write fanning to **1 / 10 / 100 / 1000** router
+destinations.
 
 ## Methodology
 
@@ -1268,51 +1263,43 @@ Deterministic in-process measurement via `examples/forward_fanout_bench.rs` (the
 engine API directly, a real durable WAL under a temp dir, so the WAL-frame delta is
 EXACT). Every topic is `fsync`-class, so the only WAL frames a source write produces
 are `Append` frames — the frame delta therefore IS the append amplification. The
-mode is captured at engine construction from the env var; the harness runs the
-binary twice. `ack_avg_us` is the wall-clock of the `Engine::write` call (the
-synchronous ack); `deliver_us` is the async forwarding drain (off the ack path
-under v2; inline / already-done under v1). Apple M4 Max, macOS, single shared-fsync
+`ack_avg_us` is the wall-clock of the `Engine::write` call (the synchronous ack);
+`deliver_us` is the async forwarding drain (off the ack path). Apple M4 Max, macOS, single shared-fsync
 volume (so each fsync is a real disk barrier — the absolute µs are host-bound; the
 SCALING with fan-out is the result).
 
 Reproduce:
 
 ```bash
-cargo run --release --example forward_fanout_bench                       # v1 (sync)
-TOPICS_FORWARD_V2=1 cargo run --release --example forward_fanout_bench  # v2
+cargo run --release --example forward_fanout_bench
 ```
 
 ## WAL writes per source write (the amplification)
 
-| fan-out | v1 (sync) WAL frames | v2 (async/derived) WAL frames | v2 writes/dest |
-|---:|---:|---:|---:|
-| 1    | 2    | **1** | 1.0000 |
-| 10   | 11   | **1** | 0.1000 |
-| 100  | 101  | **1** | 0.0100 |
-| 1000 | 1001 | **1** | 0.0010 |
+| fan-out | async/derived WAL frames | writes/dest |
+|---:|---:|---:|
+| 1    | **1** | 1.0000 |
+| 10   | **1** | 0.1000 |
+| 100  | **1** | 0.0100 |
+| 1000 | **1** | 0.0010 |
 
-v1 logs `N + 1` frames (the source append + one per dest — each forwarded dest
-record is its own durable WAL append). **v2 logs exactly ONE frame** for any
-fan-out: the source append. Forwarded dest records are derived (source WAL + the
-durable per-router cursor), never separately WAL-logged. A 1000-fan-out drops from
-**1001 → 1 WAL write** (a 1000× reduction; 0.001 writes/dest).
+The source append is the only WAL frame for any fan-out. Forwarded dest records
+are derived from the source WAL + the durable per-router cursor, never separately
+WAL-logged.
 
 ## Write-ack latency (does the ack block on fan-out?)
 
-| fan-out | v1 (sync) ack | v2 (async) ack |
-|---:|---:|---:|
-| 1    | ~8.4 ms    | **~4.2 ms** |
-| 10   | ~46 ms     | **~4.2 ms** |
-| 100  | ~0.43–0.71 s | **~4.2 ms** |
-| 1000 | **~4.2–4.6 s** | **~4.2 ms** |
+| fan-out | async source ack |
+|---:|---:|
+| 1    | **~4.2 ms** |
+| 10   | **~4.2 ms** |
+| 100  | **~4.2 ms** |
+| 1000 | **~4.2 ms** |
 
-Under v1 the ack pays the full fan-out inline: it scales LINEARLY with the number
-of dests (a 1000-fan-out blocks the single source ack for **~4.2 seconds** on this
-single-fsync-volume host). **Under v2 the source ack is FLAT (~4.2 ms = one source
-fsync) regardless of fan-out** — the fan-out no longer serializes the ack. The
-forwarding runs off the ack path (a background worker + read-path catch-up):
+The source ack is flat because fan-out does not run on the source write path. The
+forwarding runs in a background worker plus read-path catch-up:
 
-| fan-out | v2 async forward delivery (`deliver_us`) |
+| fan-out | async forward delivery (`deliver_us`) |
 |---:|---:|
 | 1    | ~35–45 µs |
 | 10   | ~140–190 µs |
@@ -1324,19 +1311,18 @@ background drainer / the dest reader's catch-up, NOT by the source writer's ack.
 
 ## Summary
 
-| property | v1 (sync) | v2 (async + derived) |
-|---|---|---|
-| WAL writes for a 1→N fan-out | `N + 1` | **1** (source only) |
-| source ack latency vs fan-out | linear (`O(N)` fsyncs) | **flat (1 fsync)** |
-| forwarded dest records | separately WAL-logged | **derived (no WAL frame)** |
-| where forwarding runs | inline on the write/ack path | **off the ack path** |
+| property | async + derived |
+|---|---|
+| WAL writes for a 1→N fan-out | **1** (source only) |
+| source ack latency vs fan-out | **flat (1 fsync)** |
+| forwarded dest records | **derived (no WAL frame)** |
+| where forwarding runs | **off the ack path** |
 
 ## Verified (Stage 4 — async-router fixes)
 
 - `cargo test` 392 · `--features test-fs` 584 · `--features test-fs,failpoints` 594
   — all green. clippy clean (default + `test-fs` + `--all-features`, `--all-targets`).
-- `topics-probe conformance` **117/117** with v2 OFF **and** v2 ON (the read-path
-  catch-up preserves the no-sleep `/v0` contract).
-- **kill -9 + restart** of a v2 server: the derived dest topics re-materialize from
+- `topics-probe conformance` **117/117** with the async + derived router path.
+- **kill -9 + restart**: the derived dest topics re-materialize from
   the source WAL + the durable per-router cursor with identical seqs (a consumer
   cursor into a dest stays valid); no duplicate re-forward, no silent loss.

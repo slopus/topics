@@ -151,9 +151,7 @@ pub fn build_router_with_shutdown(
 /// [`Scope`] and the key's topic-name **prefix allowlist**, then (3) stashes the
 /// matched [`Principal`] (scopes + prefixes, *no secret*) in request extensions
 /// so a handler can bind a created resource (e.g. a watch session) to its
-/// creator and scope. A key with no scopes / no prefixes is full-access
-/// (back-compat), so an authenticated server with a single bare key behaves
-/// exactly as before.
+/// creator and scope. A key with no scopes / no prefixes is full-access.
 ///
 /// `GET /v0/watch/:wid` is special: the `wid` is an unguessable bearer capability
 /// (minted by the authenticated `POST /v0/watch`), so the stream GET is authorized
@@ -239,8 +237,7 @@ async fn auth_middleware(
     }
 
     // Enforce the route's required scope + the key's topic-name prefix allowlist.
-    // A full-access key (Scope::ALL, no prefixes) passes both unconditionally, so
-    // this is transparent for the back-compat single-key case.
+    // A full-access key (Scope::ALL, no prefixes) passes both unconditionally.
     if let Some((needed, name)) = route_requirement(req.method(), path) {
         if !principal.allows_scope(needed) {
             return Error::new(

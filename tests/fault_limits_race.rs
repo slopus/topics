@@ -297,6 +297,7 @@ fn l_max_routers_race_never_exceeds_cap() {
                 create_dest: true,
                 filter: None,
                 allow_cycle: false,
+                guarantee: Default::default(),
             };
             start.wait();
             match engine.put_router(&rname, req) {

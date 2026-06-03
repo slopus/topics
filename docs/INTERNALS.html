@@ -449,7 +449,7 @@ it trustworthy: every frame is <strong>self-describing and checksummed</strong>,
 <!-- ---- Frame format ---- -->
 <h3 id="wal-frame" class="anchor-pad">3.1 — Frame format</h3>
 
-<p>Each record becomes one frame. The header is fixed at <strong>30 bytes</strong>; the trailing checksum
+<p>Each record becomes one frame. The header is fixed at <strong>34 bytes</strong>; the trailing checksum
 is <strong>8 bytes</strong> of XXH3-64. Multi-byte integers are little-endian.</p>
 
 <div class="diagram">
@@ -459,13 +459,13 @@ is <strong>8 bytes</strong> of XXH3-64. Multi-byte integers are little-endian.</
    0    4   <span class="hl">frame_len  u32</span>   bytes of this frame EXCLUDING this prefix
    4    1   type       u8   1=Append 2=TopicCreate … 6=Delete … 10=Lease 11=HeadWatermark
    5    1   flags      u8   bit0=has_tag bit1=has_node bit2=durable
-   6    4   topic_id     u32
-  10    8   <span class="hl">seq        u64</span>   the record's monotonic sequence number
-  18    8   ts         u64   server commit time (ms)
-  26    2   node_len   u16
-  28    2   tag_len    u16
-  30    4   data_len   u32
-  34    N   node       bytes
+   6    8   topic_id     u64
+  14    8   <span class="hl">seq        u64</span>   the record's monotonic sequence number
+  22    8   ts         u64   server commit time (ms)
+  30    2   node_len   u16
+  32    2   tag_len    u16
+  34    4   data_len   u32
+  38    N   node       bytes
    .    M   tag        bytes
    .    P   data+meta  bytes   ← opaque payload envelope
    .    8   <span class="hl">xxh3       u64</span>   XXH3-64 over bytes [4 .. crc_start)

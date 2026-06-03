@@ -14,13 +14,13 @@
 //!                                 8=CheckpointMark 9=ConfigUpdate 10=Lease
 //!                                 11=HeadWatermark
 //!    5    1   flags       u8    bit0=has_tag bit1=has_node bit2=durable
-//!    6    4   topic_id      u32   interned numeric topic id (string<->id in meta)
-//!   10    8   seq         u64   server-assigned (0 for non-Append control frames)
-//!   18    8   ts          u64   server commit ms
-//!   26    2   node_len    u16
-//!   28    2   tag_len     u16
-//!   30    4   data_len    u32
-//!   34    N   node        bytes (node_len)
+//!    6    8   topic_id    u64   interned numeric topic id (string<->id in meta)
+//!   14    8   seq         u64   server-assigned (0 for non-Append control frames)
+//!   22    8   ts          u64   server commit ms
+//!   30    2   node_len    u16
+//!   32    2   tag_len     u16
+//!   34    4   data_len    u32
+//!   38    N   node        bytes (node_len)
 //!    .    M   tag         bytes (tag_len)
 //!    .    P   data+meta   bytes (data_len)   -- opaque payload
 //!    .    8   xxh3        u64   XXH3-64 over bytes [4 .. crc_start)
@@ -37,7 +37,7 @@
 //! The `type` byte + the variable body encode the [`WalRecord`] variants:
 //! `Append`, `Delete`, `TopicCreate`/`ConfigUpdate`/`TopicDelete` (topic config and
 //! tombstone), `RouterCreate`/`RouterDelete`, `EvictWatermark`, and
-//! `CheckpointMark`. The `topic_id` is an interned `u32` (the name↔id table is
+//! `CheckpointMark`. The `topic_id` is an interned `u64` (the name↔id table is
 //! itself logged via `TopicCreate`), keeping data frames small.
 //!
 //! # Writer + adaptive group commit (ARCHITECTURE §2.3)
@@ -75,10 +75,12 @@ use super::fs::{File, Fs, OpenOpts, RealFs};
 
 /// Fixed header size: everything from `type` through `data_len` inclusive,
 /// i.e. the bytes immediately following `frame_len`. (`type`1 + `flags`1 +
-/// `topic_id`4 + `seq`8 + `ts`8 + `node_len`2 + `tag_len`2 + `data_len`4 = 30.)
-pub const FRAME_HEADER_LEN: usize = 30;
+/// `topic_id`8 + `seq`8 + `ts`8 + `node_len`2 + `tag_len`2 + `data_len`4 = 34.)
+pub const FRAME_HEADER_LEN: usize = 34;
 /// Trailing XXH3-64 checksum size.
 pub const FRAME_CRC_LEN: usize = 8;
+/// WAL frame-body format version. Bump only for an incompatible body/layout change.
+pub const WAL_FORMAT_VERSION: u32 = 2;
 /// The leading `frame_len` u32 size.
 const FRAME_LEN_PREFIX: usize = 4;
 
@@ -136,29 +138,24 @@ pub struct RouterOp {
     pub preserve_tag: bool,
     pub create_dest: bool,
     pub allow_cycle: bool,
+    /// `true` for router `guarantee:"exactly_once"`; `false` for the default
+    /// `guarantee:"at_least_once"`.
+    pub exactly_once: bool,
     /// Optional forward filter, encoded like [`MatchSel`].
     pub filter: Option<MatchSel>,
     /// The forward cursor (source seq) the router was seeded at when this frame was
-    /// logged (`forward_v2`; codex P0 #3). The async/derived model re-derives the
-    /// dest from `source[cursor..head]`, so the cursor MUST be durable independent of
-    /// replay order: under WAL sharding the source's appends can replay on a
-    /// different shard than this control frame, so recomputing the cursor from
-    /// "whatever source head exists when this frame replays" would backfill pre-create
-    /// history or skip post-create records depending on shard interleave. Persisting
-    /// the create-time cursor pins it. `None` for a LEGACY frame predating the field (the
-    /// trailing pair is absent on the wire); recovery then falls back to the source
-    /// head at replay time (the pre-fix behavior, correct for the single-shard layout
-    /// these frames came from). `Some(0)` is a genuine v2 router created against an
-    /// empty source — distinct from a legacy frame, so recovery must NOT recompute it
-    /// from the live source head (codex P0 #3: an explicit presence bit, not a value
-    /// heuristic).
-    pub initial_cursor: Option<u64>,
+    /// logged. The async/derived model re-derives the dest from
+    /// `source[cursor..head]`, so the cursor MUST be durable independent of replay
+    /// order: under WAL sharding the source's appends can replay on a different
+    /// shard than this control frame, so recomputing the cursor from "whatever
+    /// source head exists when this frame replays" would backfill pre-create history
+    /// or skip post-create records depending on shard interleave. Persisting the
+    /// create-time cursor pins it.
+    pub initial_cursor: u64,
     /// The deterministic dest-seq base the router was seeded at when this frame was
-    /// logged (`forward_v2`; codex P0 #3). The next derived dest seq is `dest_base +
-    /// forwarded_total + 1`, so the base MUST be durable to keep dest seqs stable
-    /// across a restart. `None` for a legacy frame (absent on
-    /// the wire); `Some(0)` is a genuine v2 base of zero.
-    pub initial_dest_base: Option<u64>,
+    /// logged. The next derived dest seq is `dest_base + forwarded_total + 1`, so
+    /// the base MUST be durable to keep dest seqs stable across a restart.
+    pub initial_dest_base: u64,
 }
 
 /// A topic create/config payload logged with [`WalRecord::TopicConfig`]. The opaque
@@ -180,7 +177,7 @@ pub enum WalRecord {
     /// A data record. `data` is the opaque `data+meta` payload blob; `node`/`tag`
     /// are the resolved values (absent ⇒ `None`).
     Append {
-        topic_id: u32,
+        topic_id: u64,
         seq: u64,
         ts: u64,
         node: Option<String>,
@@ -193,7 +190,7 @@ pub enum WalRecord {
     /// delete is never swept), while an explicit `seqs` set deletes exactly those
     /// seqs (ARCHITECTURE §2.1).
     Delete {
-        topic_id: u32,
+        topic_id: u64,
         /// `before_seq` selector (every live seq `< before_seq`), if supplied.
         before_seq: Option<u64>,
         /// `match` selector, if supplied.
@@ -207,17 +204,15 @@ pub enum WalRecord {
         /// logged, so replay only ever sweeps seqs strictly below it. A
         /// CONCURRENT/later append that landed after the delete frame carries a seq
         /// `>= bound_head` and is therefore NEVER deleted on replay, preserving the
-        /// API §5 point-in-time guarantee across a crash. `None` for an explicit
-        /// `seqs`-set delete (the seqs are themselves the bound) and for legacy
-        /// frames predating this field (replay then falls back to the recovered
-        /// head, the pre-fix behavior).
+        /// API §5 point-in-time guarantee across a crash. `None` only for an
+        /// explicit `seqs`-set delete (the seqs are themselves the bound).
         bound_head: Option<u64>,
         ts: u64,
     },
     /// Topic created or its config updated. `tombstone == false` for create/update;
     /// `TopicConfig{tombstone:true}` is the topic-delete marker.
     TopicConfig {
-        topic_id: u32,
+        topic_id: u64,
         op: TopicConfigOp,
         /// `true` ⇒ this frame is the topic-delete tombstone (config bytes empty).
         tombstone: bool,
@@ -230,12 +225,9 @@ pub enum WalRecord {
     /// Eviction watermark advanced (cap/TTL involuntary floor) for a topic. The
     /// `evict_floor` (cap-records / byte-cap) and `expiry_floor` (TTL) are carried
     /// SEPARATELY so recovery restores each into its own floor and the from-0
-    /// tombstone reason (ttl / cap / mixed) is preserved across restart (R7). A
-    /// legacy frame predating the split carries `expiry_floor: 0` (the trailing
-    /// field is absent on the wire); recovery folds it into `evict_floor` only, the
-    /// prior best-effort behavior.
+    /// tombstone reason (ttl / cap / mixed) is preserved across restart (R7).
     EvictWatermark {
-        topic_id: u32,
+        topic_id: u64,
         evict_floor: u64,
         expiry_floor: u64,
         earliest_seq: u64,
@@ -248,7 +240,7 @@ pub enum WalRecord {
     /// written when the queue's `leases_durable:true`; otherwise the projection
     /// is purely in-memory and self-heals on restart (DESIGN §10.6).
     Lease {
-        topic_id: u32,
+        topic_id: u64,
         /// The job seq this event concerns.
         seq: u64,
         /// Event kind: 0=claimed 1=released 2=extended 3=acked (see [`LeaseEvent`]).
@@ -271,7 +263,7 @@ pub enum WalRecord {
     /// pads any reserved-but-unwritten seqs as silent deleted gaps, so the seq
     /// counter never regresses and an acked seq is never reused.
     HeadWatermark {
-        topic_id: u32,
+        topic_id: u64,
         head_seq: u64,
         ts: u64,
     },
@@ -309,7 +301,7 @@ impl WalRecord {
 
     /// The interned topic id this record targets (`0` for topic-agnostic control
     /// frames like routers and checkpoints).
-    pub fn topic_id(&self) -> u32 {
+    pub fn topic_id(&self) -> u64 {
         match self {
             WalRecord::Append { topic_id, .. } => *topic_id,
             WalRecord::Delete { topic_id, .. } => *topic_id,
@@ -488,9 +480,6 @@ pub fn encode_frame(out: &mut Vec<u8>, record: &WalRecord, durable: bool) {
             ts = *rts;
             // body: [has_before:u8][before:u64?] [match] [n_seqs:u32][seq:u64 ...]
             //       [has_bound:u8][bound:u64?]
-            // The trailing `bound_head` is appended AFTER the (always-present) seqs
-            // section so a legacy reader stops cleanly after the seqs and a new
-            // reader picks the bound up when present (backward/forward compatible).
             match before_seq {
                 Some(b) => {
                     data_buf.push(1);
@@ -528,20 +517,12 @@ pub fn encode_frame(out: &mut Vec<u8>, record: &WalRecord, durable: bool) {
             let bools = (op.preserve_node as u8)
                 | ((op.preserve_tag as u8) << 1)
                 | ((op.create_dest as u8) << 2)
-                | ((op.allow_cycle as u8) << 3);
+                | ((op.allow_cycle as u8) << 3)
+                | ((op.exactly_once as u8) << 4);
             data_buf.push(bools);
             write_match(&mut data_buf, &op.filter);
-            // Trailing `initial_cursor` + `initial_dest_base` (forward_v2, codex P0
-            // #3): appended after the legacy fields so an old reader stops cleanly
-            // (it never reads past `filter`) and a new reader picks them up when
-            // present. `None` ⇒ a legacy-shaped frame that omits the pair entirely;
-            // `Some(_)` always writes BOTH 8-byte fields (even `Some(0)`), so the
-            // decoder distinguishes "genuine v2 zero" from "legacy absent" by the
-            // bytes' PRESENCE, not their value.
-            if let (Some(cursor), Some(base)) = (op.initial_cursor, op.initial_dest_base) {
-                data_buf.extend_from_slice(&cursor.to_le_bytes());
-                data_buf.extend_from_slice(&base.to_le_bytes());
-            }
+            data_buf.extend_from_slice(&op.initial_cursor.to_le_bytes());
+            data_buf.extend_from_slice(&op.initial_dest_base.to_le_bytes());
             data = &data_buf;
         }
         WalRecord::RouterDelete { name, ts: rts } => {
@@ -559,8 +540,6 @@ pub fn encode_frame(out: &mut Vec<u8>, record: &WalRecord, durable: bool) {
             ts = *rts;
             data_buf.extend_from_slice(&evict_floor.to_le_bytes());
             data_buf.extend_from_slice(&earliest_seq.to_le_bytes());
-            // Trailing `expiry_floor` (R7): appended after the legacy two fields so
-            // an old reader stops cleanly and a new reader picks it up when present.
             data_buf.extend_from_slice(&expiry_floor.to_le_bytes());
             data = &data_buf;
         }
@@ -663,12 +642,12 @@ fn decode_one(buf: &[u8]) -> DecodeStep {
     let h = &buf[FRAME_LEN_PREFIX..]; // header starts right after frame_len.
     let type_tag = h[0];
     let flags = h[1];
-    let topic_id = u32::from_le_bytes(h[2..6].try_into().unwrap());
-    let seq = u64::from_le_bytes(h[6..14].try_into().unwrap());
-    let ts = u64::from_le_bytes(h[14..22].try_into().unwrap());
-    let node_len = u16::from_le_bytes(h[22..24].try_into().unwrap()) as usize;
-    let tag_len = u16::from_le_bytes(h[24..26].try_into().unwrap()) as usize;
-    let data_len = u32::from_le_bytes(h[26..30].try_into().unwrap()) as usize;
+    let topic_id = u64::from_le_bytes(h[2..10].try_into().unwrap());
+    let seq = u64::from_le_bytes(h[10..18].try_into().unwrap());
+    let ts = u64::from_le_bytes(h[18..26].try_into().unwrap());
+    let node_len = u16::from_le_bytes(h[26..28].try_into().unwrap()) as usize;
+    let tag_len = u16::from_le_bytes(h[28..30].try_into().unwrap()) as usize;
+    let data_len = u32::from_le_bytes(h[30..34].try_into().unwrap()) as usize;
 
     // Validate the inner sections fit inside the (already CRC-validated) frame.
     let body = &h[FRAME_HEADER_LEN..crc_start - FRAME_LEN_PREFIX];
@@ -724,40 +703,31 @@ fn decode_one(buf: &[u8]) -> DecodeStep {
                 Some(m) => m,
                 None => return DecodeStep::Torn,
             };
-            // Explicit seq set (queue ack / dead-letter). Absent in older frames
-            // ⇒ treat as empty (the prefix read consumed exactly the selectors).
-            let seqs = if pos < data.len() {
-                if pos + 4 > data.len() {
-                    return DecodeStep::Torn;
+            // Explicit seq set (queue ack / dead-letter). Current frames always
+            // carry the section, even when the set is empty.
+            if pos + 4 > data.len() {
+                return DecodeStep::Torn;
+            }
+            let n = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            let mut seqs = Vec::with_capacity(n);
+            for _ in 0..n {
+                match read_u64(data, &mut pos) {
+                    Some(s) => seqs.push(s),
+                    None => return DecodeStep::Torn,
                 }
-                let n = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-                pos += 4;
-                let mut v = Vec::with_capacity(n);
-                for _ in 0..n {
-                    match read_u64(data, &mut pos) {
-                        Some(s) => v.push(s),
-                        None => return DecodeStep::Torn,
-                    }
-                }
-                v
-            } else {
-                Vec::new()
+            }
+            let bound_head = match read_u8(data, &mut pos) {
+                Some(1) => match read_u64(data, &mut pos) {
+                    Some(v) => Some(v),
+                    None => return DecodeStep::Torn,
+                },
+                Some(0) => None,
+                _ => return DecodeStep::Torn,
             };
-            // Trailing point-in-time bound (this-version frames write it right
-            // after the seqs section). A legacy frame ends after the seqs ⇒
-            // `bound_head = None` (replay falls back to the recovered head).
-            let bound_head = if pos < data.len() {
-                match read_u8(data, &mut pos) {
-                    Some(1) => match read_u64(data, &mut pos) {
-                        Some(v) => Some(v),
-                        None => return DecodeStep::Torn,
-                    },
-                    Some(0) => None,
-                    _ => return DecodeStep::Torn,
-                }
-            } else {
-                None
-            };
+            if pos != data.len() {
+                return DecodeStep::Torn;
+            }
             WalRecord::Delete {
                 topic_id,
                 before_seq,
@@ -791,39 +761,41 @@ fn decode_one(buf: &[u8]) -> DecodeStep {
             let dest = read_lp_str(data, &mut pos);
             let bools = read_u8(data, &mut pos);
             let filter = read_match(data, &mut pos);
-            // Trailing `initial_cursor` + `initial_dest_base` (forward_v2, codex P0
-            // #3) — `0` for a legacy frame that predates them (the fields are absent
-            // on the wire). They MUST be read as a PAIR: a frame written by the new
-            // encoder always carries both, so a present cursor with an absent base
-            // would be a torn frame.
             let initial_cursor = read_u64(data, &mut pos);
             let initial_dest_base = read_u64(data, &mut pos);
-            let (initial_cursor, initial_dest_base) = match (initial_cursor, initial_dest_base) {
-                // Both present ⇒ a v2 frame; carry the exact logged values (incl. a
-                // genuine zero). Both absent ⇒ a legacy frame (`None`), which recovery
-                // recomputes from the source head. A half-present pair is torn.
-                (Some(c), Some(b)) => (Some(c), Some(b)),
-                (None, None) => (None, None),
-                _ => return DecodeStep::Torn,
-            };
-            match (name, source, dest, bools, filter) {
-                (Some(name), Some(source), Some(dest), Some(bools), Some(filter)) => {
-                    WalRecord::RouterCreate {
-                        op: RouterOp {
-                            name,
-                            source,
-                            dest,
-                            preserve_node: bools & 1 != 0,
-                            preserve_tag: bools & 2 != 0,
-                            create_dest: bools & 4 != 0,
-                            allow_cycle: bools & 8 != 0,
-                            filter,
-                            initial_cursor,
-                            initial_dest_base,
-                        },
-                        ts,
-                    }
-                }
+            match (
+                name,
+                source,
+                dest,
+                bools,
+                filter,
+                initial_cursor,
+                initial_dest_base,
+            ) {
+                (
+                    Some(name),
+                    Some(source),
+                    Some(dest),
+                    Some(bools),
+                    Some(filter),
+                    Some(initial_cursor),
+                    Some(initial_dest_base),
+                ) if pos == data.len() => WalRecord::RouterCreate {
+                    op: RouterOp {
+                        name,
+                        source,
+                        dest,
+                        preserve_node: bools & 1 != 0,
+                        preserve_tag: bools & 2 != 0,
+                        create_dest: bools & 4 != 0,
+                        allow_cycle: bools & 8 != 0,
+                        exactly_once: bools & 16 != 0,
+                        filter,
+                        initial_cursor,
+                        initial_dest_base,
+                    },
+                    ts,
+                },
                 _ => return DecodeStep::Torn,
             }
         }
@@ -838,17 +810,19 @@ fn decode_one(buf: &[u8]) -> DecodeStep {
             let mut pos = 0usize;
             let evict_floor = read_u64(data, &mut pos);
             let earliest_seq = read_u64(data, &mut pos);
-            // Trailing `expiry_floor` (R7) — `0` for a legacy frame that predates
-            // the split (the field is simply absent on the wire).
-            let expiry_floor = read_u64(data, &mut pos).unwrap_or(0);
+            let expiry_floor = read_u64(data, &mut pos);
             match (evict_floor, earliest_seq) {
-                (Some(evict_floor), Some(earliest_seq)) => WalRecord::EvictWatermark {
-                    topic_id,
-                    evict_floor,
-                    expiry_floor,
-                    earliest_seq,
-                    ts,
-                },
+                (Some(evict_floor), Some(earliest_seq))
+                    if expiry_floor.is_some() && pos == data.len() =>
+                {
+                    WalRecord::EvictWatermark {
+                        topic_id,
+                        evict_floor,
+                        expiry_floor: expiry_floor.unwrap(),
+                        earliest_seq,
+                        ts,
+                    }
+                }
                 _ => return DecodeStep::Torn,
             }
         }
@@ -1020,8 +994,7 @@ pub struct WalConfig {
     /// Optional per-shard subdirectory beneath `<dir>/wal` (WAL sharding). When
     /// `Some("shard-00")`, this writer's files live at
     /// `<dir>/wal/shard-00/wal-<idx>.log`; when `None` (the default, and the
-    /// single-shard back-compat layout) they live flat at `<dir>/wal/wal-<idx>.log`,
-    /// byte-for-byte identical to the pre-sharding on-disk layout.
+    /// single-shard flat layout) they live flat at `<dir>/wal/wal-<idx>.log`.
     pub shard_subdir: Option<String>,
 }
 
@@ -1040,7 +1013,7 @@ impl WalConfig {
     }
 
     /// The directory this writer's `wal-<idx>.log` files live in: `<dir>/wal`
-    /// (single-shard / legacy layout) or `<dir>/wal/<shard_subdir>` (a WAL shard).
+    /// (single-shard flat layout) or `<dir>/wal/<shard_subdir>` (a WAL shard).
     fn wal_dir(&self) -> PathBuf {
         let base = self.dir.join("wal");
         match &self.shard_subdir {
@@ -1943,7 +1916,7 @@ mod tests {
     use super::*;
 
     fn append(
-        topic_id: u32,
+        topic_id: u64,
         seq: u64,
         node: Option<&str>,
         tag: Option<&str>,
@@ -2075,52 +2048,6 @@ mod tests {
         );
     }
 
-    /// A LEGACY Delete frame (selectors only, written before the `seqs` and
-    /// `bound_head` fields existed) must still decode: `seqs` empty and
-    /// `bound_head: None` (replay then falls back to the recovered head). This
-    /// pins the backward-compatible body layout so an old on-disk WAL keeps
-    /// replaying after this change.
-    #[test]
-    fn legacy_delete_frame_decodes_without_seqs_or_bound() {
-        // Hand-assemble the legacy body: [has_before=1][before:u64] [match=none].
-        // No `n_seqs` field and no `bound` field — exactly what the old encoder
-        // wrote.
-        let mut body = Vec::new();
-        body.push(1u8);
-        body.extend_from_slice(&50u64.to_le_bytes());
-        body.push(0u8); // match: none
-
-        // Frame the body like `encode_frame` does, with the Delete type tag.
-        let mut frame = Vec::new();
-        frame.extend_from_slice(&[0u8; FRAME_LEN_PREFIX]);
-        frame.push(T_DELETE);
-        frame.push(0u8); // flags (not durable)
-        frame.extend_from_slice(&9u32.to_le_bytes()); // topic_id
-        frame.extend_from_slice(&0u64.to_le_bytes()); // seq
-        frame.extend_from_slice(&123u64.to_le_bytes()); // ts
-        frame.extend_from_slice(&0u16.to_le_bytes()); // node_len
-        frame.extend_from_slice(&0u16.to_le_bytes()); // tag_len
-        frame.extend_from_slice(&(body.len() as u32).to_le_bytes()); // data_len
-        frame.extend_from_slice(&body);
-        let crc_val = crc(&frame[FRAME_LEN_PREFIX..]);
-        frame.extend_from_slice(&crc_val.to_le_bytes());
-        let frame_len = (frame.len() - FRAME_LEN_PREFIX) as u32;
-        frame[0..FRAME_LEN_PREFIX].copy_from_slice(&frame_len.to_le_bytes());
-
-        let got = WalReader::new(frame).next().expect("legacy frame decodes");
-        assert_eq!(
-            got.record,
-            WalRecord::Delete {
-                topic_id: 9,
-                before_seq: Some(50),
-                match_: None,
-                seqs: Vec::new(),
-                bound_head: None,
-                ts: 123,
-            }
-        );
-    }
-
     #[test]
     fn roundtrip_topic_create_and_tombstone() {
         roundtrip(
@@ -2161,16 +2088,15 @@ mod tests {
                     preserve_tag: false,
                     create_dest: true,
                     allow_cycle: false,
+                    exactly_once: false,
                     filter: Some(MatchSel::Glob("t:".into())),
-                    initial_cursor: Some(42),
-                    initial_dest_base: Some(7),
+                    initial_cursor: 42,
+                    initial_dest_base: 7,
                 },
                 ts: 5,
             },
             true,
         );
-        // A genuine v2 zero cursor/base must round-trip as `Some(0)` (NOT collapse to
-        // a legacy `None`): the presence bit is what recovery keys on (codex P0 #3).
         roundtrip(
             WalRecord::RouterCreate {
                 op: RouterOp {
@@ -2181,9 +2107,10 @@ mod tests {
                     preserve_tag: false,
                     create_dest: true,
                     allow_cycle: false,
+                    exactly_once: true,
                     filter: None,
-                    initial_cursor: Some(0),
-                    initial_dest_base: Some(0),
+                    initial_cursor: 0,
+                    initial_dest_base: 0,
                 },
                 ts: 5,
             },

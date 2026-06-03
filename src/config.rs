@@ -99,25 +99,9 @@ pub const ROUTER_TICK_INTERVAL_MS: u64 = 50;
 /// worker or a per-router lock; the source stays dirty and is re-drained).
 pub const ROUTER_BATCH: usize = 1024;
 
-/// Whether the ASYNC + derived (compact-WAL, cursor-driven, no-silent-loss)
-/// forwarding path is enabled. This is now the **shipped default** (ON): one WAL
-/// append per source append regardless of fan-out, off the source ack path, with
-/// deterministic re-materialization and no silent loss.
-///
-/// The legacy synchronous in-line `forward_from` path remains available as an
-/// explicit **opt-out** via `TOPICS_FORWARD_V2=0` (also `false`/`no`/`off`). The
-/// legacy path is durable-by-construction (each forwarded dest record is its own
-/// WAL append) but WAL-amplified (N WAL writes for an N-way fan-out, on the ack
-/// path) and permits multi-source fan-in into a single dest; under the v2 default a
-/// derived dest is single-owner (a second router with a different source into the
-/// same dest is refused with `router_dest_fan_in`).
-pub fn forward_v2_enabled() -> bool {
-    std::env::var("TOPICS_FORWARD_V2")
-        // Explicit opt-out values disable v2 (back to the legacy synchronous path);
-        // anything else (incl. unset) leaves the v2 default ON.
-        .map(|v| !matches!(v.as_str(), "0" | "false" | "no" | "off"))
-        .unwrap_or(true)
-}
+// Router forwarding is always async + derived: one WAL append per source append
+// regardless of fan-out, off the source ack path, with deterministic
+// re-materialization and no silent loss.
 
 // ---------------------------------------------------------------------------
 // Queue limits (API §10)
@@ -462,7 +446,7 @@ impl ServerConfig {
         // WAL sharding (`TOPICS_WAL_SHARDS`): split the single ordered WAL writer
         // into N independent shards to scale durable write throughput. Unset (or
         // unparsable / `0`) ⇒ the num_cpus-based default. Clamped to at least 1
-        // (`1` is the single-writer / flat-layout back-compat path).
+        // (`1` is the single-writer / flat-layout path).
         cfg.wal_shards = match std::env::var("TOPICS_WAL_SHARDS") {
             Ok(v) => match v.trim().parse::<usize>() {
                 Ok(n) if n >= 1 => n,
@@ -569,7 +553,7 @@ impl ServerConfig {
     }
 
     /// Constant-time check that `provided` matches one of the configured api keys
-    /// (back-compat helper; ignores scopes/prefixes). Prefer [`key_store`] +
+    /// (hash-only helper; ignores scopes/prefixes). Prefer [`key_store`] +
     /// [`KeyStore::authenticate`](crate::auth::KeyStore::authenticate) on the hot
     /// path, which also returns the matched principal's scopes.
     pub fn key_matches(&self, provided: &str) -> bool {
@@ -729,37 +713,6 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("TOPICS_TEST_MIN_HEARTBEAT_MS", v),
             None => std::env::remove_var("TOPICS_TEST_MIN_HEARTBEAT_MS"),
-        }
-    }
-
-    #[test]
-    fn forward_v2_is_the_default_and_opt_out_works() {
-        let prev = std::env::var("TOPICS_FORWARD_V2").ok();
-
-        // Unset ⇒ the async + derived path is the SHIPPED DEFAULT (ON).
-        std::env::remove_var("TOPICS_FORWARD_V2");
-        assert!(
-            forward_v2_enabled(),
-            "async + derived forwarding must be the default when the env var is unset"
-        );
-
-        // Only the explicit opt-out values disable it (back to the legacy path).
-        for v in ["0", "false", "no", "off"] {
-            std::env::set_var("TOPICS_FORWARD_V2", v);
-            assert!(
-                !forward_v2_enabled(),
-                "`{v}` must opt out to the legacy path"
-            );
-        }
-        // Any other value (incl. the historical "1"/"true") keeps v2 on.
-        for v in ["1", "true", "yes", "on", "anything"] {
-            std::env::set_var("TOPICS_FORWARD_V2", v);
-            assert!(forward_v2_enabled(), "`{v}` must leave v2 enabled");
-        }
-
-        match prev {
-            Some(v) => std::env::set_var("TOPICS_FORWARD_V2", v),
-            None => std::env::remove_var("TOPICS_FORWARD_V2"),
         }
     }
 

@@ -106,12 +106,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Background router worker (async/derived forwarding, `TOPICS_FORWARD_V2`):
+    // Background router worker (async/derived forwarding):
     // drains dirty router sources off the write/ack path so forwarding progresses
     // even with no dest reader (the read-path catch-up handles read-your-writes; this
-    // bounds worst-case latency and frees the ack path entirely). Elastic tick;
-    // `drain_router_sources` is a no-op when v2 is off, so the default path pays
-    // nothing. Runs on the blocking pool (it may do segment I/O on dest seals).
+    // bounds worst-case latency and frees the ack path entirely). Elastic tick.
+    // Runs on the blocking pool because forwarding may do segment I/O on dest seals.
     let router_engine = engine.clone();
     let router_worker = tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(

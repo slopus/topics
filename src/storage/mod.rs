@@ -31,6 +31,13 @@ pub mod sharded_wal;
 pub mod snapshot;
 pub mod wal;
 
+/// Storage contract version for the current WAL, segment, and snapshot formats.
+///
+/// This value documents the active on-disk guarantee set; individual files still
+/// own their own layout constants and, for snapshots, the embedded version field.
+/// Bump this only when a release changes the crash-recovery or file-format contract.
+pub const STORAGE_FORMAT_VERSION: u32 = 2;
+
 /// The hostile filesystem implementations (FakeDisk / FaultFs / MonitorFs) the
 /// crash-consistency harness injects through the `*_with` constructors. Test-only:
 /// gated behind `cfg(test)` (the lib's own unit tests) or the `test-fs` feature
@@ -44,8 +51,8 @@ pub use fs::{File, Fs, OpenOpts, RealFs};
 pub use segment::{
     data_name, decode_data_frame, decode_data_frame_full, del_flag_offset_in_frame,
     encode_data_frame, encode_idx_entry, frame_is_deleted, idx_entry_at, idx_len, idx_name, lookup,
-    IdxEntry, SegmentBuilder, SegmentError, SegmentRecord, IDX_STRIDE, SEG_DEL_LIVE,
-    SEG_DEL_SENTINEL, SEG_FRAME_CRC_LEN, SEG_FRAME_DEL_LEN, SEG_FRAME_HEADER_LEN,
+    IdxEntry, SegmentBuilder, SegmentError, SegmentRecord, IDX_STRIDE, SEGMENT_FORMAT_VERSION,
+    SEG_DEL_LIVE, SEG_DEL_SENTINEL, SEG_FRAME_CRC_LEN, SEG_FRAME_DEL_LEN, SEG_FRAME_HEADER_LEN,
 };
 pub use segstore::{
     LocalSegmentStore, SegmentId, SegmentPart, SegmentStore, StoreError, Tier, TopicTier,
@@ -59,5 +66,5 @@ pub use snapshot::{
 pub use wal::{
     CommitProof, CommitToken, LeaseEvent, MatchSel, RouterOp, TopicConfigOp, Wal, WalConfig,
     WalError, WalFrame, WalMetrics, WalReader, WalRecord, WalWriter, FRAME_CRC_LEN,
-    FRAME_HEADER_LEN, FSYNC_BUCKETS_US,
+    FRAME_HEADER_LEN, FSYNC_BUCKETS_US, WAL_FORMAT_VERSION,
 };

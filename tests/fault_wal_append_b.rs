@@ -160,10 +160,10 @@ fn durable_wal_bytes(disk: &FakeDisk, path: &Path) -> Vec<u8> {
 }
 
 // WAL frame layout (src/storage/wal.rs): [frame_len:u32 @0..4][type:u8 @4]
-// [flags:u8 @5][topic_id:u32 @6..10][seq:u64 @10..18][ts:u64 @18..26]
+// [flags:u8 @5][topic_id:u64 @6..14][seq:u64 @14..22][ts:u64 @22..30]
 // [node_len:u16][tag_len:u16][data_len:u32]...[body]...[crc:u64 last 8 bytes].
 const FRAME_LEN_PREFIX: usize = 4;
-const FRAME_HEADER_LEN: usize = 30;
+const FRAME_HEADER_LEN: usize = 34;
 const FRAME_CRC_LEN: usize = 8;
 
 /// Walk frame_len prefixes returning each complete frame's `(start, total_len)`.

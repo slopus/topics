@@ -1,0 +1,71 @@
+---
+title: Storage Integrity
+description: Versioned on-disk formats, torn-write handling, snapshot atomicity, and recovery guarantees.
+---
+
+import { Callout } from 'nextra/components'
+
+# Storage Integrity
+
+topics owns its WAL, segment, and snapshot formats. The storage contract is SQLite-style in
+spirit: a partial write is never trusted, a failed commit is never published, file-format
+changes are versioned, and recovery is deterministic.
+
+For byte layouts, see [Storage Formats](/guarantees/storage-formats).
+
+## Format versions
+
+| Layer | Version | Source |
+|---|---:|---|
+| Storage contract | `2` | `STORAGE_FORMAT_VERSION` |
+| WAL frame bodies | `2` | `WAL_FORMAT_VERSION` |
+| Segment `.data` / `.idx` | `1` | `SEGMENT_FORMAT_VERSION` |
+| Snapshot body | `3` | `SNAPSHOT_VERSION` |
+
+Snapshots carry an embedded version and unsupported versions are skipped rather than decoded.
+WAL and segment readers accept the current frame layouts only. Any incompatible WAL or segment
+change must add an explicit versioned envelope, a new frame type, or a new file namespace so old
+readers cannot misparse it.
+
+<Callout type="info">
+  Rust memory safety is not a storage guarantee by itself. The guarantee comes from the on-disk
+  protocol: ordered WAL append, fsync boundaries, checksums, atomic snapshot replacement, and
+  deterministic replay.
+</Callout>
+
+## Crash contract
+
+- `fsync` topics: an acknowledged write survives process crash, kernel crash, and power loss once
+  the disk honors `fdatasync`.
+- `disk` topics: a crash may lose the most recent un-fsynced WAL tail.
+- `memory` topics: records are best-effort and may survive or be lost after restart; config
+  persists.
+- `ephemeral` topics: records are RAM-only by design; config/control state persists and seqs stay
+  monotonic.
+- A write that fails the WAL commit path publishes nothing visible.
+- Recovery never fabricates a record from torn or corrupt bytes.
+
+## File rules
+
+- WAL frames are length-prefixed and XXH3-64 protected. A torn length, overrun, inconsistent body,
+  unknown type, invalid UTF-8, or checksum mismatch is the logical end of that WAL shard and is
+  truncated before appending again.
+- Snapshots are written through temp file, file sync, rename, and directory sync. A torn or
+  checksum-bad snapshot is ignored; recovery falls back to the previous valid snapshot or WAL
+  replay.
+- Segment data is immutable once sealed. A checksum-bad sealed frame is explicit corruption, not a
+  silent tail. Segment deletes flip one trailing byte outside the checksum so a crash mid-flip
+  leaves the record either live or deleted, never structurally corrupt.
+- WAL recovery is shard-count agnostic. It replays every discovered WAL group by `topic_id`, so
+  changing `TOPICS_WAL_SHARDS` between restarts does not skip data.
+
+## Verification
+
+Run the default local check with:
+
+```bash
+./scripts/test-quick.sh
+```
+
+The exhaustive crash/fault matrix is intentionally heavier. Run it only when explicitly requested
+or when storage/recovery behavior changed in a way the quick suite cannot cover.

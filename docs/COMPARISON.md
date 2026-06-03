@@ -342,8 +342,8 @@ violated for the `disk` class. Coupled with B1.
 ### R4 — Queue ack/nack/extend keyed on `node`, not `lease_id` — stale-worker fencing gap  · **high**
 > **UPDATE — RESOLVED (implemented).** ack/nack/extend now accept an optional `lease_ids` array and
 > fence on it (`ack_fenced`/`lease_token_ok`, `src/engine/queue.rs`): **validate-when-supplied** — a
-> stale token is rejected and that seq skipped — while remaining optional (legacy `node`+`seqs` match
-> when omitted). The text below describes the old state.
+> stale token is rejected and that seq skipped; when omitted, matching uses `node` + `seqs`.
+> The text below describes the old state.
 
 The jobs path matches on `l.node == node` (`src/engine/queue.rs:624`) and does not require the
 returned `lease_id` (`src/types.rs:704-750`, `src/engine/queue.rs:622-630,721-733,799-808`). A stale

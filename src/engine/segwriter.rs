@@ -858,9 +858,9 @@ impl SegmentWriter {
                 if hi > data.len() {
                     continue;
                 }
-                // CRC-validate AND check the decoded seq matches the expected seq
-                // (codex P1 #3): a corrupt `.idx` offset/len, a legacy frame, or a
-                // torn range can never fabricate a deletion that skips a LIVE record.
+                // CRC-validate AND check the decoded seq matches the expected seq:
+                // a corrupt `.idx` offset/len or torn range can never fabricate a
+                // deletion that skips a LIVE record.
                 // Only a frame that decodes cleanly, is flagged DELETED, and carries
                 // the seq the `.idx` slot claims is trusted.
                 if let Ok((rec, true)) = decode_data_frame_full(&data[lo..hi]) {
@@ -1165,8 +1165,8 @@ mod tests {
 
     use crate::storage::{SegmentId, SegmentPart, SegmentStore, StoreError, Tier};
 
-    /// Build a writer whose tier has a real local HOT + COLD store (the v1 cold
-    /// tier = a second folder), with a custom hot-retention count.
+    /// Build a writer whose tier has a real local HOT + COLD store (a second
+    /// folder), with a custom hot-retention count.
     fn writer_with_cold(
         cfg: SegmentConfig,
         clock: SharedClock,

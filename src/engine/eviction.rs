@@ -29,7 +29,7 @@ pub struct Floors {
     pub delete_floor: u64,
     /// Highest **dest** seq that a derived router could not materialize because
     /// the SOURCE had already trimmed the corresponding record (async/derived
-    /// `forward_v2`; design §4 source-retention bound). Involuntary loss bounded by
+    /// forwarding; design §4 source-retention bound). Involuntary loss bounded by
     /// the source's retention: it advances `earliest_seq` AND surfaces a tombstone
     /// (reason `source_trim`), so the dest faithfully reflects the source retention
     /// instead of opening a silent gap. `0` if none.

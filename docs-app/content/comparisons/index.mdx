@@ -45,8 +45,8 @@ range and/or tag.
 
 <Callout type="warning">
   The honest, recurring "alternative wins" axis is the same on every page: topics has **no
-  replication, no HA/failover, no horizontal scale-out**, and is **at-least-once only** (no
-  exactly-once or transactions). It is self-hosted with **no native TLS** (run it behind a
+  replication, no HA/failover, no horizontal scale-out**, and has **no transactions or
+  end-to-end exactly-once processing**. It is self-hosted with **no native TLS** (run it behind a
   reverse proxy). If you need any of those, the alternative is the right tool. See
   [Durability](/guarantees/durability) for the single-node failure model.
 </Callout>
@@ -62,7 +62,7 @@ pages cover — this table is the 30-second version.
 | **Durability model** | Per-topic class: `ephemeral` (resident-only) / `memory` / `disk` (group commit) / `fsync` (fsync-gated ack), single node, **no replication** | Global RDB / AOF (`appendfsync always\|everysec\|no`); async replicas | Per-partition log via **replication** (`acks`, `min.insync.replicas`) | Per-stream `file` / `memory`; optional **RAFT** replicas (1/3/5) | Managed, **multi-AZ / regional** replicated |
 | **Gap / loss signal** | **Explicit in-band tombstone** `[gap_from, gap_to]` at read time | Silent (`MAXLEN` / `MINID` / `XDEL` trim quietly) | Silent (offset reset per `auto.offset.reset`) | Silent (infer from stream-seq jumps) | Silent (no per-consumer gap signal) |
 | **Ordering** | Per-topic monotonic `$seq` (`u64`) | Per-stream entry IDs `<ms>-<seq>` | Per-**partition** offsets only | Per-stream sequence | Per-shard (Kinesis) / ordering keys (Pub/Sub) / FIFO group (SQS) |
-| **Delivery & ack** | At-least-once; cursor-advance ack for logs, lease ack/nack for queues | At-least-once via consumer-group PEL (`XACK` / `XCLAIM`) | At-least-once default; **exactly-once** via txns + `read_committed` | At-least-once; AckExplicit / AckAll / AckNone | At-least-once; SQS FIFO / Pub/Sub exactly-once options |
+| **Delivery & ack** | At-least-once by default; router `exactly_once` suppresses duplicate derived dest appends by stable key; cursor-advance ack for logs, lease ack/nack for queues | At-least-once via consumer-group PEL (`XACK` / `XCLAIM`) | At-least-once default; **exactly-once** via txns + `read_committed` | At-least-once; AckExplicit / AckAll / AckNone | At-least-once; SQS FIFO / Pub/Sub exactly-once options |
 | **Fan-out** | Routers + multiplexed SSE (one connection, many topics) | Pub/Sub (at-most-once) or multiple consumer groups | Multiple consumer groups read independently | Multiple consumers + subject wildcards | SNS push fan-out to heterogeneous endpoints |
 | **Queues** | Native **lease queues** (claim / ack / nack / extend) + dead-letter **move** | Consumer groups (PEL); `XAUTOCLAIM` reclaim | Groups cap at partition count; KIP-932 share groups are a **preview** | Pull consumers + `AckWait` redelivery; `MaxDeliver` advisory (DIY DLQ) | First-class (SQS visibility timeout + native DLQ) |
 | **Deletion** | **Targeted, permanent** deletes by seq range and/or tag (exact/prefix) | `XDEL` by ID; trim by `MAXLEN` / `MINID` | No point delete; **log compaction** drops superseded keys | Stream purge / per-subject limits | Ack = delete; **no replay** (SQS), seek/replay (Kinesis, Pub/Sub) |

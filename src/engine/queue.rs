@@ -376,9 +376,9 @@ impl Engine {
         if node.len() > config::MAX_NODE_BYTES {
             return Err(Error::invalid_request("node too long"));
         }
-        // Read-path catch-up (forward_v2): drain routers feeding this queue so jobs
+        // Read-path catch-up: drain routers feeding this queue so records
         // forwarded by a router are claimable on an immediate claim after a source
-        // write (read-your-writes). Inert under v2-off.
+        // write (read-your-writes).
         self.catch_up_dest(name);
         let b = self.get_queue(name)?;
         let claimers = vec![Claimer {
@@ -423,8 +423,7 @@ impl Engine {
         claimers: &[Claimer],
         lease_ms: Option<u64>,
     ) -> Result<(Vec<Vec<LeasedJob>>, u64)> {
-        // Read-path catch-up (forward_v2): forwarded jobs are claimable
-        // read-your-writes. Inert under v2-off.
+        // Read-path catch-up: forwarded records are claimable read-your-writes.
         self.catch_up_dest(name);
         let b = self.get_queue(name)?;
         self.run_claim_cohort(&b, claimers, lease_ms)
@@ -642,7 +641,7 @@ impl Engine {
     /// holds it *under that exact lease id*; a mismatched/stale token is rejected
     /// (skipped), so a worker reusing the same `node` after its lease expired (the
     /// job re-delivered under a new lease) cannot ack the newer delivery. An empty
-    /// `lease_ids` (or a `None` entry) preserves the legacy node-only match.
+    /// `lease_ids` (or a `None` entry) preserves node-only matching.
     pub fn ack_fenced(
         &self,
         name: &str,
@@ -1186,7 +1185,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn log_lease_event(
         &self,
-        topic_id: u32,
+        topic_id: u64,
         seq: u64,
         event: LeaseEvent,
         node: &str,
@@ -1236,7 +1235,7 @@ fn check_seqs_len(op: &str, seqs: &[u64]) -> Result<()> {
 }
 
 /// Validate the optional per-seq fencing tokens (R4): an empty `lease_ids`
-/// disables fencing (legacy node-only match); otherwise it must be exactly
+/// disables fencing (node-only match); otherwise it must be exactly
 /// `seqs`-aligned so `lease_ids[i]` pairs with `seqs[i]`.
 fn check_lease_ids_len(op: &str, seqs: &[u64], lease_ids: &[Option<u64>]) -> Result<()> {
     if !lease_ids.is_empty() && lease_ids.len() != seqs.len() {
@@ -1251,7 +1250,7 @@ fn check_lease_ids_len(op: &str, seqs: &[u64], lease_ids: &[Option<u64>]) -> Res
 
 /// Whether the fencing token for `seqs[i]` (if supplied) authorizes acting on the
 /// lease currently held under `held` (R4 stale-worker fencing). Returns `true`
-/// when no token was supplied (empty slice or `None` entry) — the legacy
+/// when no token was supplied (empty slice or `None` entry) — the node-only
 /// node-only match — or when the supplied token matches the held `lease_id`.
 #[inline]
 fn lease_token_ok(lease_ids: &[Option<u64>], i: usize, held: u64) -> bool {
@@ -1641,7 +1640,7 @@ mod tests {
     #[test]
     fn fenced_nack_and_extend_reject_stale_token() {
         // R4 for nack + extend: a stale token is rejected (skipped); the correct
-        // token is honored. An empty `lease_ids` preserves the legacy node match.
+        // token is honored. An empty `lease_ids` preserves node-only matching.
         let (engine, clock) = engine_with_clock();
         engine.put_topic("jobs", queue_cfg()).unwrap();
         produce(&engine, "jobs", 1);
@@ -1677,7 +1676,7 @@ mod tests {
         assert_eq!(n2.nacked, 1);
         assert_eq!(n2.ready, 1);
 
-        // A `None` token (legacy node-only match) still works: re-claim + bare ack.
+        // A `None` token (node-only match) still works: re-claim + bare ack.
         let r3 = engine.claim("jobs", "w1", 1, None).unwrap();
         let s3 = r3.claimed[0].seq;
         let a = engine.ack("jobs", "w1", &[s3]).unwrap();

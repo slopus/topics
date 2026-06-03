@@ -247,7 +247,7 @@ async fn run_claim(
 
 /// Parse the optional per-seq fencing tokens from a request body's `lease_ids`
 /// (R4). The wire form mirrors the claim response: `"lease_<hex>"`. An empty
-/// `lease_ids` disables fencing (`Ok(vec![])`, legacy node-only match). An empty
+/// `lease_ids` disables fencing (`Ok(vec![])`, node-only match). An empty
 /// string entry is "no token for this seq" (`None`); a non-empty, malformed entry
 /// is a `400 invalid_request` (a client sending a token must send a real one).
 fn parse_lease_ids(lease_ids: &[String]) -> Result<Vec<Option<u64>>> {

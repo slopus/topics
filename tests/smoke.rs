@@ -69,12 +69,12 @@ async fn quickstart_end_to_end() {
     let (status, body) = req_json(
         &app,
         "PUT",
-        "/v0/topics/jobs",
+        "/v0/topics/render-tasks",
         Some(json!({ "durable": true, "cap_records": 1_000_000, "ttl_ms": 0 })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "first PUT creates -> 201");
-    assert_eq!(body["topic"], "jobs");
+    assert_eq!(body["topic"], "render-tasks");
     assert_eq!(body["created"], true);
     // Documented config defaults must be echoed verbatim.
     let cfg = &body["config"];
@@ -91,7 +91,7 @@ async fn quickstart_end_to_end() {
     assert!(body["performance"]["server_total_ms"].is_number());
 
     // A second PUT is idempotent -> 200, created:false.
-    let (status, body) = req_json(&app, "PUT", "/v0/topics/jobs", Some(json!({}))).await;
+    let (status, body) = req_json(&app, "PUT", "/v0/topics/render-tasks", Some(json!({}))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["created"], false);
 
@@ -99,18 +99,18 @@ async fn quickstart_end_to_end() {
     let (status, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs",
+        "/v0/topics/render-tasks",
         Some(json!({
             "node": "worker-eu-1",
             "records": [
-                { "data": { "url": "s3://b/a.png", "w": 256 }, "tag": "tenant42:job-9001" },
-                { "data": { "url": "s3://b/b.png", "w": 512 }, "tag": "tenant42:job-9002" }
+                { "data": { "url": "s3://b/a.png", "w": 256 }, "tag": "tenant42:render-9001" },
+                { "data": { "url": "s3://b/b.png", "w": 512 }, "tag": "tenant42:render-9002" }
             ]
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "write to existing topic -> 200");
-    assert_eq!(body["topic"], "jobs");
+    assert_eq!(body["topic"], "render-tasks");
     assert_eq!(body["first_seq"], 1);
     assert_eq!(body["last_seq"], 2);
     assert_eq!(body["seqs"], json!([1, 2]));
@@ -122,9 +122,9 @@ async fn quickstart_end_to_end() {
     assert_eq!(body["performance"]["fsync_ms"], 0.0);
 
     // -- §3 GET state --------------------------------------------------------
-    let (status, body) = req_json(&app, "GET", "/v0/topics/jobs", None).await;
+    let (status, body) = req_json(&app, "GET", "/v0/topics/render-tasks", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["topic"], "jobs");
+    assert_eq!(body["topic"], "render-tasks");
     assert_eq!(body["head_seq"], 2);
     assert_eq!(body["earliest_seq"], 1);
     assert_eq!(body["next_seq"], 3);
@@ -136,7 +136,7 @@ async fn quickstart_end_to_end() {
     let (status, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs/diff",
+        "/v0/topics/render-tasks/diff",
         Some(json!({ "from_seq": 0, "limit": 500, "node": "reader-x", "include_tags": true })),
     )
     .await;
@@ -144,7 +144,7 @@ async fn quickstart_end_to_end() {
     let records = body["records"].as_array().unwrap();
     assert_eq!(records.len(), 2, "reader-x is not the origin node");
     assert_eq!(records[0]["$seq"], 1);
-    assert_eq!(records[0]["$tag"], "tenant42:job-9001");
+    assert_eq!(records[0]["$tag"], "tenant42:render-9001");
     assert_eq!(records[1]["$seq"], 2);
     assert_eq!(body["next_from_seq"], 2);
     assert_eq!(body["head_seq"], 2);
@@ -157,7 +157,7 @@ async fn quickstart_end_to_end() {
     let (status, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs/diff",
+        "/v0/topics/render-tasks/diff",
         Some(json!({ "from_seq": 0, "limit": 500, "node": "worker-eu-1" })),
     )
     .await;
@@ -173,17 +173,17 @@ async fn quickstart_end_to_end() {
     );
     assert_eq!(body["next_from_seq"], 2);
 
-    // -- §6 Delete a job by exact tag, then a tenant by prefix glob ----------
+    // -- §6 Delete a render task by exact tag, then a tenant by prefix glob ----------
     // Permanent, point-in-time, silent deletion (no persistent filter).
     let (status, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs/delete",
-        Some(json!({ "match": ["tag", "Eq", "tenant42:job-9001"] })),
+        "/v0/topics/render-tasks/delete",
+        Some(json!({ "match": ["tag", "Eq", "tenant42:render-9001"] })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["topic"], "jobs");
+    assert_eq!(body["topic"], "render-tasks");
     assert_eq!(body["deleted"], 1, "exactly one record removed");
     assert_eq!(
         body["earliest_seq"], 2,
@@ -191,11 +191,11 @@ async fn quickstart_end_to_end() {
     );
     assert_eq!(body["count"], 1, "count drops, net of deletion");
 
-    // diff again as a fresh reader: job-9001 is gone, NO tombstone (silent).
+    // diff again as a fresh reader: render-9001 is gone, NO tombstone (silent).
     let (status, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs/diff",
+        "/v0/topics/render-tasks/diff",
         Some(json!({ "from_seq": 0, "limit": 500, "node": "reader-y" })),
     )
     .await;
@@ -214,7 +214,7 @@ async fn quickstart_end_to_end() {
     let (status, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs/delete",
+        "/v0/topics/render-tasks/delete",
         Some(json!({ "match": ["tag", "Glob", "tenant42:*"] })),
     )
     .await;
@@ -224,7 +224,7 @@ async fn quickstart_end_to_end() {
     let (_, body) = req_json(
         &app,
         "POST",
-        "/v0/topics/jobs/diff",
+        "/v0/topics/render-tasks/diff",
         Some(json!({ "from_seq": 0, "limit": 500, "node": "reader-z" })),
     )
     .await;

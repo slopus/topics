@@ -2,16 +2,15 @@
 set -euo pipefail
 
 # Basic, sub-minute confidence gate for routine work.
-# Intentionally skips fault injection, failpoints, crash matrices, proptest/fuzz,
-# benchmark sweeps, docs builds, and deeper queue/router/SSE/WebSocket matrices.
+# Intentionally skips the broad unit/integration corpus, fault injection,
+# failpoints, crash matrices, proptest/fuzz, benchmark sweeps, docs builds,
+# and deeper queue/router/SSE/WebSocket matrices.
 
 cargo fmt --check
 
-cargo test --lib --bins
+# Compile the library and server binary without compiling every test target.
+cargo check --lib --bin topics
 
-cargo test \
-  --test smoke \
-  --test harness_smoke \
-  --test integration_topics \
-  --test integration_diff \
-  --test integration_errors
+# One in-process HTTP smoke covers create, append, get, diff, delete, router
+# fan-out, watch, and node loop-prevention without binding sockets.
+cargo test --test smoke

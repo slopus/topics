@@ -1101,6 +1101,7 @@ fn router_into_memory_dest_best_effort() {
                     create_dest: false,
                     filter: None,
                     allow_cycle: false,
+                    guarantee: Default::default(),
                 },
             )
             .unwrap();

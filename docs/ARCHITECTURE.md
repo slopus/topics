@@ -162,13 +162,13 @@ little-endian.
                                 8=CheckpointMark 9=ConfigUpdate 10=Lease
                                 11=HeadWatermark
    5    1   flags       u8    bit0=has_tag bit1=has_node bit2=durable
-   6    4   topic_id      u32   interned numeric topic id (string<->id in meta store)
-  10    8   seq         u64   server-assigned (0 for non-Append control frames)
-  18    8   ts          u64   server commit ms
-  26    2   node_len    u16
-  28    2   tag_len     u16
-  30    4   data_len    u32
-  34    N   node        bytes (node_len)
+   6    8   topic_id    u64   interned numeric topic id (string<->id in meta store)
+  14    8   seq         u64   server-assigned (0 for non-Append control frames)
+  22    8   ts          u64   server commit ms
+  30    2   node_len    u16
+  32    2   tag_len     u16
+  34    4   data_len    u32
+  38    N   node        bytes (node_len)
    .    M   tag         bytes (tag_len)
    .    P   data+meta   bytes (data_len)   -- opaque payload
    .    8   xxh3        u64   XXH3-64 over bytes [4 .. crc_start)
@@ -179,7 +179,7 @@ little-endian.
 - **XXH3-64** (fast, modern 64-bit hash; ~2³² lower false-accept than a 32-bit CRC) over everything
   between `frame_len` and the checksum. A mismatch ⇒ torn/partial frame ⇒ logical end of log
   (truncate). This is the crash-consistency anchor (§4).
-- **`topic_id` is an interned u32** (not the string name), keeping frames small; the name↔id mapping
+- **`topic_id` is an interned u64** (not the string name), keeping frames small; the name↔id mapping
   lives in the metadata store (§5).
 - **Control frames** (TopicCreate, Delete, EvictWatermark, ConfigUpdate, …) share the same WAL, so
   config, deletes, and data live on one ordered, crash-consistent timeline — there is exactly one
@@ -210,7 +210,7 @@ shard count. Each topic routes to **exactly one shard** by a stable hash of its 
 hardware, making group commit trivial and removing write-side lock contention), and per-topic ordering
 and every durability guarantee still hold because a topic always lives on the same shard. Recovery is
 **shard-count-agnostic** (it replays all discovered shards by `topic_id`, §4), so the shard count may
-change between restarts. `TOPICS_WAL_SHARDS=1` is the legacy single-writer / flat-layout path.
+change between restarts. `TOPICS_WAL_SHARDS=1` is the single-writer / flat-layout path.
 
 ### 2.3 Durability classes & group commit
 
@@ -223,7 +223,7 @@ Durability is per-topic. **Four commit classes, one writer per WAL shard:**
 | `disk` (`durable:false`) | group-commit, no wait | `write()`-en to the page cache and acked **on frame enqueue** (not fsync-gated). A background `fdatasync()` runs on the shard's group-commit tick; writers do not wait. Loss window on crash = un-fsynced tail. |
 | `fsync` (`durable:true`) | fsync-on-commit | Acked only after `fdatasync()` returns. Still **group-committed**: the shard writer coalesces all pending durable frames in a small window into one `write()` + one `fdatasync()`, then acks them all. |
 
-The legacy `durable` bool is a back-compat alias: `durable:true ⇒ fsync`, `durable:false ⇒ disk`;
+The `durable` bool is a shorthand alias: `durable:true ⇒ fsync`, `durable:false ⇒ disk`;
 `memory` is reachable only by setting `durability:"memory"` explicitly. (`disk` and `memory` are
 both group-committed and non-fsync-gated; only `fsync` gates the ack on `fdatasync`.)
 
@@ -386,7 +386,7 @@ Data outgrows RAM and the fast NVMe. Each topic's segments are split across **tw
 - **HOT** — the active segment + recent sealed segments, on fast local NVMe (a per-topic dir under the
   data dir). Reads here are buffered/mmap-fast; the live tail (active segment + the in-memory index
   + a bounded recent-record cache) is always hot and independent of cold access.
-- **COLD** — older sealed segments, on a slower tier. **v1's cold tier is a different configured
+- **COLD** — older sealed segments, on a slower tier. **The local cold tier is a different configured
   folder** (`TOPICS_COLD_DIR`); when unset (the default in every existing test), **tiering is
   disabled — nothing relocates and behavior is unchanged by construction.**
 
@@ -491,13 +491,13 @@ replaying the WAL from time zero.
 
 ```rust
 struct Meta {
-    topics:   HashMap<String, TopicId>,    // name -> interned u32 id (stable across restart)
+    topics:   HashMap<String, TopicId>,    // name -> interned u64 id (stable across restart)
     topic_cfg: HashMap<TopicId, TopicConfig>,
     watermarks: HashMap<TopicId, (u64, u64)>, // persisted (evict_floor, earliest_seq) per topic
     delete_below: HashMap<TopicId, u64>,  // persisted max before_seq applied (snapshot delete)
     routers: Vec<Router>,               // {name, source, dest, preserve_*, filter, allow_cycle}
     epochs: HashMap<TopicId, u64>,        // delete+recreate detection
-    next_topic_id: u32,
+    next_topic_id: u64,
     current_wal: String,
     last_checkpoint_seq: u64,           // global lower bound for WAL replay
 }
@@ -700,7 +700,7 @@ single WAL writer.
 | **getState** | lock-free atomic loads (head/earliest/count) + `last_consumed_ms` store | lock-free |
 | **getDifference** | topic read lock over committed segments; bounded batch; bump recency; tombstone iff `from_seq+1 < evict_floor` (the involuntary cap/TTL floor — a purely-deleted gap below `earliest_seq` is silent) | topic read lock; doesn't block other topics; rarely blocks the append tail (seqlock) |
 | **SSE push** | worker draining the topic pushes frames to each watcher's bounded channel; slow consumer's channel full → degrade that connection, not the topic | per-topic during drain; per-connection channel isolates a slow client |
-| **Router** | **async, off the write/ack path** (the shipped default): a background per-router worker forwards from a durable cursor; forwarded copies are **derived** (not WAL-logged — one WAL write per source append regardless of fan-out); each derived dest is single-source (a different second source ⇒ `409 topic_exists_incompatible`, `error.detail.reason: "router_dest_fan_in"`); dest scheduling/priority applies; node filtering at dest read time. **Legacy opt-out** `TOPICS_FORWARD_V2=0`: synchronous in-line forward on the ack path — durable-by-construction but WAL-amplified (N WAL writes per N-way fan-out) and it permits multi-source fan-in | no cross-shard lock on the source ack path; recovery replays from the per-router cursor |
+| **Router** | **async, off the write/ack path**: a background per-router worker forwards from a durable cursor; forwarded copies are **derived** (not WAL-logged — one WAL write per source append regardless of fan-out); each derived dest is single-source (a different second source ⇒ `409 topic_exists_incompatible`, `error.detail.reason: "router_dest_fan_in"`); dest scheduling/priority applies; node filtering at dest read time | no cross-shard lock on the source ack path; recovery replays from the per-router cursor |
 
 ### 8.4 Slow-consumer isolation (SSE / WebSocket)
 

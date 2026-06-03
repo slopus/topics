@@ -49,8 +49,7 @@ use topics::engine::segwriter::SegmentWriter;
 use topics::engine::topic_state::{StoredRecord, TopicState};
 use topics::storage::testfs::FakeDisk;
 use topics::storage::{
-    decode_data_frame_full, frame_is_deleted, lookup, Fs, LocalSegmentStore, SegmentPart,
-    SegmentStore, TopicTier,
+    frame_is_deleted, lookup, Fs, LocalSegmentStore, SegmentPart, SegmentStore, TopicTier,
 };
 use topics::types::TopicConfig;
 
@@ -152,90 +151,6 @@ fn f_seg_delflip_survives_wal_trim() {
     // The live records are still byte-identical after the flip.
     assert_eq!(w2.resolve_sealed(1).unwrap().data, json!({"v":1}));
     assert_eq!(w2.resolve_sealed(3).unwrap().data, json!({"v":3}));
-}
-
-// ===========================================================================
-// BACKWARD COMPAT — a LEGACY segment (no del_flag byte) recovers + reads (P0 #1)
-// ===========================================================================
-
-/// A segment `.data` sealed by an OLDER build has NO trailing del_flag byte. The
-/// new decoder/reader/recovery-scan must read those frames byte-for-byte (live),
-/// never misread the final CRC byte as a delete flag, and never fabricate a
-/// deletion — existing persisted data must not become unreadable. We build a
-/// legacy-layout segment by hand on disk, then drive the real reader + scan over it.
-#[test]
-fn f_seg_legacy_segment_reads_live_and_recovers() {
-    // Hand-build a LEGACY `.data` frame (no del_flag) + matching `.idx`, byte-for-
-    // byte as a pre-delete-feature build wrote it.
-    fn crc(bytes: &[u8]) -> u64 {
-        xxhash_rust::xxh3::xxh3_64(bytes)
-    }
-    fn legacy_frame(seq: u64, data: &[u8]) -> Vec<u8> {
-        let mut out = vec![0u8; 4]; // frame_len placeholder
-        out.push(0u8); // flags: no node, no tag
-        out.extend_from_slice(&seq.to_le_bytes());
-        out.extend_from_slice(&(1_700_000_000_000u64 + seq).to_le_bytes());
-        out.extend_from_slice(&0u16.to_le_bytes()); // node_len
-        out.extend_from_slice(&0u16.to_le_bytes()); // tag_len
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        out.extend_from_slice(data);
-        let crc_val = crc(&out[4..]);
-        out.extend_from_slice(&crc_val.to_le_bytes()); // CRC is the trailing 8 bytes
-        let frame_len = (out.len() - 4) as u32;
-        out[0..4].copy_from_slice(&frame_len.to_le_bytes());
-        out
-    }
-    fn idx_entry(offset: u32, len: u32, seq: u64) -> Vec<u8> {
-        let mut e = Vec::new();
-        e.extend_from_slice(&offset.to_le_bytes());
-        e.extend_from_slice(&len.to_le_bytes());
-        e.extend_from_slice(&(1_700_000_000_000u64 + seq).to_le_bytes());
-        e.push(0u8); // flags
-        e.extend_from_slice(&[0u8; 3]); // pad to 20
-        e
-    }
-
-    let disk = FakeDisk::new();
-    let fs = disk.arc();
-    // One legacy segment seg-1 with seqs 1,2,3 (1-per the start_seq=1).
-    let mut data = Vec::new();
-    let mut idx = Vec::new();
-    for seq in 1..=3u64 {
-        let off = data.len() as u32;
-        let frame = legacy_frame(seq, format!("{{\"v\":{seq}}}").as_bytes());
-        let len = frame.len() as u32;
-        data.extend_from_slice(&frame);
-        idx.extend_from_slice(&idx_entry(off, len, seq));
-    }
-    let store = LocalSegmentStore::open_with(PathBuf::from(SEG_ROOT), fs.clone()).unwrap();
-    store.put(1, &data, &idx).unwrap();
-
-    // Every legacy frame decodes (format-tolerant) and reads LIVE — none is misread
-    // as deleted even though it has no del_flag byte.
-    for seq in 1..=3u64 {
-        let e = lookup(&idx, 1, seq).unwrap();
-        let lo = e.offset as usize;
-        let hi = lo + e.len as usize;
-        let (decoded, deleted) = decode_data_frame_full(&data[lo..hi]).expect("legacy decodes");
-        assert_eq!(decoded.seq, seq);
-        assert!(!deleted, "legacy frame seq {seq} reads live");
-        assert!(
-            !ondisk_deleted(&fs, 1, seq),
-            "legacy seq {seq} not on-disk-deleted"
-        );
-    }
-
-    // A fresh writer over the legacy segment: the recovery scan finds NO deletions
-    // (no del_flag bytes exist), and resolving a record reads the original payload.
-    let mut w = seg_writer(fs.clone(), test_clock(0).0, 1);
-    for seq in 1..=3u64 {
-        seg_append(&mut w, seq); // re-feed; existing legacy files are preserved.
-    }
-    assert!(
-        w.scan_ondisk_deleted().is_empty(),
-        "legacy segment fabricates no deletions on the recovery scan"
-    );
-    assert_eq!(w.resolve_sealed(2).unwrap().data, json!({"v":2}));
 }
 
 // ===========================================================================

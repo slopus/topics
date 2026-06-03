@@ -8,12 +8,12 @@
 //! The WAL is split into N independent shards (one writer thread / file set each,
 //! see [`crate::storage::sharded_wal`]). Recovery is driven by the WAL FILES on
 //! disk, NOT by the configured shard count: it discovers and replays the flat
-//! layout (`wal/wal-<idx>.log`, the single-shard / legacy layout) AND every
+//! layout (`wal/wal-<idx>.log`, the single-shard layout) AND every
 //! `wal/shard-NN/` subdir, dispatching each frame to its topic by `topic_id` (never
 //! assuming a topic lives in `topic_id % N`). This lets `TOPICS_WAL_SHARDS` be
 //! reconfigured between restarts with no data loss — a dir written with K shards
 //! recovers correctly when reopened with any N. The NEW writers use the current
-//! layout; previous-layout files are absorbed + dropped at the next snapshot.
+//! layout; superseded physical groups are absorbed + dropped at the next snapshot.
 //!
 //! Recovery order (ARCHITECTURE §4):
 //!
@@ -57,8 +57,8 @@ struct WalFile {
 
 /// A discovered on-disk WAL shard group: the files of one writer (the flat
 /// `wal/` layout, or one `wal/shard-NN/` subdir), plus the shard index that
-/// names it. The flat layout is shard index `0` (it is the single-shard / legacy
-/// layout). Recovery replays EVERY discovered group regardless of how many shards
+/// names it. The flat layout is shard index `0` (it is the single-shard layout).
+/// Recovery replays EVERY discovered group regardless of how many shards
 /// the current config asks for — the shard-count-agnostic-replay property.
 struct WalShardGroup {
     /// The shard index this group's name implies (flat ⇒ 0, `shard-NN` ⇒ NN). Used
@@ -125,7 +125,7 @@ fn parse_shard_dir(name: &str) -> Option<usize> {
 }
 
 /// Discover **every** WAL shard group on disk under `<data_dir>/wal`,
-/// shard-count-agnostically: the flat `wal/` layout (legacy / single-shard) AND
+/// shard-count-agnostically: the flat `wal/` layout (single-shard) AND
 /// every `wal/shard-NN/` subdirectory, regardless of how many shards the current
 /// config requests. This is the basis of the shard-count-agnostic-replay
 /// property: a dir written with K shards is fully replayed when reopened with any
@@ -136,7 +136,7 @@ fn parse_shard_dir(name: &str) -> Option<usize> {
 fn discover_shard_groups(fs: &Arc<dyn Fs>, wal_dir: &Path) -> std::io::Result<Vec<WalShardGroup>> {
     let mut groups: Vec<WalShardGroup> = Vec::new();
 
-    // The flat layout: `wal-<n>.log` files directly under `wal/` (shard 0 / legacy
+    // The flat layout: `wal-<n>.log` files directly under `wal/` (shard 0 /
     // single-shard). Present iff a single-shard run wrote here.
     let flat = list_wal_files(fs, wal_dir)?;
     if !flat.is_empty() {
@@ -215,16 +215,16 @@ fn find_split_topics<F>(
     fs: &Arc<dyn Fs>,
     groups: &[WalShardGroup],
     ckpt_for: &F,
-) -> std::collections::HashSet<u32>
+) -> std::collections::HashSet<u64>
 where
     F: Fn(&WalShardGroup) -> (u64, u64),
 {
     // topic_id → count of distinct groups it appears in.
-    let mut groups_per_topic: std::collections::HashMap<u32, usize> =
+    let mut groups_per_topic: std::collections::HashMap<u64, usize> =
         std::collections::HashMap::new();
     for g in groups {
         let (ckpt_idx, ckpt_offset) = ckpt_for(g);
-        let mut seen_here: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut seen_here: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for wf in &g.files {
             if wf.idx < ckpt_idx {
                 continue;
@@ -263,7 +263,7 @@ where
 /// its on-disk group order as a stable fallback.
 fn replay_split_topics(
     engine: &Engine,
-    split_frames: std::collections::HashMap<u32, Vec<(usize, usize, WalRecord)>>,
+    split_frames: std::collections::HashMap<u64, Vec<(usize, usize, WalRecord)>>,
 ) {
     for (_topic_id, mut frames) in split_frames {
         // Per group_order, the minimum Append seq for this topic (None ⇒ no appends).
@@ -418,14 +418,14 @@ pub fn recover_and_open_with(
     // Pre-scan: which topic_ids appear in more than one group (post-checkpoint)? Only
     // these need ordered buffering. Cheap framing scan (no payload decode). topic_id 0
     // (topic-agnostic control frames) is never "split" — those frames replay in stream.
-    let split_topics: std::collections::HashSet<u32> = if maybe_split {
+    let split_topics: std::collections::HashSet<u64> = if maybe_split {
         find_split_topics(&fs, &groups, &ckpt_for)
     } else {
         std::collections::HashSet::new()
     };
     // Buffered frames for split topics: topic_id → list of (group_order, in_group_idx,
     // record). `group_order` is the index of the group in the replay-sorted `groups`.
-    let mut split_frames: std::collections::HashMap<u32, Vec<(usize, usize, WalRecord)>> =
+    let mut split_frames: std::collections::HashMap<u64, Vec<(usize, usize, WalRecord)>> =
         std::collections::HashMap::new();
     let mut group_tails: Vec<(PathBuf, u64, u64)> = Vec::with_capacity(groups.len());
     for (group_order, g) in groups.iter().enumerate() {
@@ -523,23 +523,17 @@ pub fn recover_and_open_with(
     //    there are no segments (pure in-memory topics carry no writer).
     engine.reclaim_segments_on_recovery();
 
-    // Seed every topic's lock-free `is_router_source` flag from the recovered router
-    // graph (codex P1), so the post-recovery write hot path forwards without taking
-    // the global graph lock per append. Covers a snapshot-restored router whose
-    // source topic was materialized separately, regardless of replay order.
-    engine.refresh_router_source_flags();
-
-    // Derived-router re-materialization (`forward_v2`): forwarded dest records were
+    // Derived-router re-materialization: forwarded dest records were
     // never WAL-logged, so each derived dest's content past the last snapshot is
     // re-derived here by replaying forwarding from each router's recovered cursor
     // with deterministic dest seqs (a consumer cursor into a dest stays valid). A
     // source trimmed below a cursor surfaces a `source_trim` tombstone, never a
-    // silent gap. No-op under v2-off (the legacy WAL-replayed dest Append path).
+    // silent gap.
     engine.reforward_routers_on_recovery();
 
     // 8) Open the `n_shards` writers, each positioned to append after its recovered/
     //    truncated tail, through the same FS seam recovery read from. `n_shards == 1`
-    //    uses the flat legacy layout (byte-for-byte the pre-sharding WAL).
+    //    uses the flat single-shard layout.
     let cfg = WalConfig::new(data_dir);
     let wal = ShardedWal::open_at_with(fs.clone(), cfg, n_shards, &first_idx, &existing_len)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -716,8 +710,6 @@ fn replay_frame(engine: &Engine, record: WalRecord) {
                     // point-in-time `bound_head` logged with the frame so a record
                     // appended AFTER the original delete (seq >= bound_head) is never
                     // swept on replay (the point-in-time guarantee survives a crash).
-                    // A legacy frame carries `bound_head = None` ⇒ fall back to the
-                    // recovered head (pre-fix behavior).
                     let filter = match_.map(|m| matchsel_to_filter(&m));
                     b.apply_delete(before_seq, filter.as_ref(), bound_head, ts as i64);
                 }
@@ -754,9 +746,7 @@ fn replay_frame(engine: &Engine, record: WalRecord) {
             // backward clock can never resurrect a record below a durably-logged
             // floor after restart AND the from-0 tombstone reason (ttl / cap /
             // mixed) is preserved. Each floor only ever advances (`>`), never
-            // regresses, regardless of replay order. A legacy frame carries
-            // `expiry_floor: 0` (folds into `evict_floor` only — the prior
-            // best-effort behavior, reason fidelity not preserved for old logs).
+            // regresses, regardless of replay order.
             if let Some(b) = engine.get_topic_by_id(topic_id) {
                 let mut floors = b.floors.write();
                 if evict_floor > floors.evict_floor {

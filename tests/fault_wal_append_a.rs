@@ -246,12 +246,12 @@ fn ap(seq: u64) -> WalRecord {
 }
 
 // WAL frame layout (src/storage/wal.rs):
-//   [frame_len:u32 @0..4][type:u8 @4][flags:u8 @5][topic_id:u32 @6..10]
-//   [seq:u64 @10..18][ts:u64 @18..26][node_len:u16][tag_len:u16][data_len:u32]
+//   [frame_len:u32 @0..4][type:u8 @4][flags:u8 @5][topic_id:u64 @6..14]
+//   [seq:u64 @14..22][ts:u64 @22..30][node_len:u16][tag_len:u16][data_len:u32]
 //   ... body ... [crc:u64 last 8 bytes].
-// FRAME_LEN_PREFIX = 4, FRAME_HEADER_LEN = 30, FRAME_CRC_LEN = 8.
+// FRAME_LEN_PREFIX = 4, FRAME_HEADER_LEN = 34, FRAME_CRC_LEN = 8.
 const FRAME_LEN_PREFIX: usize = 4;
-const FRAME_HEADER_LEN: usize = 30;
+const FRAME_HEADER_LEN: usize = 34;
 const FRAME_CRC_LEN: usize = 8;
 
 /// The byte offset of the start of the **last** complete valid frame in `bytes`,

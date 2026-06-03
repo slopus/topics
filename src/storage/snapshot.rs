@@ -43,7 +43,7 @@ use super::fs::{Fs, OpenOpts, RealFs};
 /// Magic bytes prefixing every snapshot file (`"SNP1"`).
 const SNAPSHOT_MAGIC: [u8; 4] = *b"SNP1";
 /// Snapshot format version (bumped on any incompatible body change).
-const SNAPSHOT_VERSION: u32 = 2;
+const SNAPSHOT_VERSION: u32 = 3;
 /// Header: magic(4) + version(4) + body_len(4) + crc(4).
 const SNAPSHOT_HEADER_LEN: usize = 20;
 
@@ -75,7 +75,7 @@ pub struct SnapshotRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotTopic {
     pub name: String,
-    pub topic_id: u32,
+    pub topic_id: u64,
     pub epoch: u64,
     /// Postcard-opaque: the JSON-encoded [`crate::types::TopicConfig`].
     pub config_json: Vec<u8>,
@@ -89,7 +89,7 @@ pub struct SnapshotTopic {
     pub live_count: u64,
     /// The live record set (ascending by seq).
     pub records: Vec<SnapshotRecord>,
-    /// The derived-router source-trim floor (`forward_v2`; codex P1 #5): the highest
+    /// The derived-router source-trim floor: the highest
     /// dest seq a router could not materialize because the SOURCE trimmed the
     /// corresponding record. It surfaces a `source_trim` tombstone instead of a
     /// silent gap, so it MUST persist across a snapshot or a previously-surfaced
@@ -111,6 +111,8 @@ pub struct SnapshotRouter {
     pub preserve_tag: bool,
     pub create_dest: bool,
     pub allow_cycle: bool,
+    #[serde(default)]
+    pub exactly_once: bool,
     /// Forward filter encoded as `(op, value)`: op `0`=Eq `1`=Glob; `None` ⇒ no
     /// filter.
     pub filter: Option<(u8, String)>,
@@ -148,9 +150,7 @@ pub struct SnapshotRouter {
 /// never replays an absorbed group's control frames from zero (codex P0 #2).
 ///
 /// The leading `wal_idx`/`wal_offset` mirror `shards[0]` for the single-shard
-/// (legacy) layout and for older snapshots that predate `shards` (postcard leaves
-/// a missing trailing field empty, so an old snapshot decodes with an empty
-/// `shards` and recovery falls back to the flat `(wal_idx, wal_offset)` position).
+/// layout and serve as the flat checkpoint position when `shards` is empty.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// Numeric suffix of the (shard-0 / single-shard) WAL file the snapshot's tail
@@ -162,17 +162,16 @@ pub struct Checkpoint {
     /// Highest global seq absorbed by the snapshot (informational; the byte
     /// offset is the authoritative replay boundary).
     pub last_checkpoint_seq: u64,
-    /// Per-group `(wal_idx, wal_offset)` positions. Empty for an older snapshot
-    /// predating sharding (recovery then uses `(wal_idx, wal_offset)` as a single
-    /// flat-group position). Includes a position for EVERY WAL group present on
+    /// Per-group `(wal_idx, wal_offset)` positions. Empty means a single flat-group
+    /// position stored in `(wal_idx, wal_offset)`. Includes a position for EVERY WAL group present on
     /// disk at snapshot time, not just the current shard count, so a leftover group
     /// from a prior layout is also recorded as fully absorbed.
     #[serde(default)]
     pub shards: Vec<(u64, u64)>,
     /// The physical identity of each entry in `shards`: `shard_keys[i]` is the
     /// relative dir name under `wal/` for group `i` (`""` flat, `shard-NN` sharded).
-    /// Parallel to `shards`. Empty for an older snapshot (predates keying); recovery
-    /// then falls back to index-based matching for back-compat.
+    /// Parallel to `shards`. Empty means the flat group is matched by the leading
+    /// `(wal_idx, wal_offset)` fields, or sharded groups are matched by index.
     #[serde(default)]
     pub shard_keys: Vec<String>,
 }
@@ -195,10 +194,9 @@ impl Checkpoint {
     /// never an over-skip). Matches by PHYSICAL group identity so a flat group and a
     /// `shard-00/` group are never conflated across a shard-count reconfigure.
     ///
-    /// Back-compat for an older snapshot whose `shard_keys` is empty: the flat group
-    /// (`key == ""`) uses `(wal_idx, wal_offset)` only when the snapshot was itself
-    /// single-position/flat; a `shard-NN` key maps positionally to `shards[NN]` (the
-    /// pre-keying layout was always `shard-NN` indexed).
+    /// When `shard_keys` is empty, the flat group (`key == ""`) uses
+    /// `(wal_idx, wal_offset)` only when the snapshot was itself single-position/flat;
+    /// a `shard-NN` key maps positionally to `shards[NN]`.
     pub fn position_for_key(&self, key: &str) -> Option<(u64, u64)> {
         if !self.shard_keys.is_empty() {
             return self
@@ -226,7 +224,7 @@ pub struct Snapshot {
     pub id: u64,
     /// Server commit ms when the snapshot was taken.
     pub ts: u64,
-    pub next_topic_id: u32,
+    pub next_topic_id: u64,
     pub checkpoint: Checkpoint,
     pub topics: Vec<SnapshotTopic>,
     pub routers: Vec<SnapshotRouter>,
@@ -517,6 +515,7 @@ mod tests {
                 preserve_tag: false,
                 create_dest: true,
                 allow_cycle: false,
+                exactly_once: false,
                 filter: Some((1, "t:".into())),
                 forward_cursor: 3,
                 forwarded_total: 3,

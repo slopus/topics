@@ -157,9 +157,9 @@ fn configure_builder(builder: &mut auto::Builder<TokioExecutor>) {
 /// .with_graceful_shutdown(..)` and preserves all of its observable behaviour
 /// (SSE under both protocols, graceful drain).
 ///
-/// Backward-compatible entry point: creates a private [`ShutdownSignal`] that no
-/// SSE stream observes, so the drain still relies on connections closing on their
-/// own. New code should use [`serve_with_signal`] and share the same
+/// Entry point that creates a private [`ShutdownSignal`] that no SSE stream
+/// observes, so the drain still relies on connections closing on their own.
+/// New code should use [`serve_with_signal`] and share the same
 /// [`ShutdownSignal`] with [`AppState`](crate::http::AppState) so SSE streams are
 /// actively wound down within the bounded drain (M11).
 pub async fn serve<S>(listener: TcpListener, app: Router, shutdown: S) -> std::io::Result<()>

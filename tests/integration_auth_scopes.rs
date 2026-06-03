@@ -1,7 +1,7 @@
 //! Stage-1 security: optional API-key **scopes** (read/write/delete/admin) + a
 //! topic-name **prefix allowlist**, with keys stored **hashed at rest** and
-//! compared in constant time. All additive + back-compatible: a bare key with no
-//! scopes/prefixes is full access (covered by `integration_errors.rs`).
+//! compared in constant time. A bare key with no scopes/prefixes is full access
+//! (covered by `integration_errors.rs`).
 //!
 //! Black-topic against the real bound server. Scope→route mapping under test:
 //! read = GET state/list + POST diff + POST /watch; write = POST records + queue
@@ -35,8 +35,8 @@ fn code(body: &Value) -> &str {
 }
 
 #[test]
-fn full_access_bare_key_unchanged() {
-    // Back-compat: a bare key (no scopes/prefixes) does everything.
+fn full_access_bare_key_allows_everything() {
+    // A bare key (no scopes/prefixes) does everything.
     let h = scoped_harness(&["full"]);
     let (s, _) = post(
         &h,

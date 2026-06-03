@@ -316,7 +316,6 @@ Configuration is read from the environment:
 | `TOPICS_SEGMENT_MAX_AGE_MS` | `3600000` (1 h) | Also seal a partially-filled active segment after this wall-clock age. `0` disables the age trigger. |
 | `TOPICS_HOT_RETAIN_SEGMENTS` | `4` | Keep at most this many most-recent sealed segments hot before relocating older ones to the cold tier (the active segment is always hot). |
 | `TOPICS_HOT_RETAIN_BYTES` | `0` (count-only) | Optionally bound hot sealed-segment bytes; the stricter of the two retention bounds wins. |
-| `TOPICS_FORWARD_V2` | `1` (on) | The async + derived router-forwarding path (durable per-router cursor, forwarded copies not WAL-logged, single-source-per-dest) described in [Routers](#features) is now the **default**: one WAL append per source append regardless of fan-out, off the source ack path. Set `TOPICS_FORWARD_V2=0` (`false`/`no`/`off`) to **opt out** back to the legacy synchronous in-line forward (durable-by-construction but WAL-amplified — N WAL writes per N-way fan-out, on the ack path — and it permits multi-source fan-in into one dest). |
 | `TOPICS_MAX_TOPICS` | `100000` | Max topics (DoS hardening). `0` = unlimited. Creating past it ⇒ `429 throttled`. |
 | `TOPICS_MAX_ROUTERS` | `10000` | Max routers. `0` = unlimited. |
 | `TOPICS_MAX_WATCH_SESSIONS` | `10000` | Max live watch sessions. `0` = unlimited. |
@@ -336,10 +335,10 @@ durability/performance tradeoff:
 | `disk` | WAL, **group-committed** (no per-write fsync) | on WAL-frame enqueue, not fsync-gated (`fsync_ms` 0) | yes, **minus the un-fsynced tail** (the not-yet-group-committed frames). |
 | `fsync` | WAL, **fsync-gated** | after the group `fsync` (real `fsync_ms`) | **yes, any crash** — an acked write is recovered by WAL replay. |
 
-The legacy `durable` bool is a back-compat alias: `durable:true` ⇒ `fsync`,
-`durable:false` ⇒ `disk` (set `durability:"ephemeral"` explicitly for
+The `durable` bool is a shorthand alias: `durable:true` ⇒ `fsync`,
+`durable:false` ⇒ `disk`. Set `durability:"ephemeral"` explicitly for
 resident-only live fan-out, or `durability:"memory"` for the best-effort/lossy
-disk-like class). The resolved `durability` is reported on every topic-state
+disk-like class. The resolved `durability` is reported on every topic-state
 response, and `durable` is normalized to `durable == (class == "fsync")`.
 Router-forwarded and dead-lettered copies honor the **destination** topic's class (a
 `memory` dest persists a best-effort copy that may survive or be lost; an
@@ -364,8 +363,8 @@ commands above work verbatim once `$TOPICS` points at your server.
   outside its scope/prefix gets `403 forbidden`. The prefix allowlist is enforced on **body**
   names too (the topics a watch subscribes to; a router's `source`/`dest`), and **list** results
   are filtered to the allowlist, so a scoped key cannot watch, route into, or enumerate
-  cross-tenant topics. `/v0/metrics` requires the `read` scope. A bare `key` is full access
-  (back-compat). A malformed scope token makes the server refuse to start (fail-closed). See
+  cross-tenant topics. `/v0/metrics` requires the `read` scope. A bare `key` is full access.
+  A malformed scope token makes the server refuse to start (fail-closed). See
   `docs/API.md` §0.2.
 - **Resource / rate limits (DoS hardening)** — configurable caps on topics, routers, watch
   sessions, concurrent SSE connections (global + per-key), per-key in-flight requests, and a
@@ -484,10 +483,7 @@ cursor and replay from the last acked `from_seq`. If a cap is ever configured an
   per-source FIFO, cycle-rejecting by default; `$node` is preserved (loop prevention), with
   a hop cap. A derived destination is **single-source**: a second router with a *different*
   source into the same dest is rejected with `409 topic_exists_incompatible`
-  (`error.detail.reason: "router_dest_fan_in"`). This async/derived model is the
-  **shipped default**; set `TOPICS_FORWARD_V2=0` to opt out to the legacy synchronous
-  in-line forward (durable-by-construction but WAL-amplified, on the ack path, and it
-  permits multi-source fan-in) — see the config table.
+  (`error.detail.reason: "router_dest_fan_in"`).
 - **Lease-based queues** — set `type: "queue"` to layer claim/ack/nack/extend (and a
   `/work` auto-claim SSE stream) on the same log: visibility-timeout leases,
   coalesced fair fan-out, redelivery, and optional dead-lettering (see API §10).
